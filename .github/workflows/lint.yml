@@ -3,8 +3,9 @@ name: Lint
 on:
   push:
     branches: [main]
+  # Every pull request, whatever its base: stacked PRs (a module on top of the
+  # one it depends on) would otherwise get no checks until retargeted to main.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
