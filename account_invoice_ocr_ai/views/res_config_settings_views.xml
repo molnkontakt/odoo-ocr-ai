@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form_invoice_ocr" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.invoice.ocr</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="account.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//app[@name='account']" position="inside">
+                <block title="Faktura-OCR (uppladdning)" id="invoice_ocr_settings">
+                    <setting string="OCR-parsning aktiverad" help="Kör OCR + AI på PDF:er som laddas upp via 'Ladda upp'-knappen.">
+                        <field name="invoice_ocr_enabled"/>
+                    </setting>
+                    <setting string="AI-leverantör" help="staik har svensk datahemvist. Venice ligger i USA.">
+                        <field name="invoice_ocr_provider"/>
+                    </setting>
+                    <setting string="staik API-nyckel" help="Krävs när leverantören är staik.">
+                        <field name="invoice_ocr_staik_api_key" password="True"/>
+                    </setting>
+                    <setting string="staik modell" help="Måste vara en reasoning-variant, t.ex. qwen3.6:35b-a3b-thinking. Ett okänt modellnamn byter tyst till staiks default-modell.">
+                        <field name="invoice_ocr_staik_model"/>
+                    </setting>
+                    <setting string="Venice.ai API-nyckel" help="Krävs för AI-validering. Hämta från venice.ai/settings/api">
+                        <field name="invoice_ocr_venice_api_key" password="True"/>
+                    </setting>
+                    <setting string="Venice modell" help="Modell som används, t.ex. google-gemma-3-27b-it">
+                        <field name="invoice_ocr_venice_model"/>
+                    </setting>
+                    <setting string="OpenAI API-nyckel" help="Krävs när leverantören är OpenAI. Hämta från platform.openai.com/api-keys">
+                        <field name="invoice_ocr_openai_api_key" password="True"/>
+                    </setting>
+                    <setting string="OpenAI modell" help="Modell som används, t.ex. gpt-4o-mini">
+                        <field name="invoice_ocr_openai_model"/>
+                    </setting>
+                </block>
+            </xpath>
+        </field>
+    </record>
+</odoo>
