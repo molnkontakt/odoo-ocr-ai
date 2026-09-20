@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="action_read_receipt_server" model="ir.actions.server">
+        <field name="name">Läs kvitto (OCR)</field>
+        <field name="model_id" ref="hr_expense.model_hr_expense"/>
+        <field name="binding_model_id" ref="hr_expense.model_hr_expense"/>
+        <field name="binding_view_types">list</field>
+        <field name="state">code</field>
+        <field name="code">
+for expense in records.filtered(lambda e: e.state == 'draft'):
+    try:
+        expense.action_read_receipt()
+        env.cr.commit()
+    except Exception as e:
+        env.cr.rollback()
+        env['ir.logging'].sudo().create({
+            'name': 'hr_expense_ocr_ai', 'type': 'server', 'level': 'WARNING',
+            'message': 'Kvitto-OCR misslyckades för utlägg %s: %s' % (expense.id, e),
+            'path': 'action_read_receipt_server', 'func': 'bulk', 'line': '0',
+        })
+        </field>
+    </record>
+</odoo>
