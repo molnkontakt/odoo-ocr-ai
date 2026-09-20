@@ -10,7 +10,7 @@ import base64
 import logging
 import re
 
-from markupsafe import Markup
+from markupsafe import Markup, escape
 
 from odoo import _, fields, models
 from odoo.exceptions import UserError
@@ -70,8 +70,11 @@ class AccountMove(models.Model):
                 continue
             try:
                 self._invoice_ocr_extend(move, files_data)
-                # Commit per move so a later timeout doesn't lose prior OCR work
-                self.env.cr.commit()
+                # No commit here: _extend_with_attachments runs inside the create
+                # transaction, so committing would also flush super()'s work and
+                # the create itself. Durability across moves is only needed on
+                # the bulk server-action path (data/server_actions.xml), which
+                # commits per move on purpose.
             except Exception as e:
                 logger.warning("OCR auto-fill failed for move %s: %s", move.id, e)
 
@@ -201,17 +204,19 @@ class AccountMove(models.Model):
         if not move.partner_bank_id and partner_id:
             self._resolve_partner_bank(move, data, partner_id)
 
-        # Log a chatter note with confidence info
+        # Log a chatter note with confidence info. Values come straight out of
+        # OCR/LLM output and may contain arbitrary characters, so escape them —
+        # same reasoning as _check_ocr_totals, which uses Markup.
         conflicts = data.get("_conflicts") or []
         body = "<p><b>OCR + AI har fyllt i fakturan</b></p><ul>"
         for k in ("vendor_name", "invoice_number", "invoice_date", "due_date",
                   "total_amount", "subtotal", "vat_amount", "ocr_number", "plusgiro",
                   "bankgiro", "org_number", "currency"):
             if data.get(k) is not None:
-                body += f"<li>{k}: <code>{data[k]}</code></li>"
+                body += f"<li>{escape(k)}: <code>{escape(str(data[k]))}</code></li>"
         if conflicts:
             body += "<li><b>Konflikter regex/AI:</b><br/>" + "<br/>".join(
-                f"<code>{c}</code>" for c in conflicts) + "</li>"
+                f"<code>{escape(str(c))}</code>" for c in conflicts) + "</li>"
         body += "</ul>"
         self.env["mail.message"].create({
             "model": "account.move",

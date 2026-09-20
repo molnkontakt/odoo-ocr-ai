@@ -440,6 +440,14 @@ STAIK_API_KEY = os.environ.get("STAIK_API_KEY", "")
 # Reasoning-varianten. Basmodellen svarar direkt utan att rakna och far da fel pa
 # flertermssummor; matt 2026-09-04 gav den 18/24 mot 22/24 for -thinking.
 STAIK_MODEL = os.environ.get("STAIK_MODEL", "qwen3.6:35b-a3b-thinking")
+# Hard cap on one staik call. The Odoo model runs this synchronously inside the
+# create-transaction, so a call blocks a worker; 300 s let a hung request pin a
+# worker for minutes. 120 s still covers the slowest reasoning runs we have
+# measured (typically well under a minute).
+STAIK_TIMEOUT = int(os.environ.get("STAIK_TIMEOUT", "120"))
+# If the first AI call already took at least this many seconds, skip the retry —
+# two calls at STAIK_TIMEOUT would otherwise block the upload path for minutes.
+RETRY_SKIP_SECONDS = float(os.environ.get("INVOICE_AI_RETRY_SKIP_SECONDS", "60"))
 # Ett svar under den har granden betyder att modellen hoppade over resonemanget.
 # Samtliga korrekta svar i matningen lag pa 3400-7200 completion-tokens, de tva
 # felaktiga pa 462 och 649.
@@ -638,7 +646,7 @@ def _call_staik(text):
               "response_format": {"type": "json_schema",
                                   "json_schema": {"name": "invoice",
                                                   "schema": INVOICE_JSON_SCHEMA}}},
-        timeout=300)
+        timeout=STAIK_TIMEOUT)
     j = r.json()
     choice = j["choices"][0]
     if choice.get("finish_reason") == "length":
@@ -782,15 +790,31 @@ def _extract_fields_ai(text, reference=None):
     ibland over resonemanget och svarar rakt av, vilket ger fel pa flertermssummor.
     Det ar sporadiskt, sa en omkorning racker — men vi behaller det basta av de tva
     svaren i stallet for att blint ta det sista.
+
+    Omkörningen hoppas over om första anropet redan tog RETRY_SKIP_SECONDS —
+    anropet körs synkront inne i Odoo-transaktionen, och två stycken
+    STAIK_TIMEOUT-långa anrop skulle blockera upload-vägen i minuter.
     """
+    import time
+
+    t0 = time.monotonic()
     try:
         data = _call_provider(text)
     except Exception as e:
         logger.warning("AI extraction failed (%s): %s", AI_PROVIDER, e)
         return {}
+    elapsed = time.monotonic() - t0
 
     problems = _ai_answer_problems(data, reference)
     if not problems:
+        return _strip_meta(data)
+
+    if elapsed >= RETRY_SKIP_SECONDS:
+        logger.warning(
+            "AI-svaret ser opalitligt ut (%s) men forsta anropet tog %.0f s — "
+            "hoppar over omkorningen for att inte blockera behandlingen. "
+            "Fakturan behover granskas manuellt.",
+            "; ".join(problems), elapsed)
         return _strip_meta(data)
 
     logger.warning("AI-svaret ser opalitligt ut (%s) — kor om en gang",

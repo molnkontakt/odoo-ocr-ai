@@ -27,6 +27,19 @@ document, never the file, is sent to the provider. Keys live in Odoo system
 parameters. A reasoning-capable model is strongly recommended; the defaults
 were tuned with `qwen3.6:35b-a3b-thinking`.
 
+### Known limitation: synchronous LLM call on upload
+
+The upload path (journal *Upload* button, chatter attachment, e-mail alias) runs
+OCR + the LLM call **synchronously inside the create transaction**. One call is
+capped at `STAIK_TIMEOUT` seconds (default 120, env-tunable) and the reliability
+re-run is skipped when the first call already took `INVOICE_AI_RETRY_SKIP_SECONDS`
+seconds (default 60), so a single upload can block a worker for roughly that long
+— it can never hang indefinitely. Avoid this on high-volume setups or with
+slow/offline providers; the intended long-term fix is async processing
+(queue_job / server action), and the bulk path already exists as a list-view
+server action, *Kör OCR igen*, which commits per move.
+
+
 ## Requirements
 
 - Odoo 19 Community

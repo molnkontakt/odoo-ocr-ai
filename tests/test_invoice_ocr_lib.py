@@ -33,3 +33,45 @@ def test_own_company_is_never_the_vendor(monkeypatch):
     fields = inv.extract_fields(text)
     assert fields.get("org_number") == "GB123456789"
     assert "receiver" not in (fields.get("vendor_name") or "").lower()
+
+
+def test_slow_first_call_skips_retry(monkeypatch):
+    """If the first AI call took >= RETRY_SKIP_SECONDS, no second call is made.
+
+    The synchronous path in the Odoo model must not block for two full
+    timeouts on a slow/hung provider.
+    """
+    monkeypatch.setattr(inv, "RETRY_SKIP_SECONDS", 0.0)
+    calls = []
+
+    def slow_provider(text):
+        calls.append("call")
+        # sub + vat != total → misstänkt svar, skulle normalt trigga omkörning
+        return {"vendor_name": "Test AB", "total_amount": 100, "subtotal": 90,
+                "vat_amount": 0, "lines": [{"amount": 100}]}
+
+    monkeypatch.setattr(inv, "_call_provider", slow_provider)
+    result = inv._extract_fields_ai("text", reference={})
+    assert len(calls) == 1
+    assert result["vendor_name"] == "Test AB"
+
+
+def test_fast_suspect_answer_is_rerun(monkeypatch):
+    monkeypatch.setattr(inv, "RETRY_SKIP_SECONDS", 60.0)
+    calls = []
+    answers = [
+        {"vendor_name": "Test AB", "total_amount": 100, "subtotal": 90,
+         "vat_amount": 0, "lines": [{"amount": 100}]},  # sub + vat != total
+        {"vendor_name": "Test AB", "total_amount": 100, "subtotal": 100,
+         "vat_amount": 0, "lines": [{"amount": 100}]},
+    ]
+
+    def fast_provider(text):
+        calls.append("call")
+        return answers.pop(0)
+
+    monkeypatch.setattr(inv, "_call_provider", fast_provider)
+    result = inv._extract_fields_ai("text", reference={})
+    assert len(calls) == 2
+    assert result["total_amount"] == 100
+    assert result["subtotal"] == 100
