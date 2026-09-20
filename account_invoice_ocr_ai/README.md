@@ -34,12 +34,25 @@ a timeout does not lose finished work.
 | Parameter | Meaning |
 |-----------|---------|
 | `invoice_ocr.enabled` | on/off |
-| `invoice_ocr.provider` | `staik` (default), `venice`, `openai`, `ollama` |
-| `invoice_ocr.staik_api_key`, `invoice_ocr.staik_model` | staik credentials; use a reasoning model (default `qwen3.6:35b-a3b-thinking`). An unknown model name silently falls back to staik's default model |
-| `invoice_ocr.venice_api_key`, `invoice_ocr.venice_model` | Venice.ai credentials |
+| `invoice_ocr.provider` | `staik` (default), `venice`, `openai`, `openai_compatible`, `ollama` |
+| `invoice_ocr.staik_api_key`, `invoice_ocr.staik_model` | staik; use a reasoning model (default `qwen3.6:35b-a3b-thinking`). An unknown model name silently falls back to staik's default model |
+| `invoice_ocr.venice_api_key`, `invoice_ocr.venice_model` | Venice.ai |
+| `invoice_ocr.openai_api_key`, `invoice_ocr.openai_model` | OpenAI (default `gpt-4o-mini`) |
+| `invoice_ocr.base_url`, `invoice_ocr.api_key`, `invoice_ocr.model` | any other endpoint speaking OpenAI's `/chat/completions`: Mistral, Groq, OpenRouter, Together, DeepSeek, Azure OpenAI, Anthropic's compatibility layer, vLLM, LM Studio … Base URL up to the API version |
+| `invoice_ocr.ollama_url`, `invoice_ocr.ollama_model` | local Ollama (native API, JSON-schema `format`) |
 
-Environment variables (`INVOICE_AI_PROVIDER`, `STAIK_API_KEY`, `OLLAMA_URL`, …)
-are read as defaults when no system parameter is set.
+**Verify provider** on the settings page does a one-token round-trip with the
+values on the form and shows which model actually answered and how fast. That
+is the only way to see staik's silent fallback to its default model.
+
+All providers get the same treatment: JSON-schema structured output where the
+endpoint supports it (a `400` on `response_format` falls back to a plain
+completion), one retry after 15 s on `429`, and the reasoning-token sanity
+check only for models whose name says `thinking`/`reasoning`.
+
+Environment variables (`INVOICE_AI_PROVIDER`, `INVOICE_AI_BASE_URL`,
+`INVOICE_AI_API_KEY`, `INVOICE_AI_MODEL`, `STAIK_API_KEY`, `OLLAMA_URL`, …) are
+read as defaults when no system parameter is set.
 
 ## Requirements
 

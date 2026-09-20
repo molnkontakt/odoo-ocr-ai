@@ -6,24 +6,48 @@
         <field name="inherit_id" ref="account.res_config_settings_view_form"/>
         <field name="arch" type="xml">
             <xpath expr="//app[@name='account']" position="inside">
-                <block title="Faktura-OCR (uppladdning)" id="invoice_ocr_settings">
-                    <setting string="OCR-parsning aktiverad" help="Kör OCR + AI på PDF:er som laddas upp via 'Ladda upp'-knappen.">
+                <block title="Invoice OCR" id="invoice_ocr_settings">
+                    <setting string="Invoice OCR on upload" help="Read PDFs uploaded through the Upload button or attached to a draft vendor bill with OCR + an LLM.">
                         <field name="invoice_ocr_enabled"/>
                     </setting>
-                    <setting string="AI-leverantör" help="staik har svensk datahemvist. Venice ligger i USA.">
+                    <setting string="AI provider" help="The text of the document (never the file) is sent to this provider. staik keeps data in Sweden; Venice and OpenAI are in the USA; Ollama and a custom endpoint can be on your own hardware.">
                         <field name="invoice_ocr_provider"/>
+                        <div class="mt-2">
+                            <button name="action_invoice_ocr_verify_provider" type="object" string="Verify provider" class="btn-link" icon="fa-check-circle"/>
+                        </div>
                     </setting>
-                    <setting string="staik API-nyckel" help="Krävs när leverantören är staik.">
+                    <setting string="staik API key" invisible="invoice_ocr_provider != 'staik'">
                         <field name="invoice_ocr_staik_api_key" password="True"/>
                     </setting>
-                    <setting string="staik modell" help="Måste vara en reasoning-variant, t.ex. qwen3.6:35b-a3b-thinking. Ett okänt modellnamn byter tyst till staiks default-modell.">
+                    <setting string="staik model" invisible="invoice_ocr_provider != 'staik'" help="Must be a reasoning variant, e.g. qwen3.6:35b-a3b-thinking. An unknown model name silently falls back to staik's default model — Verify shows which model actually answers.">
                         <field name="invoice_ocr_staik_model"/>
                     </setting>
-                    <setting string="Venice.ai API-nyckel" help="Krävs för AI-validering. Hämta från venice.ai/settings/api">
+                    <setting string="Venice.ai API key" invisible="invoice_ocr_provider != 'venice'">
                         <field name="invoice_ocr_venice_api_key" password="True"/>
                     </setting>
-                    <setting string="Venice modell" help="Modell som används, t.ex. google-gemma-3-27b-it">
+                    <setting string="Venice.ai model" invisible="invoice_ocr_provider != 'venice'">
                         <field name="invoice_ocr_venice_model"/>
+                    </setting>
+                    <setting string="OpenAI API key" invisible="invoice_ocr_provider != 'openai'">
+                        <field name="invoice_ocr_openai_api_key" password="True"/>
+                    </setting>
+                    <setting string="OpenAI model" invisible="invoice_ocr_provider != 'openai'">
+                        <field name="invoice_ocr_openai_model"/>
+                    </setting>
+                    <setting string="Base URL" invisible="invoice_ocr_provider != 'openai_compatible'" help="Any endpoint speaking OpenAI's /chat/completions: Mistral, Groq, OpenRouter, Together, DeepSeek, Azure OpenAI, Anthropic's compatibility layer, vLLM, LM Studio … Give the URL up to the API version; /chat/completions is appended.">
+                        <field name="invoice_ocr_base_url" placeholder="https://api.mistral.ai/v1"/>
+                    </setting>
+                    <setting string="API key" invisible="invoice_ocr_provider != 'openai_compatible'">
+                        <field name="invoice_ocr_api_key" password="True"/>
+                    </setting>
+                    <setting string="Model" invisible="invoice_ocr_provider != 'openai_compatible'">
+                        <field name="invoice_ocr_model" placeholder="mistral-large-latest"/>
+                    </setting>
+                    <setting string="Ollama URL" invisible="invoice_ocr_provider != 'ollama'">
+                        <field name="invoice_ocr_ollama_url"/>
+                    </setting>
+                    <setting string="Ollama model" invisible="invoice_ocr_provider != 'ollama'">
+                        <field name="invoice_ocr_ollama_model"/>
                     </setting>
                 </block>
             </xpath>

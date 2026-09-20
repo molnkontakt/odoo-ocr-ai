@@ -19,14 +19,8 @@ class HrExpense(models.Model):
         return self.env["ir.config_parameter"].sudo().get_param("expense_ocr.enabled", "True").lower() not in ("false", "0", "")
 
     def _expense_ocr_inject_settings(self):
-        """Samma nycklar/leverantör som faktura-OCR:en (Inställningar → Bokföring → Faktura-OCR)."""
-        from odoo.addons.account_invoice_ocr_ai.lib import invoice_ocr
-        ICP = self.env["ir.config_parameter"].sudo()
-        invoice_ocr.AI_PROVIDER = ICP.get_param("invoice_ocr.provider") or invoice_ocr.AI_PROVIDER
-        invoice_ocr.STAIK_API_KEY = ICP.get_param("invoice_ocr.staik_api_key") or invoice_ocr.STAIK_API_KEY
-        invoice_ocr.STAIK_MODEL = ICP.get_param("invoice_ocr.staik_model") or invoice_ocr.STAIK_MODEL
-        invoice_ocr.VENICE_API_KEY = ICP.get_param("invoice_ocr.venice_api_key") or invoice_ocr.VENICE_API_KEY
-        invoice_ocr.VENICE_MODEL = ICP.get_param("invoice_ocr.venice_model") or invoice_ocr.VENICE_MODEL
+        """Same provider, keys and own-company guard as the invoice OCR (Settings → Invoicing → Invoice OCR)."""
+        self.env["account.move"]._invoice_ocr_apply_settings(self.company_id if len(self) == 1 else None)
 
     def _expense_ocr_categories(self):
         """[(kod, namn, hint)] + kod→produkt. Hinten är produktens inköpsbeskrivning, så kassören

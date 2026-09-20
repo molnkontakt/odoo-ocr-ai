@@ -1,6 +1,6 @@
 {
     "name": "Expense receipt OCR + AI",
-    "version": "19.0.1.0.0",
+    "version": "19.0.1.1.0",
     "category": "Human Resources/Expenses",
     "summary": "Read receipt photos on expense claims with tesseract + an LLM and fill amount, date, merchant and category",
     "description": """
