@@ -1,0 +1,65 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check .
+
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python -m compileall -q .
+
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Validate every __manifest__.py
+        run: |
+          python - <<'PY'
+          import ast, pathlib
+          found = 0
+          for m in sorted(pathlib.Path('.').glob('*/__manifest__.py')):
+              d = ast.literal_eval(m.read_text())
+              assert d['name'], f'{m}: name required'
+              assert d['version'].startswith('19.0.') and d['version'].count('.') == 4, f'{m}: version must be 19.0.x.y.z, got {d["version"]}'
+              assert d['license'] == 'LGPL-3', f'{m}: license must be LGPL-3'
+              assert d.get('author') == 'Molnkontakt AB', f'{m}: author'
+              print('manifest OK:', m.parent.name, d['version'])
+              found += 1
+          print(found, 'manifest(s)')
+          PY
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install pytest pdfplumber requests
+      - name: Library unit tests (no Odoo needed)
+        run: |
+          if [ -d tests ]; then pytest -q; else echo "no tests yet"; fi
