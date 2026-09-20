@@ -34,6 +34,16 @@ class ResConfigSettings(models.TransientModel):
              "fel pa flertermssummor. OBS: okant modellnamn faller tyst tillbaka "
              "till staiks default-modell.",
     )
+    invoice_ocr_openai_api_key = fields.Char(
+        string="OpenAI API-nyckel",
+        config_parameter="invoice_ocr.openai_api_key",
+    )
+    invoice_ocr_openai_model = fields.Char(
+        string="OpenAI modell",
+        config_parameter="invoice_ocr.openai_model",
+        default="gpt-4o-mini",
+        help="Modell som används när leverantören är OpenAI, t.ex. gpt-4o-mini.",
+    )
     invoice_ocr_enabled = fields.Boolean(
         string="OCR-parsning av PDF-uppladdningar",
         config_parameter="invoice_ocr.enabled",

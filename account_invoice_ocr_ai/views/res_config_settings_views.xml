@@ -25,6 +25,12 @@
                     <setting string="Venice modell" help="Modell som används, t.ex. google-gemma-3-27b-it">
                         <field name="invoice_ocr_venice_model"/>
                     </setting>
+                    <setting string="OpenAI API-nyckel" help="Krävs när leverantören är OpenAI. Hämta från platform.openai.com/api-keys">
+                        <field name="invoice_ocr_openai_api_key" password="True"/>
+                    </setting>
+                    <setting string="OpenAI modell" help="Modell som används, t.ex. gpt-4o-mini">
+                        <field name="invoice_ocr_openai_model"/>
+                    </setting>
                 </block>
             </xpath>
         </field>

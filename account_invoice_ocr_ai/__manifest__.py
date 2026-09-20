@@ -1,6 +1,6 @@
 {
     "name": "Invoice OCR + AI",
-    "version": "19.0.1.8.1",
+    "version": "19.0.1.8.2",
     "category": "Accounting",
     "summary": "Read uploaded vendor bill PDFs with OCR + an LLM and pre-fill partner, dates, references and lines",
     "depends": ["account"],

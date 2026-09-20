@@ -23,9 +23,11 @@ and settings).
 
 Configured under *Settings → Invoicing → Invoice OCR*: **staik** (Swedish data
 residency, default), Venice.ai, OpenAI or a local Ollama. The text of the
-document, never the file, is sent to the provider. Keys live in Odoo system
-parameters. A reasoning-capable model is strongly recommended; the defaults
-were tuned with `qwen3.6:35b-a3b-thinking`.
+document, never the file, is sent to the provider — and only the first
+6000 characters of it (`INVOICE_OCR_TEXT_LIMIT`); see the
+[module README](account_invoice_ocr_ai/) for the full environment-variable
+list. Keys live in Odoo system parameters. A reasoning-capable model is
+strongly recommended; the defaults were tuned with `qwen3.6:35b-a3b-thinking`.
 
 ### Known limitation: synchronous LLM call on upload
 

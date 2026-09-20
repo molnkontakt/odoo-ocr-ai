@@ -104,29 +104,35 @@ class AccountMove(models.Model):
 
         # Lazy-import to keep module loadable when libs missing
         from ..lib import invoice_ocr
-        # Inject Venice creds from system params
-        invoice_ocr.VENICE_API_KEY = (
-            ICP.get_param("invoice_ocr.venice_api_key") or invoice_ocr.VENICE_API_KEY
-        )
-        invoice_ocr.VENICE_MODEL = (
-            ICP.get_param("invoice_ocr.venice_model") or invoice_ocr.VENICE_MODEL
-        )
-        invoice_ocr.AI_PROVIDER = (
-            ICP.get_param("invoice_ocr.provider") or invoice_ocr.AI_PROVIDER
-        )
-        invoice_ocr.STAIK_API_KEY = (
-            ICP.get_param("invoice_ocr.staik_api_key") or invoice_ocr.STAIK_API_KEY
-        )
-        invoice_ocr.STAIK_MODEL = (
-            ICP.get_param("invoice_ocr.staik_model") or invoice_ocr.STAIK_MODEL
-        )
-        # Never mistake the receiving company for the supplier
+        # Per-run config from system parameters + the receiving company.
+        # Mutating invoice_ocr's module globals was a bug: they are shared by
+        # every run in the worker process, so concurrent moves (bulk server
+        # action, multi-company users) could read another company's VAT or
+        # another provider's key mid-run.
+        cfg = invoice_ocr.default_config()
+        for param, key in (
+            ("invoice_ocr.provider", "provider"),
+            ("invoice_ocr.venice_api_key", "venice_api_key"),
+            ("invoice_ocr.venice_model", "venice_model"),
+            ("invoice_ocr.openai_api_key", "openai_api_key"),
+            ("invoice_ocr.openai_model", "openai_model"),
+            ("invoice_ocr.staik_api_key", "staik_api_key"),
+            ("invoice_ocr.staik_model", "staik_model"),
+        ):
+            value = ICP.get_param(param)
+            if value:
+                cfg[key] = value
+        # Never mistake the receiving company for the supplier. VAT numbers are
+        # normalized inside the library (spaces/dashes stripped, upper), so no
+        # need to pre-clean here.
         company = move.company_id or self.env.company
-        invoice_ocr.OWN_COMPANY = (company.name or "").strip().lower()
-        invoice_ocr.OWN_VAT_NUMBERS = {v.replace(" ", "").upper() for v in (company.vat, company.company_registry) if v}
+        cfg["own_company"] = (company.name or "").strip().lower()
+        cfg["own_vat_numbers"] = [
+            v for v in (company.vat, company.company_registry) if v
+        ]
 
         try:
-            data = invoice_ocr.extract_invoice_data(pdf_data)
+            data = invoice_ocr.extract_invoice_data(pdf_data, config=cfg)
         except Exception as e:
             logger.warning("invoice_ocr.extract_invoice_data failed: %s", e)
             return
@@ -366,26 +372,15 @@ class AccountMove(models.Model):
 
         # For EU/EX: also remap account_code so domestic 4xxx → corresponding foreign account
         # e.g. 4000 (Sw goods) → 4515 (EU goods 25%) ; 6230-range services stay the same
-        # Map by description heuristics done per-line below
+        # Map by description heuristics done per-line below. The actual remap
+        # lives in lib/invoice_ocr.remap_account_code so it can be unit-tested
+        # without Odoo; the closure only carries the per-move country context.
+        from ..lib import invoice_ocr as _ocr
+
         def remap_account_code(orig_code, line_desc=""):
-            if not is_eu_foreign and not is_outside_eu:
-                return orig_code
-            try:
-                code_int = int(str(orig_code or 0)[:4])
-            except (ValueError, TypeError):
-                return orig_code
-            # Goods inköpskonton: 4000-4099 → EU/EX motsvarighet
-            if is_eu_foreign and 4000 <= code_int <= 4099:
-                return "4515"  # Inköp av varor från annat EU-land 25%
-            if is_outside_eu and 4000 <= code_int <= 4099:
-                return "4545"  # Import av varor 25% moms
-            # Services 4500-4599 in BAS: 4535 (EU services 25%), 4531 (services 25% own use)
-            if is_eu_foreign and 4500 <= code_int <= 4599:
-                return "4535"
-            # Cloud/SaaS in 6230-range stays as-is (it's a cost class, not a "purchase from EU" account)
-            # but if AI returned 6231 for an EU vendor, the line still needs the EU tax tag —
-            # we keep the cost account but the tax handles VAT side
-            return orig_code
+            return _ocr.remap_account_code(
+                orig_code, is_eu_foreign=is_eu_foreign,
+                is_outside_eu=is_outside_eu, line_desc=line_desc)
 
         line_vals_list = []
 

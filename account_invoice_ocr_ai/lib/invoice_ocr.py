@@ -29,6 +29,17 @@ try:
 except ImportError:
     HAS_TESSERACT = False
 
+# ── Tunables ─────────────────────────────────────────────────────────────────
+
+# How much invoice text the LLM sees. The full document is never sent; long
+# specifications are truncated so the prompt (and the bill) stays bounded.
+TEXT_LIMIT = int(os.environ.get("INVOICE_OCR_TEXT_LIMIT", "6000"))
+# Image-based PDFs are rendered page by page; cap it so a 300-page PDF cannot
+# pin a worker for minutes in the synchronous upload path.
+MAX_OCR_PAGES = int(os.environ.get("INVOICE_OCR_MAX_PAGES", "10"))
+# Render scale for tesseract OCR (2 ≈ 144 dpi — good compromise).
+OCR_SCALE = float(os.environ.get("INVOICE_OCR_SCALE", "2"))
+
 
 # ── Swedish date formats ─────────────────────────────────────────────────────
 
@@ -100,6 +111,13 @@ def _parse_amount(text):
             text = text.replace(",", "")
     elif "," in text:
         text = text.replace(",", ".")
+    elif "." in text:
+        # "1.234" — dot with NO comma and exactly three digits after the last
+        # dot is a thousands separator (German/Swedish style), not decimals.
+        # "539.00" (two digits) and "104.64" stay decimal.
+        head, _, tail = text.rpartition(".")
+        if head and tail.isdigit() and len(tail) == 3:
+            text = text.replace(".", "")
     try:
         return float(text)
     except ValueError:
@@ -204,8 +222,15 @@ def _extract_text_pdfplumber(pdf_bytes):
         return "\n\n".join(pages)
 
 
-def _extract_text_tesseract(pdf_bytes):
-    """Fallback: convert PDF pages to images and OCR them."""
+def _extract_text_tesseract(pdf_bytes, max_pages=None, scale=None):
+    """Fallback: convert PDF pages to images and OCR them.
+
+    ``max_pages`` caps the number of rendered pages (a 300-page PDF must not
+    pin a worker for minutes in the synchronous upload path) and ``scale``
+    controls the render resolution. Both come from the per-run config, with
+    the module globals (env INVOICE_OCR_MAX_PAGES / INVOICE_OCR_SCALE) as
+    defaults.
+    """
     if not HAS_TESSERACT:
         return ""
 
@@ -214,11 +239,22 @@ def _extract_text_tesseract(pdf_bytes):
     except ImportError:
         return ""
 
+    if max_pages is None:
+        max_pages = MAX_OCR_PAGES
+    if scale is None:
+        scale = OCR_SCALE
+
     pdf_doc = pdfium.PdfDocument(pdf_bytes)
+    total = len(pdf_doc)
+    if total > max_pages:
+        logger.warning(
+            "OCR: PDF:en har %s sidor men bara de %s forsta renderas "
+            "(INVOICE_OCR_MAX_PAGES). Texten kan saknas pa de sista sidorna.",
+            total, max_pages)
     pages = []
-    for i in range(len(pdf_doc)):
+    for i in range(min(total, max_pages)):
         page = pdf_doc[i]
-        bitmap = page.render(scale=2)  # 2x for better OCR
+        bitmap = page.render(scale=scale)  # 2x for better OCR
         pil_image = bitmap.to_pil()
         text = pytesseract.image_to_string(pil_image, lang="swe+eng")
         if text.strip():
@@ -226,19 +262,25 @@ def _extract_text_tesseract(pdf_bytes):
     return "\n\n".join(pages)
 
 
-def extract_text(pdf_bytes):
+def extract_text(pdf_bytes, config=None):
     """Extract text from PDF, with tesseract fallback for image-based PDFs."""
+    cfg = _cfg(config)
     text = _extract_text_pdfplumber(pdf_bytes)
     if len(text.strip()) < 50 and HAS_TESSERACT:
         # Probably an image-based PDF, try OCR
-        ocr_text = _extract_text_tesseract(pdf_bytes)
+        ocr_text = _extract_text_tesseract(
+            pdf_bytes, max_pages=cfg.get("max_ocr_pages"),
+            scale=cfg.get("ocr_scale"))
         if len(ocr_text.strip()) > len(text.strip()):
             text = ocr_text
     return text
 
 
-def extract_fields(text):
+def extract_fields(text, config=None):
     """Extract structured invoice fields from text."""
+    cfg = _cfg(config)
+    own_company = cfg.get("own_company") or ""
+    own_vats = {_norm_vat(v) for v in (cfg.get("own_vat_numbers") or set())}
     result = {}
     lines = text.split("\n")
 
@@ -380,13 +422,17 @@ def extract_fields(text):
     vat_candidates = re.findall(r"VAT\s*Reg\.?\s*No\.?[\s:]*([A-Z]{2}\d{6,12})",
                                 text, re.IGNORECASE)
     if vat_candidates:
-        # Prefer non-own, non-SE; fall back to last occurrence
-        non_own = [v for v in vat_candidates if v.upper() not in OWN_VAT_NUMBERS]
-        non_se = [v for v in non_own if not v.startswith("SE")]
+        # Prefer non-own, non-SE; fall back to last occurrence. The comparison
+        # is normalized (spaces/dashes stripped, upper) — company.vat is often
+        # stored with spaces and company_registry as NNNNNN-NNNN.
+        non_own = [v for v in vat_candidates if _norm_vat(v) not in own_vats]
+        non_se = [v for v in non_own if not v.upper().startswith("SE")]
         if non_se:
             result["org_number"] = non_se[-1]
-        elif non_own:
-            result["org_number"] = non_own[-1]
+        # elif non_own: only SE candidates left — another Swedish party (or the
+        # customer block on a foreign invoice). We cannot tell supplier from
+        # customer here, so do NOT overwrite org_number with a guess; keep
+        # whatever the regex extraction found (e.g. "Organisationsnummer").
         # else: only own VAT found — leave any prior org_number value alone
 
     # Extract supplier/vendor name from the PDF
@@ -395,7 +441,7 @@ def extract_fields(text):
     if "vendor_name" not in result:
         for line in lines[:15]:
             stripped = line.strip()
-            if re.search(r"\b(?:AB|AS|GmbH|Ltd|Inc|LLC|Oy|A/S)\b", stripped) and not (OWN_COMPANY and OWN_COMPANY in stripped.lower()):
+            if re.search(r"\b(?:AB|AS|GmbH|Ltd|Inc|LLC|Oy|A/S)\b", stripped) and not (own_company and own_company in stripped.lower()):
                 # Take up to and including the company suffix
                 m = re.match(r"(.+?\b(?:AB|AS|GmbH|Ltd|Inc|LLC|Oy|A/S)\b)", stripped)
                 result["vendor_name"] = m.group(1).strip() if m else stripped.split("  ")[0].strip()
@@ -407,7 +453,7 @@ def extract_fields(text):
             m = re.match(r"^(.+?)\s+(?:Organisationsnummer|Org\.?\s*(?:nr|nummer))", line, re.IGNORECASE)
             if m:
                 name = m.group(1).strip().rstrip(",")
-                if name and len(name) > 1 and not (OWN_COMPANY and OWN_COMPANY in name.lower()):
+                if name and len(name) > 1 and not (own_company and own_company in name.lower()):
                     result["vendor_name"] = name
                     break
 
@@ -419,7 +465,7 @@ def extract_fields(text):
                     candidate = lines[j].strip()
                     if (candidate and len(candidate) > 2
                             and not candidate.startswith(("http", "www"))
-                            and not (OWN_COMPANY and OWN_COMPANY in candidate.lower())):
+                            and not (own_company and own_company in candidate.lower())):
                         result["vendor_name"] = candidate
                         break
                 break
@@ -435,6 +481,7 @@ VENICE_MODEL = os.environ.get("VENICE_MODEL", "google-gemma-3-27b-it")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 STAIK_URL = os.environ.get("STAIK_URL", "https://api.staik.se/v1")
 STAIK_API_KEY = os.environ.get("STAIK_API_KEY", "")
 # Reasoning-varianten. Basmodellen svarar direkt utan att rakna och far da fel pa
@@ -458,6 +505,50 @@ STAIK_MIN_COMPLETION_TOKENS = int(os.environ.get("STAIK_MIN_COMPLETION_TOKENS", 
 # standalone use set INVOICE_OCR_OWN_COMPANY ("Acme AB") and INVOICE_OCR_OWN_VAT ("SE5566...").
 OWN_COMPANY = os.environ.get("INVOICE_OCR_OWN_COMPANY", "").strip().lower()
 OWN_VAT_NUMBERS = {v.strip().upper() for v in os.environ.get("INVOICE_OCR_OWN_VAT", "").split(",") if v.strip()}
+
+
+def _norm_vat(vat):
+    """Normalisera ett momsnummer för jämförelse: utan mellanslag/bindestreck, versaler."""
+    return re.sub(r"[\s-]", "", vat or "").upper()
+
+
+def default_config():
+    """Per-run-konfiguration. Modul-globalerna (env-read vid import) är defaults.
+
+    Odoo-modellen bygger en egen dict från ir.config_parameter + res.company och
+    skickar in den till extract_invoice_data — den muterar INTE modul-globalerna,
+    som delas av alla körningar i worker-processen. För standalone-bruk räcker
+    extract_invoice_data(pdf) utan config.
+    """
+    return {
+        "provider": AI_PROVIDER,
+        "venice_api_key": VENICE_API_KEY,
+        "venice_model": VENICE_MODEL,
+        "ollama_url": OLLAMA_URL,
+        "ollama_model": OLLAMA_MODEL,
+        "openai_api_key": OPENAI_API_KEY,
+        "openai_model": OPENAI_MODEL,
+        "staik_url": STAIK_URL,
+        "staik_api_key": STAIK_API_KEY,
+        "staik_model": STAIK_MODEL,
+        "staik_timeout": STAIK_TIMEOUT,
+        "retry_skip_seconds": RETRY_SKIP_SECONDS,
+        "staik_min_completion_tokens": STAIK_MIN_COMPLETION_TOKENS,
+        "own_company": OWN_COMPANY,
+        "own_vat_numbers": set(OWN_VAT_NUMBERS),
+        "text_limit": TEXT_LIMIT,
+        "max_ocr_pages": MAX_OCR_PAGES,
+        "ocr_scale": OCR_SCALE,
+    }
+
+
+def _cfg(config):
+    """Merge a partial config dict over the defaults; None values are ignored."""
+    cfg = default_config()
+    if config:
+        cfg.update({k: v for k, v in config.items() if v is not None})
+    return cfg
+
 
 # json_schema tvingar fram giltig JSON hos staik. Fritt format ger trasiga svar.
 INVOICE_JSON_SCHEMA = {
@@ -590,67 +681,67 @@ Invoice text:
 """
 
 
-def _call_venice(text):
+def _call_venice(text, cfg):
     """Call Venice.ai API (OpenAI-compatible)."""
     import requests as _req
     r = _req.post("https://api.venice.ai/api/v1/chat/completions",
-        headers={"Authorization": f"Bearer {VENICE_API_KEY}",
+        headers={"Authorization": f"Bearer {cfg['venice_api_key']}",
                  "Content-Type": "application/json"},
-        json={"model": VENICE_MODEL,
-              "messages": [{"role": "user", "content": EXTRACTION_PROMPT + text[:6000]}],
+        json={"model": cfg["venice_model"],
+              "messages": [{"role": "user", "content": EXTRACTION_PROMPT + text[:cfg["text_limit"]]}],
               "max_tokens": 6000, "temperature": 0},
         timeout=120)
     choice = r.json()["choices"][0]
     if choice.get("finish_reason") == "length":
         logger.warning(
             "AI-svaret fran %s klipptes av max_tokens — JSON:en blir ofullstandig "
-            "och faltdata gar forlorad. Hoj max_tokens.", VENICE_MODEL)
+            "och faltdata gar forlorad. Hoj max_tokens.", cfg["venice_model"])
     content = choice["message"]["content"]
     return _parse_ai_json(content)
 
 
-def _call_ollama(text):
+def _call_ollama(text, cfg):
     """Call local Ollama instance."""
     import requests as _req
-    r = _req.post(f"{OLLAMA_URL}/api/chat",
-        json={"model": OLLAMA_MODEL, "stream": False,
-              "messages": [{"role": "user", "content": EXTRACTION_PROMPT + text[:6000]}]},
+    r = _req.post(f"{cfg['ollama_url']}/api/chat",
+        json={"model": cfg["ollama_model"], "stream": False,
+              "messages": [{"role": "user", "content": EXTRACTION_PROMPT + text[:cfg["text_limit"]]}]},
         timeout=60)
     content = r.json()["message"]["content"]
     return _parse_ai_json(content)
 
 
-def _call_openai(text):
+def _call_openai(text, cfg):
     """Call OpenAI API."""
     import requests as _req
     r = _req.post("https://api.openai.com/v1/chat/completions",
-        headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
+        headers={"Authorization": f"Bearer {cfg['openai_api_key']}",
                  "Content-Type": "application/json"},
-        json={"model": "gpt-4o-mini",
-              "messages": [{"role": "user", "content": EXTRACTION_PROMPT + text[:6000]}],
+        json={"model": cfg["openai_model"],
+              "messages": [{"role": "user", "content": EXTRACTION_PROMPT + text[:cfg["text_limit"]]}],
               "max_tokens": 6000, "temperature": 0},
         timeout=30)
     content = r.json()["choices"][0]["message"]["content"]
     return _parse_ai_json(content)
 
 
-def _call_staik(text):
+def _call_staik(text, cfg):
     """Kall staik (OpenAI-kompatibel). Svensk datahemvist — data stannar i Sverige."""
     import requests as _req
-    r = _req.post(f"{STAIK_URL}/chat/completions",
-        headers={"Authorization": f"Bearer {STAIK_API_KEY}",
+    r = _req.post(f"{cfg['staik_url']}/chat/completions",
+        headers={"Authorization": f"Bearer {cfg['staik_api_key']}",
                  "Content-Type": "application/json"},
-        json={"model": STAIK_MODEL,
-              "messages": [{"role": "user", "content": EXTRACTION_PROMPT + text[:6000]}],
+        json={"model": cfg["staik_model"],
+              "messages": [{"role": "user", "content": EXTRACTION_PROMPT + text[:cfg["text_limit"]]}],
               "max_tokens": 8000, "temperature": 0,
               "response_format": {"type": "json_schema",
                                   "json_schema": {"name": "invoice",
                                                   "schema": INVOICE_JSON_SCHEMA}}},
-        timeout=STAIK_TIMEOUT)
+        timeout=cfg["staik_timeout"])
     j = r.json()
     choice = j["choices"][0]
     if choice.get("finish_reason") == "length":
-        logger.warning("AI-svaret fran %s klipptes av max_tokens.", STAIK_MODEL)
+        logger.warning("AI-svaret fran %s klipptes av max_tokens.", cfg["staik_model"])
     # staik faller TYST tillbaka till sin default-modell vid okant modellnamn, och
     # model-faltet speglar basmodellen aven for -thinking. Antalet tokens ar darfor
     # enda tillforlitliga tecknet pa att resonemanget faktiskt kordes.
@@ -712,6 +803,37 @@ def _strip_meta(data):
     return data
 
 
+# BAS-konton for EU-/importforvarv (se EXTRACTION_PROMPT ovan).
+EU_GOODS_ACCOUNT = "4515"    # Inköp av varor från annat EU-land, 25 %
+EU_SERVICES_ACCOUNT = "4535"  # Inköp av tjänster från annat EU-land, 25 %
+EX_GOODS_ACCOUNT = "4545"    # Import av varor, 25 % moms
+
+
+def remap_account_code(orig_code, is_eu_foreign=False, is_outside_eu=False,
+                       line_desc=""):
+    """Remappa inhemska BAS-inkopskonton till EU-reverse-charge-/importvarianter.
+
+    Varor 4000-4099 → 4515 (EU) / 4545 (utanfor EU). Tjanster 4500-4599 → 4535
+    (EU). Kostnadsklasser i 5xxx/6xxx (t.ex. 6231 molntjanster) lamnas ororda —
+    det ar kostnadskonton, inte "inkop fran EU"-konton; momssidorna hanteras av
+    skatten pa raden i stallet for kontot. line_desc finns for framtida
+    beskrivningsheuristik men anvands inte an.
+    """
+    if not is_eu_foreign and not is_outside_eu:
+        return orig_code
+    try:
+        code_int = int(str(orig_code or 0)[:4])
+    except (ValueError, TypeError):
+        return orig_code
+    if is_eu_foreign and 4000 <= code_int <= 4099:
+        return EU_GOODS_ACCOUNT
+    if is_outside_eu and 4000 <= code_int <= 4099:
+        return EX_GOODS_ACCOUNT
+    if is_eu_foreign and 4500 <= code_int <= 4599:
+        return EU_SERVICES_ACCOUNT
+    return orig_code
+
+
 def _num(v):
     try:
         return float(v)
@@ -719,7 +841,7 @@ def _num(v):
         return None
 
 
-def _ai_answer_problems(data, reference=None):
+def _ai_answer_problems(data, reference=None, config=None):
     """Tecken pa att svaret inte gar att lita pa. Tom lista = svaret ser rimligt ut.
 
     `reference` ar regex-extraktionen, dvs fakturans TRYCKTA belopp. Den ar det
@@ -734,11 +856,12 @@ def _ai_answer_problems(data, reference=None):
     """
     if not isinstance(data, dict) or not data:
         return ["tomt svar"]
+    cfg = _cfg(config)
     problems = []
     reference = reference or {}
 
     ctok = data.get("_completion_tokens")
-    if ctok is not None and ctok < STAIK_MIN_COMPLETION_TOKENS:
+    if ctok is not None and ctok < cfg["staik_min_completion_tokens"]:
         problems.append(f"bara {ctok} completion-tokens (resonemanget hoppades over)")
 
     # 1. Mot fakturans tryckta belopp
@@ -771,19 +894,21 @@ def _ai_answer_problems(data, reference=None):
     return problems
 
 
-def _call_provider(text):
-    if AI_PROVIDER == "staik":
-        return _call_staik(text)
-    if AI_PROVIDER == "venice":
-        return _call_venice(text)
-    elif AI_PROVIDER == "ollama":
-        return _call_ollama(text)
-    elif AI_PROVIDER == "openai":
-        return _call_openai(text)
+def _call_provider(text, config=None):
+    cfg = _cfg(config)
+    provider = cfg["provider"]
+    if provider == "staik":
+        return _call_staik(text, cfg)
+    if provider == "venice":
+        return _call_venice(text, cfg)
+    elif provider == "ollama":
+        return _call_ollama(text, cfg)
+    elif provider == "openai":
+        return _call_openai(text, cfg)
     return {}
 
 
-def _extract_fields_ai(text, reference=None):
+def _extract_fields_ai(text, reference=None, config=None):
     """AI validation: extract invoice fields using configured LLM provider.
 
     Kor om anropet en gang om svaret ser opalitligt ut. Reasoning-modeller hoppar
@@ -791,25 +916,27 @@ def _extract_fields_ai(text, reference=None):
     Det ar sporadiskt, sa en omkorning racker — men vi behaller det basta av de tva
     svaren i stallet for att blint ta det sista.
 
-    Omkörningen hoppas over om första anropet redan tog RETRY_SKIP_SECONDS —
+    Omkörningen hoppas over om första anropet redan tog retry_skip_seconds —
     anropet körs synkront inne i Odoo-transaktionen, och två stycken
     STAIK_TIMEOUT-långa anrop skulle blockera upload-vägen i minuter.
     """
     import time
 
+    cfg = _cfg(config)
+    provider = cfg["provider"]
     t0 = time.monotonic()
     try:
-        data = _call_provider(text)
+        data = _call_provider(text, cfg)
     except Exception as e:
-        logger.warning("AI extraction failed (%s): %s", AI_PROVIDER, e)
+        logger.warning("AI extraction failed (%s): %s", provider, e)
         return {}
     elapsed = time.monotonic() - t0
 
-    problems = _ai_answer_problems(data, reference)
+    problems = _ai_answer_problems(data, reference, cfg)
     if not problems:
         return _strip_meta(data)
 
-    if elapsed >= RETRY_SKIP_SECONDS:
+    if elapsed >= cfg["retry_skip_seconds"]:
         logger.warning(
             "AI-svaret ser opalitligt ut (%s) men forsta anropet tog %.0f s — "
             "hoppar over omkorningen for att inte blockera behandlingen. "
@@ -820,13 +947,13 @@ def _extract_fields_ai(text, reference=None):
     logger.warning("AI-svaret ser opalitligt ut (%s) — kor om en gang",
                    "; ".join(problems))
     try:
-        retry = _call_provider(text)
+        retry = _call_provider(text, cfg)
     except Exception as e:
         logger.warning("Omkorningen misslyckades (%s): %s — behaller forsta svaret",
-                       AI_PROVIDER, e)
+                       provider, e)
         return _strip_meta(data)
 
-    if not _ai_answer_problems(retry, reference):
+    if not _ai_answer_problems(retry, reference, cfg):
         logger.info("Omkorningen gav ett svar som gar ihop — anvander det")
         return _strip_meta(retry)
 
@@ -835,7 +962,7 @@ def _extract_fields_ai(text, reference=None):
     return _strip_meta(data)
 
 
-def extract_invoice_data(pdf_b64_or_bytes):
+def extract_invoice_data(pdf_b64_or_bytes, config=None):
     """Main entry point: extract invoice data from a PDF.
 
     Uses regex first, then AI to validate and fill gaps.
@@ -843,6 +970,9 @@ def extract_invoice_data(pdf_b64_or_bytes):
 
     Args:
         pdf_b64_or_bytes: Either base64-encoded string or raw bytes
+        config: optional per-run config dict (see default_config); provider
+            credentials, own-company guard and OCR limits. Falls back to the
+            module globals (env-read defaults) when omitted.
 
     Returns:
         dict with extracted fields + 'raw_text' key
@@ -852,9 +982,10 @@ def extract_invoice_data(pdf_b64_or_bytes):
     else:
         pdf_bytes = pdf_b64_or_bytes
 
-    text = extract_text(pdf_bytes)
-    regex_fields = extract_fields(text)
-    ai_fields = _extract_fields_ai(text, reference=regex_fields)
+    cfg = _cfg(config)
+    text = extract_text(pdf_bytes, cfg)
+    regex_fields = extract_fields(text, cfg)
+    ai_fields = _extract_fields_ai(text, reference=regex_fields, config=cfg)
 
     # Merge. Regex vinner pa SIFFROR och identifierare, AI pa beskrivande falt.
     #
