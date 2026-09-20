@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="hr_expense_view_form_receipt_ocr" model="ir.ui.view">
+        <field name="name">hr.expense.form.receipt.ocr</field>
+        <field name="model">hr.expense</field>
+        <field name="inherit_id" ref="hr_expense.hr_expense_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//header" position="inside">
+                <button name="action_read_receipt" type="object" string="Läs kvitto (OCR)"
+                        class="btn-secondary" invisible="state != 'draft'"
+                        help="Läser bilagan med tesseract + AI och fyller tomma fält (belopp, datum, kategori)."/>
+            </xpath>
+        </field>
+    </record>
+</odoo>
