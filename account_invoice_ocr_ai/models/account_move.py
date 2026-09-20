@@ -12,7 +12,7 @@ import re
 
 from markupsafe import Markup
 
-from odoo import _, fields, models
+from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 
 logger = logging.getLogger(__name__)
@@ -81,6 +81,38 @@ class AccountMove(models.Model):
     # OCR + AI fill
     # ------------------------------------------------------------------
 
+    @api.model
+    def _invoice_ocr_apply_settings(self, company=None):
+        """Push Odoo's settings into the library module and return it.
+
+        Shared with hr_expense_ocr_ai. System parameters win over environment defaults; the
+        receiving company's name and VAT number go along so they are never taken for the
+        supplier.
+        """
+        from ..lib import invoice_ocr
+
+        ICP = self.env["ir.config_parameter"].sudo()
+
+        def param(key, default):
+            return ICP.get_param(key) or default
+
+        invoice_ocr.AI_PROVIDER = param("invoice_ocr.provider", invoice_ocr.AI_PROVIDER)
+        invoice_ocr.STAIK_API_KEY = param("invoice_ocr.staik_api_key", invoice_ocr.STAIK_API_KEY)
+        invoice_ocr.STAIK_MODEL = param("invoice_ocr.staik_model", invoice_ocr.STAIK_MODEL)
+        invoice_ocr.VENICE_API_KEY = param("invoice_ocr.venice_api_key", invoice_ocr.VENICE_API_KEY)
+        invoice_ocr.VENICE_MODEL = param("invoice_ocr.venice_model", invoice_ocr.VENICE_MODEL)
+        invoice_ocr.OPENAI_API_KEY = param("invoice_ocr.openai_api_key", invoice_ocr.OPENAI_API_KEY)
+        invoice_ocr.OPENAI_MODEL = param("invoice_ocr.openai_model", invoice_ocr.OPENAI_MODEL)
+        invoice_ocr.AI_BASE_URL = param("invoice_ocr.base_url", invoice_ocr.AI_BASE_URL)
+        invoice_ocr.AI_API_KEY = param("invoice_ocr.api_key", invoice_ocr.AI_API_KEY)
+        invoice_ocr.AI_MODEL = param("invoice_ocr.model", invoice_ocr.AI_MODEL)
+        invoice_ocr.OLLAMA_URL = param("invoice_ocr.ollama_url", invoice_ocr.OLLAMA_URL)
+        invoice_ocr.OLLAMA_MODEL = param("invoice_ocr.ollama_model", invoice_ocr.OLLAMA_MODEL)
+        company = company or self.env.company
+        invoice_ocr.OWN_COMPANY = (company.name or "").strip().lower()
+        invoice_ocr.OWN_VAT_NUMBERS = {v.replace(" ", "").upper() for v in (company.vat, company.company_registry) if v}
+        return invoice_ocr
+
     def _invoice_ocr_extend(self, move, files_data):
         ICP = self.env["ir.config_parameter"].sudo()
         if ICP.get_param("invoice_ocr.enabled", "True").lower() in ("false", "0", ""):
@@ -99,28 +131,7 @@ class AccountMove(models.Model):
         if not pdf_data:
             return
 
-        # Lazy-import to keep module loadable when libs missing
-        from ..lib import invoice_ocr
-        # Inject Venice creds from system params
-        invoice_ocr.VENICE_API_KEY = (
-            ICP.get_param("invoice_ocr.venice_api_key") or invoice_ocr.VENICE_API_KEY
-        )
-        invoice_ocr.VENICE_MODEL = (
-            ICP.get_param("invoice_ocr.venice_model") or invoice_ocr.VENICE_MODEL
-        )
-        invoice_ocr.AI_PROVIDER = (
-            ICP.get_param("invoice_ocr.provider") or invoice_ocr.AI_PROVIDER
-        )
-        invoice_ocr.STAIK_API_KEY = (
-            ICP.get_param("invoice_ocr.staik_api_key") or invoice_ocr.STAIK_API_KEY
-        )
-        invoice_ocr.STAIK_MODEL = (
-            ICP.get_param("invoice_ocr.staik_model") or invoice_ocr.STAIK_MODEL
-        )
-        # Never mistake the receiving company for the supplier
-        company = move.company_id or self.env.company
-        invoice_ocr.OWN_COMPANY = (company.name or "").strip().lower()
-        invoice_ocr.OWN_VAT_NUMBERS = {v.replace(" ", "").upper() for v in (company.vat, company.company_registry) if v}
+        invoice_ocr = self._invoice_ocr_apply_settings(move.company_id)
 
         try:
             data = invoice_ocr.extract_invoice_data(pdf_data)

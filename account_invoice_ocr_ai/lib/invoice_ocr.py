@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import time
 
 import pdfplumber
 
@@ -435,6 +436,7 @@ VENICE_MODEL = os.environ.get("VENICE_MODEL", "google-gemma-3-27b-it")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 STAIK_URL = os.environ.get("STAIK_URL", "https://api.staik.se/v1")
 STAIK_API_KEY = os.environ.get("STAIK_API_KEY", "")
 # Reasoning-varianten. Basmodellen svarar direkt utan att rakna och far da fel pa
@@ -444,6 +446,16 @@ STAIK_MODEL = os.environ.get("STAIK_MODEL", "qwen3.6:35b-a3b-thinking")
 # Samtliga korrekta svar i matningen lag pa 3400-7200 completion-tokens, de tva
 # felaktiga pa 462 och 649.
 STAIK_MIN_COMPLETION_TOKENS = int(os.environ.get("STAIK_MIN_COMPLETION_TOKENS", "1000"))
+
+# Any other provider that speaks OpenAI's /chat/completions (Mistral, Groq, OpenRouter, Together,
+# DeepSeek, Azure OpenAI, Anthropic's compatibility layer, a local vLLM or LM Studio, ...):
+# provider "openai_compatible" with a base URL, key and model. Odoo's settings page fills these.
+AI_BASE_URL = os.environ.get("INVOICE_AI_BASE_URL", "")
+AI_API_KEY = os.environ.get("INVOICE_AI_API_KEY", "")
+AI_MODEL = os.environ.get("INVOICE_AI_MODEL", "")
+AI_TIMEOUT = int(os.environ.get("INVOICE_AI_TIMEOUT", "300"))
+VENICE_URL = "https://api.venice.ai/api/v1"
+OPENAI_URL = "https://api.openai.com/v1"
 
 # The receiving company, so its own name/VAT number printed on the invoice is never taken
 # for the supplier. The Odoo model sets these from res.company before each run; for
@@ -582,77 +594,120 @@ Invoice text:
 """
 
 
-def _call_venice(text):
-    """Call Venice.ai API (OpenAI-compatible)."""
-    import requests as _req
-    r = _req.post("https://api.venice.ai/api/v1/chat/completions",
-        headers={"Authorization": f"Bearer {VENICE_API_KEY}",
-                 "Content-Type": "application/json"},
-        json={"model": VENICE_MODEL,
-              "messages": [{"role": "user", "content": EXTRACTION_PROMPT + text[:6000]}],
-              "max_tokens": 6000, "temperature": 0},
-        timeout=120)
-    choice = r.json()["choices"][0]
-    if choice.get("finish_reason") == "length":
-        logger.warning(
-            "AI-svaret fran %s klipptes av max_tokens — JSON:en blir ofullstandig "
-            "och faltdata gar forlorad. Hoj max_tokens.", VENICE_MODEL)
-    content = choice["message"]["content"]
-    return _parse_ai_json(content)
+def _post(url, **kwargs):
+    """Single seam for HTTP so tests can fake the provider."""
+    import requests
+
+    return requests.post(url, **kwargs)
 
 
-def _call_ollama(text):
-    """Call local Ollama instance."""
-    import requests as _req
-    r = _req.post(f"{OLLAMA_URL}/api/chat",
-        json={"model": OLLAMA_MODEL, "stream": False,
-              "messages": [{"role": "user", "content": EXTRACTION_PROMPT + text[:6000]}]},
-        timeout=60)
-    content = r.json()["message"]["content"]
-    return _parse_ai_json(content)
+def resolve_endpoint():
+    """(base_url, api_key, model) for the configured OpenAI-compatible provider.
+
+    Presets carry their URL and default model; "openai_compatible" takes all three from
+    AI_BASE_URL / AI_API_KEY / AI_MODEL. Ollama is not an OpenAI endpoint (see chat_json).
+    """
+    p = (AI_PROVIDER or "").strip().lower()
+    if p == "staik":
+        base, key, model = STAIK_URL, STAIK_API_KEY, STAIK_MODEL
+    elif p == "venice":
+        base, key, model = VENICE_URL, VENICE_API_KEY, VENICE_MODEL
+    elif p == "openai":
+        base, key, model = OPENAI_URL, OPENAI_API_KEY, OPENAI_MODEL
+    elif p in ("openai_compatible", "custom"):
+        base, key, model = AI_BASE_URL, AI_API_KEY, AI_MODEL
+    else:
+        raise ValueError(f"unknown AI provider {AI_PROVIDER!r}")
+    base = (base or "").rstrip("/")
+    if not base:
+        raise ValueError(f"AI provider {p!r}: no base URL configured")
+    if not model:
+        raise ValueError(f"AI provider {p!r}: no model configured")
+    return base, key or "", model
 
 
-def _call_openai(text):
-    """Call OpenAI API."""
-    import requests as _req
-    r = _req.post("https://api.openai.com/v1/chat/completions",
-        headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
-                 "Content-Type": "application/json"},
-        json={"model": "gpt-4o-mini",
-              "messages": [{"role": "user", "content": EXTRACTION_PROMPT + text[:6000]}],
-              "max_tokens": 6000, "temperature": 0},
-        timeout=30)
-    content = r.json()["choices"][0]["message"]["content"]
-    return _parse_ai_json(content)
+def chat_json(prompt, text, schema, schema_name, max_tokens=8000, max_chars=6000, timeout=None):
+    """One structured-output call to the configured provider.
 
-
-def _call_staik(text):
-    """Kall staik (OpenAI-kompatibel). Svensk datahemvist — data stannar i Sverige."""
-    import requests as _req
-    r = _req.post(f"{STAIK_URL}/chat/completions",
-        headers={"Authorization": f"Bearer {STAIK_API_KEY}",
-                 "Content-Type": "application/json"},
-        json={"model": STAIK_MODEL,
-              "messages": [{"role": "user", "content": EXTRACTION_PROMPT + text[:6000]}],
-              "max_tokens": 8000, "temperature": 0,
-              "response_format": {"type": "json_schema",
-                                  "json_schema": {"name": "invoice",
-                                                  "schema": INVOICE_JSON_SCHEMA}}},
-        timeout=300)
+    Returns (data, meta): `data` is the parsed JSON dict ({} when unparseable), `meta` has
+    served_model, completion_tokens and finish_reason. Handles the provider quirks in one
+    place: a 429 is retried once after 15 s; a 400 on `response_format` (provider without
+    JSON-schema support) is retried as a plain completion; Ollama uses its own API.
+    """
+    timeout = timeout or AI_TIMEOUT
+    if (AI_PROVIDER or "").lower() == "ollama":
+        return _ollama_chat_json(prompt, text, schema, max_chars, timeout)
+    base, key, model = resolve_endpoint()
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt + text[:max_chars]}],
+        "max_tokens": max_tokens,
+        "temperature": 0,
+        "response_format": {"type": "json_schema", "json_schema": {"name": schema_name, "schema": schema}},
+    }
+    url = f"{base}/chat/completions"
+    r = _post(url, headers=headers, json=body, timeout=timeout)
+    if r.status_code == 429:
+        time.sleep(15)
+        r = _post(url, headers=headers, json=body, timeout=timeout)
+    if r.status_code == 400 and "response_format" in body:
+        logger.info("%s rejected response_format — retrying without JSON schema", base)
+        body = {k: v for k, v in body.items() if k != "response_format"}
+        r = _post(url, headers=headers, json=body, timeout=timeout)
+    r.raise_for_status()
     j = r.json()
     choice = j["choices"][0]
-    if choice.get("finish_reason") == "length":
-        logger.warning("AI-svaret fran %s klipptes av max_tokens.", STAIK_MODEL)
-    # staik faller TYST tillbaka till sin default-modell vid okant modellnamn, och
-    # model-faltet speglar basmodellen aven for -thinking. Antalet tokens ar darfor
-    # enda tillforlitliga tecknet pa att resonemanget faktiskt kordes.
-    served = j.get("model")
-    ctok = (j.get("usage") or {}).get("completion_tokens")
-    data = _parse_ai_json(choice["message"]["content"])
-    if isinstance(data, dict) and data:
-        data["_completion_tokens"] = ctok
-        data["_served_model"] = served
-    return data
+    finish = choice.get("finish_reason")
+    if finish == "length":
+        logger.warning("Answer from %s was cut by max_tokens=%s; the JSON is incomplete.", model, max_tokens)
+    meta = {
+        "served_model": j.get("model"),
+        "completion_tokens": (j.get("usage") or {}).get("completion_tokens"),
+        "finish_reason": finish,
+        "model": model,
+    }
+    return _parse_ai_json(choice["message"]["content"] or ""), meta
+
+
+def _ollama_chat_json(prompt, text, schema, max_chars, timeout):
+    """Ollama's native API; `format` takes a JSON schema since 0.5."""
+    r = _post(
+        f"{OLLAMA_URL.rstrip('/')}/api/chat",
+        json={
+            "model": OLLAMA_MODEL, "stream": False, "format": schema or "json",
+            "options": {"temperature": 0},
+            "messages": [{"role": "user", "content": prompt + text[:max_chars]}],
+        },
+        timeout=timeout,
+    )
+    r.raise_for_status()
+    j = r.json()
+    meta = {"served_model": j.get("model"), "completion_tokens": j.get("eval_count"),
+            "finish_reason": j.get("done_reason"), "model": OLLAMA_MODEL}
+    return _parse_ai_json((j.get("message") or {}).get("content") or ""), meta
+
+
+def verify_provider():
+    """Cheap round-trip for the settings page: which model actually answers, and how fast.
+
+    Exposes staik's silent fallback (an unknown model name is served by the default model,
+    visible only in `served_model`) and any URL/key mistake before a real invoice is sent.
+    """
+    t0 = time.time()
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+    try:
+        data, meta = chat_json('Reply with the JSON object {"ok": true} and nothing else.\n', "", schema, "ping",
+                               max_tokens=300, max_chars=0, timeout=60)
+    except Exception as e:  # noqa: BLE001 — the whole point is to report the failure
+        return {"ok": False, "provider": AI_PROVIDER, "error": str(e)[:300], "latency_s": round(time.time() - t0, 1)}
+    return {
+        "ok": bool(isinstance(data, dict) and data.get("ok") is True),
+        "provider": AI_PROVIDER, "model_requested": meta.get("model"), "model_served": meta.get("served_model"),
+        "completion_tokens": meta.get("completion_tokens"), "latency_s": round(time.time() - t0, 1),
+    }
 
 
 def _parse_ai_json(content):
@@ -729,8 +784,11 @@ def _ai_answer_problems(data, reference=None):
     problems = []
     reference = reference or {}
 
+    # Only a reasoning model is expected to spend tokens before answering; a plain model
+    # answering in 500 tokens is normal, a "-thinking" model doing so skipped its reasoning.
     ctok = data.get("_completion_tokens")
-    if ctok is not None and ctok < STAIK_MIN_COMPLETION_TOKENS:
+    model_name = str(data.get("_served_model") or data.get("_model") or "").lower()
+    if ctok is not None and ctok < STAIK_MIN_COMPLETION_TOKENS and ("think" in model_name or "reason" in model_name):
         problems.append(f"bara {ctok} completion-tokens (resonemanget hoppades over)")
 
     # 1. Mot fakturans tryckta belopp
@@ -764,15 +822,13 @@ def _ai_answer_problems(data, reference=None):
 
 
 def _call_provider(text):
-    if AI_PROVIDER == "staik":
-        return _call_staik(text)
-    if AI_PROVIDER == "venice":
-        return _call_venice(text)
-    elif AI_PROVIDER == "ollama":
-        return _call_ollama(text)
-    elif AI_PROVIDER == "openai":
-        return _call_openai(text)
-    return {}
+    data, meta = chat_json(EXTRACTION_PROMPT, text, INVOICE_JSON_SCHEMA, "invoice", max_tokens=8000, max_chars=6000)
+    if isinstance(data, dict) and data:
+        # Diagnostics for _ai_answer_problems; stripped before the data reaches the invoice.
+        data["_completion_tokens"] = meta.get("completion_tokens")
+        data["_served_model"] = meta.get("served_model")
+        data["_model"] = meta.get("model")
+    return data
 
 
 def _extract_fields_ai(text, reference=None):

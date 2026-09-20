@@ -13,7 +13,6 @@ import contextlib
 import io
 import logging
 import re
-import time
 from datetime import date
 
 try:  # i Odoo: fakturamodulens bibliotek
@@ -135,43 +134,12 @@ def build_prompt(categories):
     return PROMPT.replace("{categories}", "\n".join(rows) or "  (no categories available)")
 
 
-def _provider_endpoint():
-    p = inv.AI_PROVIDER
-    if p == "staik":
-        return f"{inv.STAIK_URL}/chat/completions", inv.STAIK_API_KEY, inv.STAIK_MODEL
-    if p == "venice":
-        return "https://api.venice.ai/api/v1/chat/completions", inv.VENICE_API_KEY, inv.VENICE_MODEL
-    if p == "openai":
-        return "https://api.openai.com/v1/chat/completions", inv.OPENAI_API_KEY, "gpt-4o-mini"
-    raise RuntimeError(f"AI provider {p!r} is not supported for receipts")
-
-
 def _chat_json(prompt, text):
-    import requests
-    url, key, model = _provider_endpoint()
-    body = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt + text[:4000]}],
-        "max_tokens": 4000, "temperature": 0,
-        "response_format": {"type": "json_schema", "json_schema": {"name": "receipt", "schema": RECEIPT_SCHEMA}},
-    }
-    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-    r = requests.post(url, headers=headers, json=body, timeout=180)
-    if r.status_code == 400 and "response_format" in body:
-        body.pop("response_format")
-        r = requests.post(url, headers=headers, json=body, timeout=180)
-    if r.status_code == 429:
-        # staik svarar 429 vid flera anrop tätt inpå varandra (t.ex. flera kvitton i samma
-        # mailhämtning). Ett omförsök efter en kort paus räcker; misslyckas det tar regex över.
-        time.sleep(15)
-        r = requests.post(url, headers=headers, json=body, timeout=180)
-    r.raise_for_status()
-    j = r.json()
-    choice = j["choices"][0]
-    data = inv._parse_ai_json(choice["message"]["content"])
+    """Structured call through the invoice library: same provider, keys, retries and fallbacks."""
+    data, meta = inv.chat_json(prompt, text, RECEIPT_SCHEMA, "receipt", max_tokens=4000, max_chars=4000, timeout=180)
     if isinstance(data, dict):
-        data["_served_model"] = j.get("model")
-        data["_completion_tokens"] = (j.get("usage") or {}).get("completion_tokens")
+        data["_served_model"] = meta.get("served_model")
+        data["_completion_tokens"] = meta.get("completion_tokens")
     return data or {}
 
 
