@@ -387,6 +387,15 @@ ORG_VALUE = r"(\d{6}[\s-]?\d{4})"
 # Svenskt momsreg.nr: "Momsreg.nr.: SE556000000001", "Momsregistreringsnummer SE…"
 SE_VAT_LABEL = r"(?:Momsreg(?:istrerings)?\.?\s*(?:nr|nummer)|VAT\s*(?:no|number|nr|id))"
 
+# Words in a company name that say nothing about which company it is: legal forms,
+# countries, generic business words. Shared by the bank-line matching in the Odoo model
+# and the receipt module's merchant check.
+NAME_STOPWORDS = frozenset({
+    "ab", "aktiebolag", "publ", "bank", "banken", "sverige", "sweden", "svenska",
+    "the", "och", "and", "ltd", "limited", "inc", "llc", "gmbh", "group", "services",
+    "company", "international", "nordic", "scandinavia",
+})
+
 _LEGAL_SUFFIXES = re.compile(
     r"\b(?:ab|aktiebolag|\(publ\)|publ|ltd|limited|gmbh|as|a/s|oy|inc|llc|bv|sa|sarl)\b\.?",
     re.IGNORECASE)

@@ -31,12 +31,14 @@ note, so the reviewer sees the model's reading next to the receipt.
 Measured on real receipts before release:
 
 - The merchant name must occur in the OCR text; the model otherwise guesses a
-  chain from the products.
+  chain from the products. Its distinctive words (not legal forms, countries or
+  words like "store") must be printed together, as whole words.
 - The amount must occur in the text.
 - Confidence below 0.6 fills nothing (typically a downscaled, unreadable photo
   that was read as 339 instead of 389).
 - The category must be one of the company's expensable products. Their
-  *purchase description* is sent as a hint, so describe your categories in Odoo
+  *purchase description*, or else the category's *Guideline* as plain text (at
+  most 200 characters), is sent as a hint, so describe your categories in Odoo
   ("fuel, oil, tools for chainsaw and mower …") for better matches.
 
 Photos are EXIF-rotated, converted to greyscale, upscaled to 2000 px and OCR'd

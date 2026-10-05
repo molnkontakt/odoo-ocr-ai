@@ -169,3 +169,21 @@ def test_bad_ai_date_keeps_the_regex_date(monkeypatch):
     out = r.extract_receipt_data(b"x", "image/jpeg", "receipt.jpg")
     assert out["fields"]["date"] == "2026-09-17"
     assert any("17/09/26" in n for n in out["notes"])
+
+
+# ── Merchant guard: distinctive words, whole words, in order (#36.8) ──────────
+
+def test_merchant_guard_needs_the_distinctive_words():
+    m = r._merchant_in_text
+    assert not m("Chain A Sverige", "Chain B Sverige AB\nKvitto 1")
+    assert m("Chain A Sverige", "CHAIN A SVERIGE AB\nKvitto 1")
+    assert m("Chain A", "Chain A Sverige AB")
+    assert not m("Foo Maxi", "maximal discount today")
+    assert m("Foo Maxi", "FOO MAXI\nKvitto")
+    assert m("X&Y", "X&Y\nKvitto")
+    assert m("X&Y", "X & Y Store")
+    assert not m("X&Y", "Xavier Young")
+    assert m("Foo Sverige Bar", "FOO SVERIGE BAR AB")
+    assert m("Sverige AB", "Kvitto Sverige AB")       # generic words only: compared whole
+    assert not m("Sverige AB", "Kvitto Sverige")
+    assert not m("", TEXT) and not m(None, TEXT) and not m("&", TEXT)

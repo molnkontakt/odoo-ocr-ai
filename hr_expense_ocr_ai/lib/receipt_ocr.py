@@ -262,13 +262,35 @@ def _clean(data, categories):
 MIN_CONFIDENCE = 0.6
 
 
+# Words on receipts that do not tell one shop from another (besides legal forms etc.)
+MERCHANT_STOPWORDS = inv.NAME_STOPWORDS | {
+    "hb", "kb", "store", "stores", "shop", "butik", "butiken", "station", "city", "center",
+    "centre", "centrum", "market", "marknad", "handel", "sweden",
+}
+
+
+def _name_tokens(text):
+    return re.findall(r"[^\W_]+", str(text or "").lower())
+
+
 def _merchant_in_text(merchant, text):
-    """Modellen gissar gärna en kedja utifrån varorna. Namnet måste stå i OCR-texten."""
-    if not merchant:
+    """Modellen gissar gärna en kedja utifrån varorna. Namnet måste stå i OCR-texten.
+
+    The merchant's distinctive words (not legal forms, countries or words like 'store')
+    must be printed together, as whole words and in the same order: 'Chain A Sverige' is
+    not found on a 'Chain B Sverige AB' receipt and 'Foo Maxi' not in 'maximal', while
+    'X&Y' is found as 'X&Y' or 'X & Y'. A name of generic words only is compared whole.
+    """
+    words = _name_tokens(merchant)
+    if not words:
         return False
-    words = [w for w in re.split(r"[^0-9A-Za-zÅÄÖåäö]+", merchant) if len(w) >= 3]
-    low = text.lower()
-    return any(w.lower() in low for w in words)
+    distinctive = [w for w in words if w not in MERCHANT_STOPWORDS]
+    if distinctive:
+        words, haystack = distinctive, [w for w in _name_tokens(text) if w not in MERCHANT_STOPWORDS]
+    else:
+        haystack = _name_tokens(text)
+    n = len(words)
+    return any(haystack[i:i + n] == words for i in range(len(haystack) - n + 1))
 
 
 def _total_in_text(total, text):

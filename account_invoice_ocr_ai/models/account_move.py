@@ -30,14 +30,6 @@ ACCOUNT_FALLBACKS = {
 }
 
 
-# Ord i leverantörsnamn som inte säger något om vem bankraden gäller
-_NAME_STOPWORDS = {
-    "ab", "aktiebolag", "publ", "bank", "banken", "sverige", "sweden", "svenska",
-    "the", "och", "and", "ltd", "limited", "inc", "llc", "gmbh", "group", "services",
-    "company", "international", "nordic", "scandinavia",
-}
-
-
 class AccountMove(models.Model):
     _inherit = "account.move"
 
@@ -1042,10 +1034,14 @@ class AccountMove(models.Model):
 
     @staticmethod
     def _ocr_name_tokens(*names):
+        # Ord i leverantörsnamn som inte säger något om vem bankraden gäller
+        # (invoice_ocr.NAME_STOPWORDS, shared with the receipt module's merchant check)
+        from ..lib import invoice_ocr
+
         tokens = set()
         for n in names:
             for t in re.split(r"[\s,.()/&-]+", str(n or "").lower()):
-                if len(t) >= 3 and t not in _NAME_STOPWORDS and not t.isdigit():
+                if len(t) >= 3 and t not in invoice_ocr.NAME_STOPWORDS and not t.isdigit():
                     tokens.add(t)
         return tokens
 

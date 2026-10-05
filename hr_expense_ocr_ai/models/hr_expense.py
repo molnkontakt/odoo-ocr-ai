@@ -5,8 +5,12 @@ from markupsafe import Markup, escape
 
 from odoo import _, api, fields, models, modules
 from odoo.exceptions import UserError
+from odoo.tools import html2plaintext, is_html_empty
 
 logger = logging.getLogger(__name__)
+
+# Longest category hint sent to the model (characters)
+HINT_LIMIT = 200
 
 VIEWABLE = ("image/jpeg", "image/jpg", "image/png", "image/webp", "image/tiff", "image/bmp", "application/pdf")
 
@@ -27,8 +31,10 @@ class HrExpense(models.Model):
         return self.env["account.move"]._invoice_ocr_config(self.company_id)
 
     def _expense_ocr_categories(self):
-        """[(kod, namn, hint)] + kod→produkt. Hinten är produktens inköpsbeskrivning, så kassören
-        kan styra kategoriseringen genom att beskriva kategorierna i Odoo."""
+        """[(kod, namn, hint)] + kod→produkt. Hinten är produktens inköpsbeskrivning, eller
+        kategorins "Guideline" (product description, an HTML field) as plain text, so the
+        administrator can steer the categorisation by describing the categories in Odoo.
+        Empty editor content ('<p><br></p>') is no hint; a hint is capped at HINT_LIMIT."""
         self.ensure_one()
         products = self.env["product.product"].sudo().search([
             ("can_be_expensed", "=", True), ("company_id", "in", [False, self.company_id.id]),
@@ -36,7 +42,10 @@ class HrExpense(models.Model):
         cats, by_code = [], {}
         for p in products:
             code = p.default_code or f"P{p.id}"
-            hint = (p.description_purchase or p.description or "").strip().replace("\n", " ")
+            hint = p.description_purchase or ""
+            if not hint.strip() and not is_html_empty(p.description):
+                hint = html2plaintext(p.description)
+            hint = " ".join(hint.split())[:HINT_LIMIT]
             cats.append((code, p.name, hint))
             by_code[code] = p
         return cats, by_code
