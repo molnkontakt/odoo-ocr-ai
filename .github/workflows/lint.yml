@@ -64,3 +64,51 @@ jobs:
       - name: Library unit tests (no Odoo needed)
         run: |
           if [ -d tests ]; then pytest -q; else echo "no tests yet"; fi
+
+  # The modules' own Odoo tests (account_invoice_ocr_ai/tests, hr_expense_ocr_ai/tests):
+  # install both modules in a fresh database on Odoo 19 and run their tests.
+  odoo:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: odoo
+          POSTGRES_PASSWORD: odoo
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U odoo"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Odoo 19.0 (shallow clone)
+        run: git clone --quiet --depth 1 --branch 19.0 --single-branch https://github.com/odoo/odoo.git "$RUNNER_TEMP/odoo"
+      - name: Python requirements
+        run: |
+          # python-ldap needs the LDAP headers and only serves auth_ldap; psycopg2 as a wheel.
+          grep -v '^python-ldap' "$RUNNER_TEMP/odoo/requirements.txt" \
+            | sed 's/^psycopg2==/psycopg2-binary==/' > "$RUNNER_TEMP/requirements.txt"
+          pip install -q -r "$RUNNER_TEMP/requirements.txt" pdfplumber pytesseract pypdfium2
+      - name: Install the modules and run their tests
+        run: |
+          set -o pipefail
+          python "$RUNNER_TEMP/odoo/odoo-bin" \
+            --addons-path="$RUNNER_TEMP/odoo/addons,$RUNNER_TEMP/odoo/odoo/addons,$GITHUB_WORKSPACE" \
+            --db_host=localhost --db_port=5432 --db_user=odoo --db_password=odoo \
+            -d ocrtest -i account_invoice_ocr_ai,hr_expense_ocr_ai \
+            --test-enable --test-tags /account_invoice_ocr_ai,/hr_expense_ocr_ai \
+            --stop-after-init --log-level=test 2>&1 | tee "$RUNNER_TEMP/odoo.log" || true
+          result=$(grep -E "odoo\.tests\.result: .* tests when loading database" "$RUNNER_TEMP/odoo.log" | tail -1)
+          echo "::notice::${result:-no test result line}"
+          # "0 failed, 0 error(s) of N tests when loading database 'ocrtest'", N > 0
+          echo "$result" | grep -qE "tests\.result: 0 failed, 0 error\(s\) of [1-9][0-9]* tests" || {
+            grep -E " (ERROR|CRITICAL) | (FAIL|ERROR): " "$RUNNER_TEMP/odoo.log" | head -50
+            exit 1
+          }
