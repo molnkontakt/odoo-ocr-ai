@@ -244,3 +244,27 @@ class TestOcrVat(OcrBillCase):
             {"description": "Cloud", "amount": 1000.0, "vat_rate": 0, "account_code": "6540"},
         ], subtotal=1000.0, total_amount=1000.4)
         self._assert_tax(move.invoice_line_ids, "purchase_services_tax_25_NEC")
+
+    # -- the totals check (#25) ----------------------------------------------------------
+
+    PRINTED = TEXT + "Netto 1 000,00\nMoms 250,00\nAtt betala 1 250,00\n"
+
+    def test_lines_that_do_not_add_up_are_flagged(self):
+        """A line the AI dropped: net, VAT and total are compared with the printed amounts."""
+        move = self._bill(self.se_vendor, [
+            {"description": "Support", "amount": 800.0, "vat_rate": 25, "account_code": "6540"},
+        ], text=self.PRINTED)
+        self.assertAlmostEqual(move.amount_total, 1000.0)
+        bodies = self._bodies(move)
+        self.assertIn("OCR: the lines do not match the bill", bodies)
+        self.assertRegex(bodies, r"net [^ ]*800\.00[^ ]* against the bill's [^ ]*1,000\.00")
+        self.assertRegex(bodies, r"VAT [^ ]*200\.00[^ ]* against the bill's [^ ]*250\.00")
+        self.assertRegex(bodies, r"total [^ ]*1,000\.00[^ ]* against the bill's [^ ]*1,250\.00")
+
+    def test_lines_that_add_up_are_not_flagged(self):
+        move = self._bill(self.se_vendor, [
+            {"description": "Support", "amount": 600.0, "vat_rate": 25, "account_code": "6540"},
+            {"description": "Hardware", "amount": 400.0, "vat_rate": 25, "account_code": "4000"},
+        ], text=self.PRINTED)
+        self.assertAlmostEqual(move.amount_total, 1250.0)
+        self.assertNotIn("the lines do not match the bill", self._bodies(move))
