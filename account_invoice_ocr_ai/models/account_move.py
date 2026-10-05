@@ -101,22 +101,21 @@ class AccountMove(models.Model):
         # CE and gives res = None, so OCR runs as before.
         if res:
             return res
+        filled = False
         for move in self:
             if move.move_type != "in_invoice":
                 continue
             if move.state != "draft":
                 continue
-            try:
-                self._invoice_ocr_extend(move, files_data)
-                # No commit here: _extend_with_attachments runs inside the create
-                # transaction, so committing would also flush super()'s work and
-                # the create itself. Durability across moves is only needed on
-                # the bulk server-action path (data/server_actions.xml), which
-                # commits per move on purpose.
-            except Exception as e:
-                logger.warning("OCR auto-fill failed for move %s: %s", move.id, e)
-
-        return res
+            # No commit here: _extend_with_attachments runs inside the create
+            # transaction, so committing would also flush super()'s work and the
+            # create itself. A failure rolls back only the OCR's own writes (savepoint).
+            result = self._invoice_ocr_extend_safe(move, files_data)
+            filled = filled or result["status"] == "filled"
+        # Core's _create_records_from_attachments posts "There was an error while
+        # importing the bill" when this returns a falsy value: only say "imported"
+        # when OCR actually filled the bill.
+        return True if filled else res
 
     # ------------------------------------------------------------------
     # OCR + AI fill
@@ -158,10 +157,44 @@ class AccountMove(models.Model):
             "account_keys": cfg.get("own_account_keys") or set(),
         }
 
+    @staticmethod
+    def _ocr_result(status, reason=None):
+        """Outcome of one OCR run: status "filled", "skipped" or "failed", and why."""
+        return {"status": status, "reason": reason or ""}
+
+    def _invoice_ocr_extend_safe(self, move, files_data):
+        """_invoice_ocr_extend in a savepoint: a failure rolls back only the OCR's writes.
+
+        An exception (an SQL error included) no longer leaves half-written partners or
+        lines behind, nor an aborted transaction for the caller. A failed run is noted in
+        the bill's chatter. Returns the run's outcome (see _ocr_result).
+        """
+        # The caller's own pending writes are flushed outside the try: an error there
+        # belongs to the caller (and Odoo's retry loop), it must not be swallowed here.
+        self.env.flush_all()
+        try:
+            with self.env.cr.savepoint():
+                result = self._invoice_ocr_extend(move, files_data) or self._ocr_result("filled")
+        except Exception as e:  # noqa: BLE001 — OCR must never break the upload
+            logger.warning("OCR failed for move %s", move.id, exc_info=True)
+            result = self._ocr_result("failed", str(e)[:300] or type(e).__name__)
+        if result["status"] == "failed":
+            move.message_post(
+                body=_("OCR could not fill in this bill: %(reason)s. Fill it in by hand "
+                       "or run OCR again.", reason=result["reason"]),
+                message_type="comment",
+            )
+        return result
+
     def _invoice_ocr_extend(self, move, files_data):
+        """Read the bill's PDF with OCR + AI and pre-fill it.
+
+        Returns the outcome (see _ocr_result): "filled", or "skipped"/"failed" with the
+        reason. Exceptions are left to the caller (_invoice_ocr_extend_safe).
+        """
         ICP = self.env["ir.config_parameter"].sudo()
         if ICP.get_param("invoice_ocr.enabled", "True").lower() in ("false", "0", ""):
-            return
+            return self._ocr_result("skipped", _("OCR is turned off in the settings"))
 
         # Find the first PDF attachment in the file group
         pdf_data = None
@@ -174,7 +207,7 @@ class AccountMove(models.Model):
                 if pdf_data:
                     break
         if not pdf_data:
-            return
+            return self._ocr_result("skipped", _("no PDF attachment"))
 
         # Lazy-import to keep module loadable when libs missing
         from ..lib import invoice_ocr
@@ -187,11 +220,13 @@ class AccountMove(models.Model):
             data = invoice_ocr.extract_invoice_data(pdf_data, config=cfg)
         except Exception as e:
             logger.warning("invoice_ocr.extract_invoice_data failed: %s", e)
-            return
+            return self._ocr_result(
+                "failed", _("the PDF could not be read (%s)", str(e)[:300] or type(e).__name__))
 
         # If no useful data extracted, abort
         if not data or not (data.get("vendor_name") or data.get("invoice_number")):
-            return
+            return self._ocr_result(
+                "failed", _("neither a vendor name nor an invoice number was found in the PDF"))
 
         # ---- Marketplace VAT-declarer override ----------------------
         # For Amazon/eBay/etc. invoices, prefer "Moms deklarerat av X" /
@@ -359,6 +394,7 @@ class AccountMove(models.Model):
             )
         if prebooked:
             self._ocr_post_prebooked_warning(move, prebooked)
+        return self._ocr_result("filled")
 
     # ------------------------------------------------------------------
     # The receiving company (never the vendor)
