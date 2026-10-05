@@ -10,7 +10,7 @@ import base64
 import logging
 import re
 
-from markupsafe import Markup
+from markupsafe import Markup, escape
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
@@ -70,8 +70,11 @@ class AccountMove(models.Model):
                 continue
             try:
                 self._invoice_ocr_extend(move, files_data)
-                # Commit per move so a later timeout doesn't lose prior OCR work
-                self.env.cr.commit()
+                # No commit here: _extend_with_attachments runs inside the create
+                # transaction, so committing would also flush super()'s work and
+                # the create itself. Durability across moves is only needed on
+                # the bulk server-action path (data/server_actions.xml), which
+                # commits per move on purpose.
             except Exception as e:
                 logger.warning("OCR auto-fill failed for move %s: %s", move.id, e)
 
@@ -82,36 +85,29 @@ class AccountMove(models.Model):
     # ------------------------------------------------------------------
 
     @api.model
-    def _invoice_ocr_apply_settings(self, company=None):
-        """Push Odoo's settings into the library module and return it.
+    def _invoice_ocr_config(self, company=None):
+        """Per-run config for the OCR library from Odoo's settings and the receiving company.
 
         Shared with hr_expense_ocr_ai. System parameters win over environment defaults; the
-        receiving company's name and VAT number go along so they are never taken for the
-        supplier.
+        receiving company's name and VAT/registry numbers go along so they are never taken
+        for the supplier.
+
+        Returns a dict for invoice_ocr.extract_invoice_data / chat_json. It does NOT mutate
+        the library's module globals: they are shared by every run in the worker process, so
+        concurrent runs (bulk server action, multi-company users, the settings page's Verify
+        button) would otherwise read another company's VAT or another provider's key, and a
+        key cleared in the settings would keep working until the next restart.
         """
         from ..lib import invoice_ocr
 
         ICP = self.env["ir.config_parameter"].sudo()
-
-        def param(key, default):
-            return ICP.get_param(key) or default
-
-        invoice_ocr.AI_PROVIDER = param("invoice_ocr.provider", invoice_ocr.AI_PROVIDER)
-        invoice_ocr.STAIK_API_KEY = param("invoice_ocr.staik_api_key", invoice_ocr.STAIK_API_KEY)
-        invoice_ocr.STAIK_MODEL = param("invoice_ocr.staik_model", invoice_ocr.STAIK_MODEL)
-        invoice_ocr.VENICE_API_KEY = param("invoice_ocr.venice_api_key", invoice_ocr.VENICE_API_KEY)
-        invoice_ocr.VENICE_MODEL = param("invoice_ocr.venice_model", invoice_ocr.VENICE_MODEL)
-        invoice_ocr.OPENAI_API_KEY = param("invoice_ocr.openai_api_key", invoice_ocr.OPENAI_API_KEY)
-        invoice_ocr.OPENAI_MODEL = param("invoice_ocr.openai_model", invoice_ocr.OPENAI_MODEL)
-        invoice_ocr.AI_BASE_URL = param("invoice_ocr.base_url", invoice_ocr.AI_BASE_URL)
-        invoice_ocr.AI_API_KEY = param("invoice_ocr.api_key", invoice_ocr.AI_API_KEY)
-        invoice_ocr.AI_MODEL = param("invoice_ocr.model", invoice_ocr.AI_MODEL)
-        invoice_ocr.OLLAMA_URL = param("invoice_ocr.ollama_url", invoice_ocr.OLLAMA_URL)
-        invoice_ocr.OLLAMA_MODEL = param("invoice_ocr.ollama_model", invoice_ocr.OLLAMA_MODEL)
+        cfg = invoice_ocr.config_from_settings(lambda key: ICP.get_param(f"invoice_ocr.{key}"))
+        # VAT numbers are normalized inside the library (spaces/dashes stripped, upper),
+        # so no need to pre-clean here.
         company = company or self.env.company
-        invoice_ocr.OWN_COMPANY = (company.name or "").strip().lower()
-        invoice_ocr.OWN_VAT_NUMBERS = {v.replace(" ", "").upper() for v in (company.vat, company.company_registry) if v}
-        return invoice_ocr
+        cfg["own_company"] = (company.name or "").strip().lower()
+        cfg["own_vat_numbers"] = [v for v in (company.vat, company.company_registry) if v]
+        return cfg
 
     def _invoice_ocr_extend(self, move, files_data):
         ICP = self.env["ir.config_parameter"].sudo()
@@ -131,10 +127,13 @@ class AccountMove(models.Model):
         if not pdf_data:
             return
 
-        invoice_ocr = self._invoice_ocr_apply_settings(move.company_id)
+        # Lazy-import to keep module loadable when libs missing
+        from ..lib import invoice_ocr
+
+        cfg = self._invoice_ocr_config(move.company_id)
 
         try:
-            data = invoice_ocr.extract_invoice_data(pdf_data)
+            data = invoice_ocr.extract_invoice_data(pdf_data, config=cfg)
         except Exception as e:
             logger.warning("invoice_ocr.extract_invoice_data failed: %s", e)
             return
@@ -212,17 +211,19 @@ class AccountMove(models.Model):
         if not move.partner_bank_id and partner_id:
             self._resolve_partner_bank(move, data, partner_id)
 
-        # Log a chatter note with confidence info
+        # Log a chatter note with confidence info. Values come straight out of
+        # OCR/LLM output and may contain arbitrary characters, so escape them —
+        # same reasoning as _check_ocr_totals, which uses Markup.
         conflicts = data.get("_conflicts") or []
         body = "<p><b>OCR + AI har fyllt i fakturan</b></p><ul>"
         for k in ("vendor_name", "invoice_number", "invoice_date", "due_date",
                   "total_amount", "subtotal", "vat_amount", "ocr_number", "plusgiro",
                   "bankgiro", "org_number", "currency"):
             if data.get(k) is not None:
-                body += f"<li>{k}: <code>{data[k]}</code></li>"
+                body += f"<li>{escape(k)}: <code>{escape(str(data[k]))}</code></li>"
         if conflicts:
             body += "<li><b>Konflikter regex/AI:</b><br/>" + "<br/>".join(
-                f"<code>{c}</code>" for c in conflicts) + "</li>"
+                f"<code>{escape(str(c))}</code>" for c in conflicts) + "</li>"
         body += "</ul>"
         self.env["mail.message"].create({
             "model": "account.move",
@@ -372,26 +373,15 @@ class AccountMove(models.Model):
 
         # For EU/EX: also remap account_code so domestic 4xxx → corresponding foreign account
         # e.g. 4000 (Sw goods) → 4515 (EU goods 25%) ; 6230-range services stay the same
-        # Map by description heuristics done per-line below
+        # Map by description heuristics done per-line below. The actual remap
+        # lives in lib/invoice_ocr.remap_account_code so it can be unit-tested
+        # without Odoo; the closure only carries the per-move country context.
+        from ..lib import invoice_ocr as _ocr
+
         def remap_account_code(orig_code, line_desc=""):
-            if not is_eu_foreign and not is_outside_eu:
-                return orig_code
-            try:
-                code_int = int(str(orig_code or 0)[:4])
-            except (ValueError, TypeError):
-                return orig_code
-            # Goods inköpskonton: 4000-4099 → EU/EX motsvarighet
-            if is_eu_foreign and 4000 <= code_int <= 4099:
-                return "4515"  # Inköp av varor från annat EU-land 25%
-            if is_outside_eu and 4000 <= code_int <= 4099:
-                return "4545"  # Import av varor 25% moms
-            # Services 4500-4599 in BAS: 4535 (EU services 25%), 4531 (services 25% own use)
-            if is_eu_foreign and 4500 <= code_int <= 4599:
-                return "4535"
-            # Cloud/SaaS in 6230-range stays as-is (it's a cost class, not a "purchase from EU" account)
-            # but if AI returned 6231 for an EU vendor, the line still needs the EU tax tag —
-            # we keep the cost account but the tax handles VAT side
-            return orig_code
+            return _ocr.remap_account_code(
+                orig_code, is_eu_foreign=is_eu_foreign,
+                is_outside_eu=is_outside_eu, line_desc=line_desc)
 
         line_vals_list = []
 

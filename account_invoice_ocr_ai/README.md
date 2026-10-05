@@ -42,17 +42,58 @@ a timeout does not lose finished work.
 | `invoice_ocr.ollama_url`, `invoice_ocr.ollama_model` | local Ollama (native API, JSON-schema `format`) |
 
 **Verify provider** on the settings page does a one-token round-trip with the
-values on the form and shows which model actually answered and how fast. That
-is the only way to see staik's silent fallback to its default model.
+values on the form — saved or not — and shows which model actually answered
+and how fast. That is the only way to see staik's silent fallback to its
+default model. The values are passed to that one call only; nothing is changed
+for real extractions until you save.
 
 All providers get the same treatment: JSON-schema structured output where the
 endpoint supports it (a `400` on `response_format` falls back to a plain
 completion), one retry after 15 s on `429`, and the reasoning-token sanity
 check only for models whose name says `thinking`/`reasoning`.
 
-Environment variables (`INVOICE_AI_PROVIDER`, `INVOICE_AI_BASE_URL`,
-`INVOICE_AI_API_KEY`, `INVOICE_AI_MODEL`, `STAIK_API_KEY`, `OLLAMA_URL`, …) are
-read as defaults when no system parameter is set.
+Each run builds its own configuration (system parameters → environment
+defaults, plus the bill's company for the own-company guard) and passes it to
+the library; the library's module globals are never changed at run time, so
+concurrent runs for different companies or providers cannot see each other's
+settings.
+
+### LLM context limit
+
+Only the first **6000 characters** of the extracted text are sent to the LLM
+(`text[:6000]`, tunable via `INVOICE_OCR_TEXT_LIMIT`). Fields printed further
+down a very long document are never seen by the model; the regex extraction of
+printed amounts runs on the full text, so totals/dates on late pages still work.
+
+### Environment variables
+
+All of these are read as **defaults** when the corresponding system parameter
+(or company field) is not set — system parameters win:
+
+| Env var | Default | Meaning |
+|---------|---------|---------|
+| `INVOICE_AI_PROVIDER` | `staik` | LLM provider: `staik`, `venice`, `openai`, `openai_compatible`, `ollama` |
+| `VENICE_API_KEY` | — | Venice.ai API key |
+| `VENICE_MODEL` | `google-gemma-3-27b-it` | Venice.ai model |
+| `OPENAI_API_KEY` | — | OpenAI API key |
+| `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model |
+| `INVOICE_AI_BASE_URL` | — | `openai_compatible`: base URL up to the API version |
+| `INVOICE_AI_API_KEY` | — | `openai_compatible`: API key |
+| `INVOICE_AI_MODEL` | — | `openai_compatible`: model |
+| `INVOICE_AI_TIMEOUT` | `120` | Hard cap in seconds on one call to any provider except staik |
+| `STAIK_URL` | `https://api.staik.se/v1` | staik API base URL |
+| `STAIK_API_KEY` | — | staik API key |
+| `STAIK_MODEL` | `qwen3.6:35b-a3b-thinking` | staik model (reasoning variant) |
+| `STAIK_TIMEOUT` | `120` | Hard cap in seconds on one staik call |
+| `STAIK_MIN_COMPLETION_TOKENS` | `1000` | Answers from a reasoning model (name contains `thinking`/`reasoning`) below this completion-token count are treated as suspect (the model skipped its reasoning) and re-run |
+| `OLLAMA_URL` | `http://localhost:11434` | Local Ollama base URL |
+| `OLLAMA_MODEL` | `qwen2.5:7b` | Ollama model |
+| `INVOICE_AI_RETRY_SKIP_SECONDS` | `60` | Skip the reliability re-run when the first call already took this long |
+| `INVOICE_OCR_OWN_COMPANY` | — | Receiving company name ("Acme AB"), so its name is never taken for the supplier |
+| `INVOICE_OCR_OWN_VAT` | — | Comma-separated receiving company VAT numbers ("SE5566...,SE5566..."), same purpose |
+| `INVOICE_OCR_TEXT_LIMIT` | `6000` | Characters of invoice text sent to the LLM |
+| `INVOICE_OCR_MAX_PAGES` | `10` | Max PDF pages rendered for tesseract OCR |
+| `INVOICE_OCR_SCALE` | `2` | Render scale for tesseract OCR |
 
 ## Requirements
 
@@ -63,7 +104,8 @@ and the `tesseract-ocr` binary with `swe` + `eng` language data.
 
 - Lines are only created when the bill has none yet. Delete the lines and run
   OCR again to re-read.
-- The account map is a Swedish BAS default. Adjust `ACCOUNT_FALLBACKS` and the
-  remap rules in `models/account_move.py` for another chart of accounts.
+- The account map is a Swedish BAS default. Adjust `ACCOUNT_FALLBACKS` in
+  `models/account_move.py` and `remap_account_code` in `lib/invoice_ocr.py`
+  for another chart of accounts.
 - Every pre-filled bill must be reviewed before posting; the model does make
   mistakes, especially on multi-rate invoices.
