@@ -9,12 +9,12 @@ Hooks into account.move._extend_with_attachments which is called both when:
 import base64
 import logging
 import re
+from collections import Counter
 from datetime import timedelta
 
 from markupsafe import Markup
 
-from odoo import _, api, fields, models
-from odoo.exceptions import UserError
+from odoo import _, api, fields, models, modules
 
 logger = logging.getLogger(__name__)
 
@@ -65,29 +65,77 @@ class AccountMove(models.Model):
         return super().write(vals)
 
     def action_run_ocr(self):
-        """Re-run OCR + AI on the latest PDF attachment of this draft bill."""
+        """Re-run OCR + AI on the latest PDF attachment of each selected draft vendor bill.
+
+        The form button and the list action ("Kör OCR igen"). Each bill runs in its own
+        savepoint (_invoice_ocr_extend_safe), so one failure neither stops nor undoes the
+        others; a failed bill gets a chatter note. With the context key invoice_ocr_commit
+        (the list action) every bill is committed when done, so a worker timeout does not
+        lose finished bills. Returns a notification that says how many bills were filled,
+        failed or skipped, and why.
+        """
+        results = []
+        commit = self.env.context.get("invoice_ocr_commit") and not modules.module.current_test
         for move in self:
-            if move.state != "draft":
-                raise UserError(_("OCR kan bara köras på utkast."))
+            if move.state != "draft" or move.move_type != "in_invoice":
+                results.append((move, self._ocr_result("skipped", _("not a draft vendor bill"))))
+                continue
             atts = self.env["ir.attachment"].search([
                 ("res_model", "=", "account.move"),
                 ("res_id", "=", move.id),
                 ("mimetype", "=", "application/pdf"),
-            ], order="id desc")
+            ], order="id desc", limit=1)
             if not atts:
-                raise UserError(_("Ingen PDF-bilaga hittad på fakturan."))
+                results.append((move, self._ocr_result("skipped", _("no PDF attachment"))))
+                continue
             # Use the most recent PDF attachment
             files_data = [{
-                "filename": atts[0].name,
-                "mimetype": atts[0].mimetype,
-                "raw": atts[0].raw,
+                "filename": atts.name,
+                "mimetype": atts.mimetype,
+                "raw": atts.raw,
             }]
-            try:
-                self._invoice_ocr_extend(move, files_data)
-            except Exception as e:
-                logger.warning("Manual OCR re-run failed for move %s: %s", move.id, e)
-                raise UserError(_("OCR misslyckades: %s") % e) from e
-        return True
+            results.append((move, self._invoice_ocr_extend_safe(move, files_data)))
+            if commit:
+                self.env.cr.commit()
+        return self._ocr_notification(_("Invoice OCR"), results)
+
+    @api.model
+    def _ocr_notification(self, title, results):
+        """A display_notification summarising [(record, outcome)] (see _ocr_result).
+
+        Shared with hr_expense_ocr_ai. Failed and skipped records are listed with the
+        reason; the current view is reloaded afterwards so filled values show.
+        """
+        counts = Counter(outcome["status"] for _rec, outcome in results)
+        parts = [label for label in (
+            counts["filled"] and _("%s filled", counts["filled"]),
+            counts["failed"] and _("%s failed", counts["failed"]),
+            counts["skipped"] and _("%s skipped", counts["skipped"]),
+        ) if label] or [_("nothing selected")]
+        details = [f"{rec.display_name}: {outcome['reason']}" for rec, outcome in results
+                   if outcome["status"] != "filled" and outcome["reason"]]
+        shown = 10
+        if len(details) > shown:
+            details = [*details[:shown], _("… and %s more", len(details) - shown)]
+        # The notification is plain text (no line breaks): one sentence per record.
+        message = ", ".join(parts) + (". " + "; ".join(details) if details else "")
+        if counts["failed"]:
+            kind = "warning"
+        elif counts["filled"]:
+            kind = "success"
+        else:
+            kind = "info"
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {
+                "title": title,
+                "message": message,
+                "type": kind,
+                "sticky": bool(counts["failed"]),
+                "next": {"type": "ir.actions.client", "tag": "soft_reload"},
+            },
+        }
 
     def _extend_with_attachments(self, files_data, new=False):
         res = super()._extend_with_attachments(files_data, new)

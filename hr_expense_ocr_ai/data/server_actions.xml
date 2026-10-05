@@ -7,17 +7,8 @@
         <field name="binding_view_types">list</field>
         <field name="state">code</field>
         <field name="code">
-for expense in records.filtered(lambda e: e.state == 'draft'):
-    try:
-        expense.action_read_receipt()
-        env.cr.commit()
-    except Exception as e:
-        env.cr.rollback()
-        env['ir.logging'].sudo().create({
-            'name': 'hr_expense_ocr_ai', 'type': 'server', 'level': 'WARNING',
-            'message': 'Kvitto-OCR misslyckades för utlägg %s: %s' % (expense.id, e),
-            'path': 'action_read_receipt_server', 'func': 'bulk', 'line': '0',
-        })
+# Per expense: savepoint, chatter note on failure, commit when done; a summary comes back.
+action = records.with_context(expense_ocr_commit=True).action_read_receipt_bulk()
         </field>
     </record>
 </odoo>

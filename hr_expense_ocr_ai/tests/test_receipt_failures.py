@@ -75,3 +75,49 @@ class TestReceiptFailures(TransactionCase):
         expense.name = "still usable"
         self.env.flush_all()
         self.assertIn("Receipt OCR failed", self._bodies(expense))
+
+
+@tagged("post_install", "-at_install", "expense_ocr")
+class TestReceiptBulk(TransactionCase):
+    """The list action says what happened instead of logging into a rolled-back row (#36.4)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.env["ir.config_parameter"].sudo().set_param("expense_ocr.enabled", "False")
+        cls.employee = cls.env["hr.employee"].create({"name": "Example Employee"})
+
+    def _expense(self, name, attach=True):
+        expense = self.env["hr.expense"].create({"name": name, "employee_id": self.employee.id})
+        if attach:
+            self.env["ir.attachment"].create({
+                "name": f"{name}.pdf", "res_model": "hr.expense", "res_id": expense.id,
+                "raw": b"%PDF-1.4 test", "mimetype": "application/pdf",
+            })
+        return expense
+
+    def _read(self, raw, mimetype=None, filename=None, categories=None, config=None):
+        if filename == "bad.pdf":
+            raise ValueError("boom")
+        return {"text": "Totalt 418,00", "source": "ai", "notes": [],
+                "fields": {"total": 418.0, "merchant": "Example Store"}}
+
+    def test_list_action_summarises(self):
+        good, bad, none = self._expense("good"), self._expense("bad"), self._expense("none", attach=False)
+        server_action = self.env.ref("hr_expense_ocr_ai.action_read_receipt_server")
+        records = good | bad | none
+        with mock.patch.object(receipt_ocr, "extract_receipt_data", side_effect=self._read):
+            action = server_action.with_context(
+                active_model="hr.expense", active_ids=records.ids, active_id=good.id).run()
+        self.assertEqual(action["tag"], "display_notification")
+        params = action["params"]
+        self.assertEqual(params["type"], "warning")
+        message = params["message"]
+        self.assertTrue(message.startswith("1 filled, 1 failed, 1 skipped"), message)
+        self.assertIn(f"{bad.display_name}: Receipt OCR failed for bad.pdf: boom", message)
+        self.assertIn(none.display_name, message)
+        self.assertEqual(good.total_amount_currency, 418.0)
+        self.assertIn("Receipt OCR failed for bad.pdf: boom",
+                      " ".join(str(m.body) for m in bad.message_ids))
+        self.assertFalse(self.env["ir.logging"].search_count(
+            [("path", "=", "action_read_receipt_server")]))

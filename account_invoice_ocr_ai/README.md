@@ -63,7 +63,10 @@ use of `lib/invoice_ocr.py` set `INVOICE_OCR_OWN_COMPANY` and
 Long invoices (20+ lines) are aggregated by the model into at most six summary
 lines to stay within token limits. **Run OCR again** is available as a header
 button on a draft and as a list action for batches; batches commit per bill so
-a timeout does not lose finished work.
+a timeout does not lose finished work. Each bill is read in its own savepoint, so
+a failure rolls back only that bill's OCR changes and leaves a chatter note, and
+both report how many bills were filled, failed or skipped, and why. On upload a
+failed OCR run is noted the same way.
 
 ## Configuration
 

@@ -3,7 +3,7 @@ import logging
 import psycopg2
 from markupsafe import Markup, escape
 
-from odoo import _, api, fields, models
+from odoo import _, api, fields, models, modules
 from odoo.exceptions import UserError
 
 logger = logging.getLogger(__name__)
@@ -58,30 +58,62 @@ class HrExpense(models.Model):
         image or PDF, tesseract missing, a value the write rejects), not as a server error.
         """
         for expense in self:
-            if expense.state != "draft":
-                raise UserError(_("Kvitto-OCR kan bara köras på utkast."))
-            att = expense._expense_ocr_attachment()
+            att, why_not = expense._expense_ocr_target()
             if not att:
-                raise UserError(_("Ingen bild- eller PDF-bilaga på utlägget."))
-            try:
-                expense._expense_ocr_read(att, force=force)
-            except (UserError, psycopg2.Error):
-                raise  # database errors stay as they are (Odoo's retry loop needs them)
-            except Exception as e:  # noqa: BLE001 — shown to the user, see the docstring
-                logger.warning("Receipt OCR failed for expense %s", expense.id, exc_info=True)
-                raise UserError(_("Receipt OCR failed for %(name)s: %(error)s",
-                                  name=att.name, error=str(e)[:300] or type(e).__name__)) from e
+                raise UserError(why_not)
+            expense._expense_ocr_read_or_raise(att, force=force)
         return True
 
+    def action_read_receipt_bulk(self):
+        """The list action: read every selected receipt and say how it went.
+
+        Each expense is read in its own savepoint (see _expense_ocr_try), so one failure
+        neither stops nor undoes the others, and a failed expense gets a chatter note.
+        With the context key expense_ocr_commit (the list action) every expense is
+        committed when done, so a worker timeout does not lose finished ones. Returns a
+        notification that says how many were filled, failed or skipped, and why.
+        """
+        commit = self.env.context.get("expense_ocr_commit") and not modules.module.current_test
+        results = self._expense_ocr_try("bulk", commit=commit)
+        return self.env["account.move"]._ocr_notification(_("Receipt OCR"), results)
+
+    def _expense_ocr_target(self):
+        """(attachment, None) when OCR can read this expense, else (None, the reason)."""
+        self.ensure_one()
+        if self.state != "draft":
+            return None, _("Kvitto-OCR kan bara köras på utkast.")
+        att = self._expense_ocr_attachment()
+        if not att:
+            return None, _("Ingen bild- eller PDF-bilaga på utlägget.")
+        return att, None
+
+    def _expense_ocr_read_or_raise(self, att, force=False):
+        """_expense_ocr_read with every failure turned into a readable UserError."""
+        self.ensure_one()
+        try:
+            return self._expense_ocr_read(att, force=force)
+        except (UserError, psycopg2.Error):
+            raise  # database errors stay as they are (Odoo's retry loop needs them)
+        except Exception as e:  # noqa: BLE001 — shown to the user, see action_read_receipt
+            logger.warning("Receipt OCR failed for expense %s", self.id, exc_info=True)
+            raise UserError(_("Receipt OCR failed for %(name)s: %(error)s",
+                              name=att.name, error=str(e)[:300] or type(e).__name__)) from e
+
     def _expense_ocr_read(self, att, force=False):
-        """Read `att` and fill the expense; returns the list of what was filled."""
+        """Read `att` and fill the expense. Returns the outcome (see account.move._ocr_result)."""
         from ..lib import receipt_ocr
 
         self.ensure_one()
+        Move = self.env["account.move"]
         cfg = self._expense_ocr_config()
         cats, by_code = self._expense_ocr_categories()
         result = receipt_ocr.extract_receipt_data(att.raw, att.mimetype, att.name, categories=cats, config=cfg)
-        return self._expense_ocr_apply(result, by_code, att, force=force)
+        filled = self._expense_ocr_apply(result, by_code, att, force=force)
+        if result.get("source") == "none":
+            return Move._ocr_result("failed", _("nothing could be read from %s", att.name))
+        if not filled:
+            return Move._ocr_result("skipped", _("nothing was filled (see the chatter note)"))
+        return Move._ocr_result("filled")
 
     def _expense_ocr_apply(self, result, by_code, att, force=False):
         self.ensure_one()
@@ -131,24 +163,36 @@ class HrExpense(models.Model):
         self.message_post(body=body, message_type="comment", subtype_xmlid="mail.mt_note")
         return filled
 
-    def _expense_ocr_try(self, reason):
+    def _expense_ocr_try(self, reason, commit=False):
         """OCR får aldrig fälla det som utlöste den (mailhämtning, uppladdning).
 
         Each expense is read in its own savepoint: a failure (an SQL error included) rolls
         back only that read, in the database and in the ORM cache, leaves the caller's
         transaction usable and is noted in the expense's chatter. The caller's pending
         writes are flushed first, outside the try, so a concurrency error on them still
-        reaches Odoo's retry loop instead of being swallowed here.
+        reaches Odoo's retry loop instead of being swallowed here. `commit` commits after
+        each expense (the list action only). Returns [(expense, outcome)].
         """
+        Move = self.env["account.move"]
         self.env.flush_all()
+        results = []
         for expense in self:
+            att, why_not = expense._expense_ocr_target()
+            if not att:
+                results.append((expense, Move._ocr_result("skipped", why_not)))
+                continue
             try:
                 with self.env.cr.savepoint():
-                    expense.action_read_receipt()
+                    outcome = expense._expense_ocr_read_or_raise(att)
             except Exception as e:  # noqa: BLE001
                 logger.warning("Kvitto-OCR (%s) misslyckades för utlägg %s: %s", reason, expense.id, e)
-                expense.message_post(body=expense._expense_ocr_error_message(e),
-                                     message_type="comment", subtype_xmlid="mail.mt_note")
+                message = expense._expense_ocr_error_message(e)
+                expense.message_post(body=message, message_type="comment", subtype_xmlid="mail.mt_note")
+                outcome = Move._ocr_result("failed", message)
+            results.append((expense, outcome))
+            if commit:
+                self.env.cr.commit()
+        return results
 
     @api.model
     def _expense_ocr_error_message(self, error):

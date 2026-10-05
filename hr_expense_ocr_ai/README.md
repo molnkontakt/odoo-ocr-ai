@@ -10,7 +10,11 @@ and the provider settings.
 | Trigger | How |
 |---|---|
 | A draft expense gets its main attachment: an e-mailed expense with a photo, or a receipt uploaded via the API with `message_main_attachment_id` set | `write` hook, only when amount or category is still missing |
-| **Read receipt (OCR)** button on the expense form, or the list action of the same name | `action_read_receipt()` |
+| **Read receipt (OCR)** button on the expense form | `action_read_receipt()`; a failure is shown as a readable error |
+| The list action of the same name | `action_read_receipt_bulk()`: each expense in its own savepoint, a summary of how many were filled, failed or skipped |
+
+A failure on the automatic path never breaks what triggered it (mail fetching,
+upload): the read is rolled back on its own and a chatter note says why.
 
 Off switch: *Expense receipt OCR* in the same settings block as the invoice OCR
 (`expense_ocr.enabled`).
