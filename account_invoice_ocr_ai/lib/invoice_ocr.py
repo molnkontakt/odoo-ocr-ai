@@ -49,6 +49,18 @@ OCR_SCALE = float(os.environ.get("INVOICE_OCR_SCALE", "2"))
 # seconds. 90 s keeps the synchronous "Run OCR" button under Odoo's default 120 s
 # request limit (limit_time_real), with room for the writes to the record.
 TOTAL_DEADLINE = float(os.environ.get("INVOICE_OCR_DEADLINE", "90"))
+# The share of it the text extraction (pdfplumber, tesseract) may use at most (#26).
+EXTRACT_TIME_BUDGET = float(os.environ.get("INVOICE_OCR_EXTRACT_BUDGET", "30"))
+# pdfplumber reads at most this many pages of a PDF: the first ones and the last one.
+MAX_TEXT_PAGES = int(os.environ.get("INVOICE_OCR_MAX_TEXT_PAGES", "20"))
+# A page rendered for tesseract, or a receipt photo, is scaled down to at most this many
+# pixels (an A4 page at scale 2 is about 2 MP): a huge page cannot become a bitmap of
+# several GB.
+MAX_PAGE_PIXELS = int(os.environ.get("INVOICE_OCR_MAX_PIXELS", "12000000"))
+# One tesseract run (one page or one photo) is stopped after this many seconds.
+TESSERACT_TIMEOUT = float(os.environ.get("INVOICE_OCR_TESSERACT_TIMEOUT", "20"))
+# A receipt image larger than this is not read (a phone photo is a few MB).
+MAX_IMAGE_BYTES = int(os.environ.get("INVOICE_OCR_MAX_IMAGE_BYTES", str(20 * 1024 * 1024)))
 # A provider call is not started with less time than this left.
 MIN_CALL_SECONDS = 5.0
 # The wait before the one retry after an HTTP 429 (rate limited).
@@ -783,25 +795,99 @@ def detect_auto_debit(text):
     return None
 
 
-def _extract_text_pdfplumber(pdf_bytes):
-    """Extract text from PDF using pdfplumber."""
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+def pages_to_read(total, cap):
+    """The 1-based page numbers to read of a `total`-page PDF, at most `cap` of them (#26).
+
+    The first cap-1 pages and the last one: totals, the VAT summary and the payment details
+    are usually at the end. An unknown page count reads the first `cap`; no cap reads all.
+    """
+    if not cap or cap <= 0:
+        return list(range(1, total + 1)) if total else None
+    if total is None:
+        return list(range(1, cap + 1))
+    if total <= cap:
+        return list(range(1, total + 1))
+    return [*range(1, cap), total] if cap > 1 else [total]
+
+
+def _pages_note(kind, total, pages, cap):
+    shown = f"1–{pages[-2]} and {pages[-1]}" if len(pages) > 1 else f"{pages[-1]}"
+    return f"the PDF has {total} pages; {kind} only pages {shown} (page limit {cap})"
+
+
+def _pdf_page_count(pdf_bytes):
+    """The page count from the PDF's page tree, without parsing the pages; None if unknown."""
+    try:
+        from pdfminer.pdfdocument import PDFDocument
+        from pdfminer.pdfparser import PDFParser
+        from pdfminer.pdftypes import resolve1
+
+        doc = PDFDocument(PDFParser(io.BytesIO(pdf_bytes)))
+        return int(resolve1(resolve1(doc.catalog["Pages"])["Count"]))
+    except Exception:  # noqa: BLE001 — a broken page tree: read the first pages
+        return None
+
+
+def _budget_note(run, done, total, budget):
+    note = (f"reading the document text stopped after {done} of {total} pages: the time for "
+            f"reading it ({budget:.0f} s) was used up – the rest was not read")
+    logger.warning("OCR: %s", note)
+    if run:
+        run.note(note)
+
+
+def _extract_text_pdfplumber(pdf_bytes, max_pages=None, stop_at=None, run=None, budget=None):
+    """Extract text from PDF using pdfplumber.
+
+    Only `max_pages` pages are read (pages_to_read: the first ones and the last), and no
+    page is started after `stop_at` (a _clock() value). What was left out is noted on the
+    DocumentRun `run`.
+    """
+    total = _pdf_page_count(pdf_bytes)
+    wanted = pages_to_read(total, max_pages)
+    if total and wanted and len(wanted) < total:
+        note = _pages_note("the text was read from", total, wanted, max_pages)
+        logger.warning("OCR: %s", note)
+        if run:
+            run.note(note)
+    with pdfplumber.open(io.BytesIO(pdf_bytes), pages=wanted) as pdf:
         pages = []
-        for page in pdf.pages:
+        for done, page in enumerate(pdf.pages):
+            if stop_at is not None and _clock() >= stop_at:
+                _budget_note(run, done, len(pdf.pages), budget or 0)
+                break
             text = page.extract_text()
             if text:
                 pages.append(text)
         return "\n\n".join(pages)
 
 
-def _extract_text_tesseract(pdf_bytes, max_pages=None, scale=None):
+def fit_scale(width, height, scale, max_pixels):
+    """The render scale for a `width` × `height` page: `scale`, or less, so the bitmap has
+    at most `max_pixels` pixels (#26)."""
+    area = max(float(width) * float(height), 1.0)
+    if max_pixels and area * scale * scale > max_pixels:
+        return math.sqrt(max_pixels / area)
+    return scale
+
+
+def _is_tesseract_timeout(error):
+    return isinstance(error, RuntimeError) and "timeout" in str(error).lower()
+
+
+def _extract_text_tesseract(pdf_bytes, max_pages=None, scale=None, max_pixels=None,
+                            page_timeout=None, stop_at=None, run=None, budget=None):
     """Fallback: convert PDF pages to images and OCR them.
 
-    ``max_pages`` caps the number of rendered pages (a 300-page PDF must not
-    pin a worker for minutes in the synchronous upload path) and ``scale``
-    controls the render resolution. Both come from the per-run config, with
-    the module globals (env INVOICE_OCR_MAX_PAGES / INVOICE_OCR_SCALE) as
-    defaults.
+    Bounded so a small hostile file cannot pin a worker (#26):
+
+    * ``max_pages`` pages are rendered: the first ones and the last (pages_to_read);
+    * a page is rendered at ``scale``, or smaller so it stays within ``max_pixels``;
+    * one tesseract run stops after ``page_timeout`` seconds (that page is skipped);
+    * no page is started after ``stop_at`` (a _clock() value) and a run never goes past it.
+
+    The limits come from the per-run config, with the module globals as defaults; what was
+    left out is noted on the DocumentRun ``run``.
     """
     if not HAS_TESSERACT:
         return ""
@@ -815,34 +901,78 @@ def _extract_text_tesseract(pdf_bytes, max_pages=None, scale=None):
         max_pages = MAX_OCR_PAGES
     if scale is None:
         scale = OCR_SCALE
+    if max_pixels is None:
+        max_pixels = MAX_PAGE_PIXELS
+    if page_timeout is None:
+        page_timeout = TESSERACT_TIMEOUT
+
+    def note(text):
+        logger.warning("OCR: %s", text)
+        if run:
+            run.note(text)
 
     pdf_doc = pdfium.PdfDocument(pdf_bytes)
-    total = len(pdf_doc)
-    if total > max_pages:
-        logger.warning(
-            "OCR: PDF:en har %s sidor men bara de %s forsta renderas "
-            "(INVOICE_OCR_MAX_PAGES). Texten kan saknas pa de sista sidorna.",
-            total, max_pages)
-    pages = []
-    for i in range(min(total, max_pages)):
-        page = pdf_doc[i]
-        bitmap = page.render(scale=scale)  # 2x for better OCR
-        pil_image = bitmap.to_pil()
-        text = pytesseract.image_to_string(pil_image, lang="swe+eng")
-        if text.strip():
-            pages.append(text)
-    return "\n\n".join(pages)
+    try:
+        total = len(pdf_doc)
+        wanted = pages_to_read(total, max_pages) or []
+        if len(wanted) < total:
+            note(_pages_note("OCR read", total, wanted, max_pages))
+        pages = []
+        for done, number in enumerate(wanted):
+            timeout = page_timeout
+            if stop_at is not None:
+                left = stop_at - _clock()
+                if left < 1:
+                    _budget_note(run, done, len(wanted), budget or 0)
+                    break
+                timeout = min(timeout, left) if timeout else left
+            page = pdf_doc[number - 1]
+            try:
+                width, height = page.get_size()
+                page_scale = fit_scale(width, height, scale, max_pixels)
+                if page_scale < scale:
+                    note(f"page {number} is very large: it was scaled down to "
+                         f"{max_pixels / 1e6:.0f} megapixels for OCR")
+                pil_image = page.render(scale=page_scale).to_pil()
+            finally:
+                page.close()
+            try:
+                text = pytesseract.image_to_string(pil_image, lang="swe+eng",
+                                                   timeout=timeout or 0)
+            except RuntimeError as e:
+                if not _is_tesseract_timeout(e):
+                    raise
+                note(f"tesseract took longer than {timeout:.0f} s on page {number} – that "
+                     f"page was not read")
+                continue
+            if text.strip():
+                pages.append(text)
+        return "\n\n".join(pages)
+    finally:
+        pdf_doc.close()
 
 
 def extract_text(pdf_bytes, config=None):
-    """Extract text from PDF, with tesseract fallback for image-based PDFs."""
+    """Extract text from PDF, with tesseract fallback for image-based PDFs.
+
+    Within the config's budgets (#26): at most max_text_pages pages for pdfplumber and
+    max_ocr_pages for tesseract (the first ones and the last), max_page_pixels per rendered
+    page, tesseract_timeout per tesseract run, and extract_time_budget seconds in all — never
+    past the document's deadline. A budget that cut the reading is noted on the config's
+    DocumentRun (the Odoo modules show it in the chatter).
+    """
     cfg = _cfg(config)
-    text = _extract_text_pdfplumber(pdf_bytes)
+    run = document_run(cfg)
+    budget = min(float(cfg["extract_time_budget"]), max(run.remaining(), 0))
+    stop_at = _clock() + budget
+    text = _extract_text_pdfplumber(pdf_bytes, max_pages=cfg["max_text_pages"],
+                                    stop_at=stop_at, run=run, budget=budget)
     if len(text.strip()) < 50 and HAS_TESSERACT:
         # Probably an image-based PDF, try OCR
         ocr_text = _extract_text_tesseract(
-            pdf_bytes, max_pages=cfg.get("max_ocr_pages"),
-            scale=cfg.get("ocr_scale"))
+            pdf_bytes, max_pages=cfg["max_ocr_pages"], scale=cfg["ocr_scale"],
+            max_pixels=cfg["max_page_pixels"], page_timeout=cfg["tesseract_timeout"],
+            stop_at=stop_at, run=run, budget=budget)
         if len(ocr_text.strip()) > len(text.strip()):
             text = ocr_text
     return text
@@ -1177,11 +1307,16 @@ def default_config():
         "accounts": None,
         "max_ocr_pages": MAX_OCR_PAGES,
         "ocr_scale": OCR_SCALE,
-        # Time budgets (#9). call_timeout: one provider call, for every provider (None =
-        # timeout / staik_timeout above); total_deadline: one document, extraction and
-        # provider calls together.
+        # Time and size budgets (#9, #26). call_timeout: one provider call, for every
+        # provider (None = timeout / staik_timeout above); total_deadline: one document,
+        # extraction and provider calls together; the rest bound the text extraction.
         "call_timeout": None,
         "total_deadline": TOTAL_DEADLINE,
+        "extract_time_budget": EXTRACT_TIME_BUDGET,
+        "max_text_pages": MAX_TEXT_PAGES,
+        "max_page_pixels": MAX_PAGE_PIXELS,
+        "tesseract_timeout": TESSERACT_TIMEOUT,
+        "max_image_bytes": MAX_IMAGE_BYTES,
         # The document's DocumentRun (deadline and notes), set by the entry points.
         "run": None,
     }
@@ -1207,9 +1342,12 @@ PROVIDER_SETTINGS = (
 )
 
 
-# Numeric limits the Odoo module reads from the system parameters "invoice_ocr.<key>" (#9);
-# the settings page has fields for them.
-LIMIT_SETTINGS = ("call_timeout", "total_deadline")
+# Numeric limits the Odoo module reads from the system parameters "invoice_ocr.<key>" (#9,
+# #26); the settings page has fields for call_timeout and total_deadline.
+LIMIT_SETTINGS = (
+    "call_timeout", "total_deadline", "extract_time_budget", "max_text_pages",
+    "max_ocr_pages", "max_page_pixels", "tesseract_timeout", "max_image_bytes",
+)
 
 
 def _positive_number(value):

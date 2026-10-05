@@ -38,38 +38,98 @@ IMAGE_TYPES = ("image/jpeg", "image/jpg", "image/png", "image/webp", "image/heic
 
 # ── Text ──────────────────────────────────────────────────────────────────────
 
-def _prepare_image(raw):
+class ReceiptReadError(Exception):
+    """The attachment's text could not be read; the message says why, for the user."""
+
+
+def _prepare_image(raw, max_pixels=None, run=None):
+    """The photo, upright, in greyscale and at a size tesseract reads well.
+
+    A photo larger than `max_pixels` is scaled down to it (#26): a 48-megapixel phone photo
+    is read as well at 12 and takes a fraction of the time; JPEGs are decoded at a reduced
+    size right away. A small photo is scaled up to 2000 px.
+    """
     img = Image.open(io.BytesIO(raw))
+    w, h = img.size
+    factor = 1.0
+    if max_pixels and w * h > max_pixels:
+        factor = (max_pixels / (w * h)) ** 0.5
+        img.draft("L", (int(w * factor), int(h * factor)))  # JPEG: decode smaller
+        note = (f"the image ({w}×{h}) was scaled down to {max_pixels / 1e6:.0f} megapixels "
+                f"for OCR")
+        logger.info("Receipt OCR: %s", note)
+        if run:
+            run.note(note)
     img = ImageOps.exif_transpose(img)  # mobilfoton ligger ofta roterade i EXIF
     img = img.convert("L")
-    # tesseract vill ha ~300 dpi-motsvarande text; små/nedskalade foton skalas upp
+    w2, h2 = img.size
+    if factor < 1.0 and w2 * h2 > max_pixels:
+        f = (max_pixels / (w2 * h2)) ** 0.5
+        img = img.resize((max(int(w2 * f), 1), max(int(h2 * f), 1)), Image.LANCZOS)
+    # tesseract vill ha ~300 dpi-motsvarande text; små/nedskalade foton skalas upp, within
+    # the pixel budget
     w, h = img.size
     if max(w, h) < 2000:
         f = 2000 / max(w, h)
-        img = img.resize((int(w * f), int(h * f)), Image.LANCZOS)
+        if max_pixels:
+            f = min(f, (max_pixels / (w * h)) ** 0.5)
+        if f > 1:
+            img = img.resize((int(w * f), int(h * f)), Image.LANCZOS)
     return ImageOps.autocontrast(img)
 
 
 def extract_text(raw, mimetype=None, filename=None, config=None):
-    """Text ur kvittot. PDF går via fakturamodulens extract_text (pdfplumber + tesseract)."""
+    """Text ur kvittot. PDF går via fakturamodulens extract_text (pdfplumber + tesseract).
+
+    Within the config's budgets (#26): an image larger than max_image_bytes is not read
+    (ReceiptReadError), one larger than max_page_pixels is scaled down to it, each
+    tesseract run stops after tesseract_timeout seconds and the whole reading after
+    extract_time_budget, never past the receipt's deadline. Budgets that cut the reading
+    are noted on the config's DocumentRun.
+    """
+    cfg = inv._cfg(config)
+    run = inv.document_run(cfg)
     mt = (mimetype or "").lower()
     name = (filename or "").lower()
     if mt == "application/pdf" or name.endswith(".pdf") or raw[:5] == b"%PDF-":
-        return inv.extract_text(raw, config)
+        return inv.extract_text(raw, cfg)
     if not HAS_TESSERACT:
         return ""
-    img = _prepare_image(raw)
+    limit = cfg["max_image_bytes"]
+    if limit and len(raw) > limit:
+        raise ReceiptReadError(
+            f"{filename or 'the image'} is {len(raw) / 1e6:.1f} MB, more than the "
+            f"{limit / 1e6:.0f} MB a receipt image may have – it was not read")
+    stop_at = inv._clock() + min(float(cfg["extract_time_budget"]), max(run.remaining(), 0))
+    img = _prepare_image(raw, cfg["max_page_pixels"], run)
+
+    def ocr(psm):
+        left = stop_at - inv._clock()
+        if left < 1:
+            if psm == 4:  # the second pass (psm 6) only improves a poor first reading
+                run.note("the time for reading the image was used up – it was not read")
+            return None
+        timeout = min(float(cfg["tesseract_timeout"] or left), left)
+        try:
+            return pytesseract.image_to_string(img, lang="swe+eng", config=f"--psm {psm}",
+                                               timeout=timeout)
+        except RuntimeError as e:
+            if not inv._is_tesseract_timeout(e):
+                raise
+            note = f"tesseract took longer than {timeout:.0f} s on the image – stopped"
+            logger.warning("Receipt OCR: %s", note)
+            run.note(note)
+            return None
+
     # psm 4 = en kolumn med rader av varierande storlek, det är vad ett kvitto är
-    text = pytesseract.image_to_string(img, lang="swe+eng", config="--psm 4")
+    text = ocr(4)
+    if text is None:
+        return ""
     if len(text.strip()) < 40:
-        alt = pytesseract.image_to_string(img, lang="swe+eng", config="--psm 6")
-        if len(alt.strip()) > len(text.strip()):
+        alt = ocr(6)
+        if alt and len(alt.strip()) > len(text.strip()):
             text = alt
     return text
-
-
-class ReceiptReadError(Exception):
-    """The attachment's text could not be read; the message says why, for the user."""
 
 
 def _describe_read_error(e):
@@ -86,6 +146,8 @@ def read_text(raw, mimetype=None, filename=None, config=None):
     """extract_text, with every failure turned into a ReceiptReadError with a readable message."""
     try:
         return extract_text(raw, mimetype, filename, config) or ""
+    except ReceiptReadError:
+        raise
     except Exception as e:  # noqa: BLE001 — re-raised with a readable message
         raise ReceiptReadError(
             f"the text of {filename or 'the attachment'} could not be read: {_describe_read_error(e)}") from e
