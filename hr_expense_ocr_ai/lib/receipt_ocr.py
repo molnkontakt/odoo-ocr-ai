@@ -93,16 +93,45 @@ def read_text(raw, mimetype=None, filename=None, config=None):
 
 # ── Regex-fallback ────────────────────────────────────────────────────────────
 
-TOTAL_RE = re.compile(r"(?im)^\s*(?:totalt?|summa|att betala|belopp|k[oö]p|kort)\b[^\d\n]*?(\d{1,3}(?:[ .]\d{3})*[,.]\d{2})\s*(?:kr|sek)?\s*$")
+# A line that starts with a total label; the amount is the last amount token on the line
+# (inv.AMOUNT_TOKEN_RE), so item counts in between are fine: 'Totalt (2 Artiklar) 418,00',
+# 'Summa 2 varor 418,00'. VAT, net and discount totals are not the amount paid.
+TOTAL_LINE_RE = re.compile(
+    r"(?im)^[ \t]*(att[ \t]+betala|totalt?|totalbelopp|totalsumma|slutsumma|kort|k[oö]p|summa|belopp)\b"
+    r"(?![ \t.:]*(?:moms|vat|exkl|netto|underlag|rabatt))(.*)$")
+# Which label wins when several lines carry one: the amount to pay, then the card or
+# purchase line, then sums ("Summa" is often before a discount, "Belopp" on a card slip
+# can include a cash withdrawal). Within the best label the last line wins.
+TOTAL_LABEL_RANK = (("att betala", "total", "slutsumma"), ("kort", "kop", "köp"), ("summa", "belopp"))
 DATE_RE = re.compile(r"(20\d{2})[-./](\d{2})[-./](\d{2})")
+
+
+def _total_label_rank(label):
+    label = re.sub(r"[ \t]+", " ", label.lower())
+    for rank, prefixes in enumerate(TOTAL_LABEL_RANK):
+        if label.startswith(prefixes):
+            return rank
+    return len(TOTAL_LABEL_RANK)
+
+
+def _regex_total(text):
+    """The amount paid according to the labelled total lines, or None."""
+    best = None  # (rank, amount)
+    for m in TOTAL_LINE_RE.finditer(text):
+        amounts = [a for a in inv.amounts_in_text(m.group(2)) if a > 0]
+        if not amounts:
+            continue
+        rank = _total_label_rank(m.group(1))
+        if best is None or rank <= best[0]:
+            best = (rank, amounts[-1])
+    return best[1] if best else None
 
 
 def _regex_fields(text):
     out = {}
-    amounts = [inv._parse_amount(m.group(1)) for m in TOTAL_RE.finditer(text)]
-    amounts = [a for a in amounts if a]
-    if amounts:
-        out["total"] = max(amounts)
+    total = _regex_total(text)
+    if total is not None:
+        out["total"] = total
     m = DATE_RE.search(text)
     if m:
         y, mo, d = (int(x) for x in m.groups())
@@ -212,23 +241,32 @@ def _merchant_in_text(merchant, text):
 
 
 def _total_in_text(total, text):
-    if total is None:
-        return False
-    s1 = f"{total:.2f}"
-    return s1 in text or s1.replace(".", ",") in text or (total == int(total) and re.search(rf"\b{int(total)}\b", text))
+    """The total must be printed as a whole amount, not as part of another number or a date."""
+    return inv.amount_in_text(total, text)
 
 
-def _apply_guards(fields, text):
-    """Returnerar (fält att fylla i, anmärkningar). Osäkra läsningar blir anmärkningar, inte fält."""
+def _apply_guards(fields, text, regex=None):
+    """Returnerar (fält att fylla i, anmärkningar). Osäkra läsningar blir anmärkningar, inte fält.
+
+    `regex` is what _regex_fields read from the text: when the model's value fails a check,
+    the printed value is used instead (and noted).
+    """
     notes = []
     fields = dict(fields)
+    regex = regex or {}
     conf = fields.get("confidence")
     if fields.get("merchant") and not _merchant_in_text(fields["merchant"], text):
         notes.append(f"butiksnamnet \"{fields['merchant']}\" finns inte i kvittotexten — ignorerat")
         fields.pop("merchant")
     if fields.get("total") is not None and not _total_in_text(fields["total"], text):
-        notes.append(f"beloppet {fields['total']:.2f} står inte i kvittotexten — ignorerat")
-        fields.pop("total")
+        printed = regex.get("total")
+        if printed is not None and _total_in_text(printed, text):
+            notes.append(f"the amount {fields['total']:.2f} is not printed on the receipt — "
+                         f"used the receipt's total {printed:.2f}")
+            fields["total"] = printed
+        else:
+            notes.append(f"beloppet {fields['total']:.2f} står inte i kvittotexten — ignorerat")
+            fields.pop("total")
     if conf is not None and conf < MIN_CONFIDENCE:
         notes.append(f"låg konfidens ({conf:.2f}) — belopp och datum fylls inte i")
         fields.pop("total", None)
@@ -257,7 +295,7 @@ def extract_receipt_data(raw, mimetype=None, filename=None, categories=None, con
         # AI ser hela sammanhanget; regex fyller bara luckor
         fields = dict(regex)
         fields.update(ai)
-        fields, notes = _apply_guards(fields, text)
+        fields, notes = _apply_guards(fields, text, regex)
         result.update(fields=fields, source="ai", notes=notes)
     elif regex:
         result.update(fields=regex, source="regex", notes=["AI-tolkningen misslyckades; bara regex"])

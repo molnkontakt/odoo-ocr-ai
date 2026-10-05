@@ -182,6 +182,38 @@ def _parse_amount(text):
         return None
 
 
+# ── Amount tokens ────────────────────────────────────────────────────────────
+# Whole amounts in OCR text, for checks like "does the model's total appear on the
+# receipt?". A token never starts or ends inside a longer number, a date (2026-09-17,
+# 17.09.2026), a time (10:14) or a percentage (25 %), so 18 is not found in '418,00' and
+# 17 is not found in a date. Two kinds of tokens:
+#   * amounts with two decimals, the integer part plain or grouped by space, no-break
+#     space, dot or comma: '418,00', '1234.50', '1 234,50', '1.234,50', '-32,00';
+#   * whole amounts only when a currency mark follows: '1 000 kr', '418:-', '418,-'.
+# Each token is read with _parse_amount.
+_AMOUNT_INT = r"(?:\d{1,3}(?:[ \u00a0\u202f.,]\d{3})+|\d+)"
+AMOUNT_TOKEN_RE = re.compile(
+    r"(?<![\d.,:/\-])-?(?:"
+    + _AMOUNT_INT + r"[.,]\d{2}(?!\d|[.,:/\-]\d|[ \t]*%)"
+    + r"|" + _AMOUNT_INT + r"(?=[ \t]*(?:kr\b|sek\b|:-|,-|\.-))"
+    + r")",
+    re.IGNORECASE)
+
+
+def amounts_in_text(text):
+    """Every whole amount printed in `text` (see AMOUNT_TOKEN_RE), in document order."""
+    values = (_parse_amount(m.group(0)) for m in AMOUNT_TOKEN_RE.finditer(str(text or "")))
+    return [v for v in values if v is not None]
+
+
+def amount_in_text(value, text):
+    """True when `value` is printed in `text` as a whole amount (not inside another number)."""
+    value = _num(value)
+    if value is None:
+        return False
+    return any(abs(v - value) < 0.005 for v in amounts_in_text(text))
+
+
 # ── Field extraction patterns ────────────────────────────────────────────────
 
 FIELD_PATTERNS = {
