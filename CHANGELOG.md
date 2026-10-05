@@ -17,7 +17,14 @@
   (double booking). The payment reference is only stored when it is a valid OCR number
   (modulus 10). (Before: a bank's invoice was booked with the buyer's own company as
   vendor and the buyer's own account as recipient, because the buyer's org number was
-  printed first.)
+  printed first.) The receiving company's identities travel in the per-run config
+  (`own_ids`, `own_names`, plus `own_partner_ids`/`own_bank_keys`/`own_account_keys`
+  for the Odoo-side guards; built by `account.move._invoice_ocr_config`); the
+  library's `OWN_COMPANY`/`OWN_VAT_NUMBERS` globals are never written and only serve
+  as the environment fallback for standalone use. `own_ids`/`own_names` replace the
+  19.0.1.8.2 config keys `own_vat_numbers`/`own_company`, and the 19.0.1.8.2
+  normalized VAT comparison is covered by the org/VAT key matching (`SE…01` ↔ org.nr,
+  spaces/dashes ignored).
 
 - `account_invoice_ocr_ai` 19.0.1.10.0: rounding and adjustments outside VAT are fixed
   against the invoice's printed amounts. When the printed VAT shows a different taxable
@@ -30,7 +37,62 @@
 - Provider layer generalised: any OpenAI-compatible endpoint (`openai_compatible`:
   base URL + key + model), Ollama for both modules, OpenAI settings in the UI,
   JSON-schema fallback and 429 retry for every provider, *Verify provider* button
-  that reports the model actually served. `account_invoice_ocr_ai` 19.0.1.9.0.
+  that reports the model actually served. `account_invoice_ocr_ai` 19.0.1.9.0,
+  `hr_expense_ocr_ai` 19.0.1.1.0. Built on the 19.0.1.8.2 per-run config: the
+  provider layer (`resolve_endpoint`, `chat_json`, Ollama, `verify_provider`)
+  reads provider, keys, URLs and limits only from the config passed in and never
+  writes the module globals, which stay env-derived defaults for standalone use.
+  *Verify provider* builds a config from the form's (possibly unsaved) values for
+  that one call, so an unsaved key is never used by real extractions and a
+  cleared key stops working once saved. `hr_expense_ocr_ai` builds the same
+  per-run config for each expense's company. `INVOICE_AI_TIMEOUT` (every provider
+  except staik) defaults to 120 s like `STAIK_TIMEOUT`, so every call on the
+  synchronous upload path stays bounded.
+
+### Fixed (review, PR #1 medium findings — `account_invoice_ocr_ai` 19.0.1.8.2)
+
+- Own-company guard: the VAT comparison is now normalized (spaces/dashes
+  stripped, upper-cased) — `company.vat` ("SE556 000-0001") and
+  `company_registry` ("556000-0001") both match candidates printed on the
+  invoice. When no non-SE candidate remains (only Swedish VAT numbers, which
+  may be the customer block on a foreign invoice), `org_number` is no longer
+  overwritten with a guess; the regex-extracted value stands.
+- Removed per-run mutation of the module globals (`AI_PROVIDER`, provider API
+  keys, `OWN_COMPANY`, `OWN_VAT_NUMBERS`): concurrent moves in one worker could
+  read another company's VAT or another provider's credentials mid-run. The
+  Odoo model now builds a per-run config dict (`invoice_ocr.default_config()`)
+  and passes it to `extract_invoice_data`; the globals remain as env-derived
+  defaults for standalone use.
+- `_parse_amount`: a dot with no comma and exactly three digits after the last
+  dot is now treated as a thousands separator ("1.234" → 1234, "SEK 3.020" →
+  3020); two-decimal amounts ("539.00") still parse as decimals.
+- `_extract_text_tesseract` caps the number of rendered pages
+  (`INVOICE_OCR_MAX_PAGES`, default 10) and makes the render scale
+  configurable (`INVOICE_OCR_SCALE`, default 2), so a very long scanned PDF
+  cannot pin a worker for minutes.
+- OpenAI provider can now be configured from the settings UI
+  (`invoice_ocr.openai_api_key`, `invoice_ocr.openai_model` system parameters;
+  key stored as a password field).
+- Documented the 6000-character LLM truncation limit and the complete
+  environment-variable list in the module README.
+- Added unit tests (no Odoo) for `_ai_answer_problems` (tolerance, token limit,
+  reference comparison), the regex/AI merge (REGEX_WINS + conflicts), and the
+  EU/export account-code remapping (now a testable lib function).
+
+### Fixed (review, PR #1 — `account_invoice_ocr_ai` 19.0.1.8.1)
+
+- Removed the premature `cr.commit()` in `_extend_with_attachments`; committing
+  mid-create also committed `super()`'s work and the create itself. The bulk
+  server action keeps its intentional commit-per-move.
+- Bounded the synchronous upload path: staik timeout is now capped at
+  `STAIK_TIMEOUT` (default 120 s, was 300 s) and the reliability re-run is
+  skipped when the first AI call already took `INVOICE_AI_RETRY_SKIP_SECONDS`
+  (default 60 s). Limitation documented in the README; async (queue_job)
+  remains future work.
+- Escaped OCR/LLM values with `markupsafe.escape` in the chatter note to prevent
+  HTML injection.
+
+### Initial release
 
 - Initial public release of `account_invoice_ocr_ai` (invoice OCR + LLM) and
   `hr_expense_ocr_ai` (receipt OCR + LLM), extracted from Molnkontakt's private

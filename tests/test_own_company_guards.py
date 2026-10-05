@@ -140,7 +140,7 @@ def test_merge_keeps_real_bankgiro(ok):
 
 def test_full_pipeline_on_autodebit_text(monkeypatch):
     monkeypatch.setattr(inv, "_extract_fields_ai",
-                        lambda text, reference=None: dict(fx.AI_ANSWER_OWN_ORG))
+                        lambda text, reference=None, config=None: dict(fx.AI_ANSWER_OWN_ORG))
     out = inv.extract_invoice_data_from_text(
         fx.AUTODEBIT_TEXT, own_ids=OWN_IDS, own_names=OWN_NAMES)
     assert out["org_number"] == fx.VENDOR_ORG

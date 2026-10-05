@@ -30,6 +30,17 @@ try:
 except ImportError:
     HAS_TESSERACT = False
 
+# ── Tunables ─────────────────────────────────────────────────────────────────
+
+# How much invoice text the LLM sees. The full document is never sent; long
+# specifications are truncated so the prompt (and the bill) stays bounded.
+TEXT_LIMIT = int(os.environ.get("INVOICE_OCR_TEXT_LIMIT", "6000"))
+# Image-based PDFs are rendered page by page; cap it so a 300-page PDF cannot
+# pin a worker for minutes in the synchronous upload path.
+MAX_OCR_PAGES = int(os.environ.get("INVOICE_OCR_MAX_PAGES", "10"))
+# Render scale for tesseract OCR (2 ≈ 144 dpi — good compromise).
+OCR_SCALE = float(os.environ.get("INVOICE_OCR_SCALE", "2"))
+
 
 # ── Swedish date formats ─────────────────────────────────────────────────────
 
@@ -144,6 +155,13 @@ def _parse_amount(text):
             text = text.replace(",", "")
     elif "," in text:
         text = text.replace(",", ".")
+    elif "." in text:
+        # "1.234" — dot with NO comma and exactly three digits after the last
+        # dot is a thousands separator (German/Swedish style), not decimals.
+        # "539.00" (two digits) and "104.64" stay decimal.
+        head, _, tail = text.rpartition(".")
+        if head and tail.isdigit() and len(tail) == 3:
+            text = text.replace(".", "")
     try:
         return float(text)
     except ValueError:
@@ -234,10 +252,11 @@ NEXTLINE_PATTERNS_ORDERED = [
 
 # ── Egna identiteter ─────────────────────────────────────────────────────────
 # Köparens (det egna bolagets) org.nr, momsreg.nr och namn står på varje faktura.
-# Odoo-modulen skickar in fakturabolagets värden från res.company vid körning;
-# OWN_COMPANY / OWN_VAT_NUMBERS (miljövariablerna INVOICE_OCR_OWN_COMPANY och
-# INVOICE_OCR_OWN_VAT, se nedan) används bara när anroparen inte skickar något,
-# t.ex. i fristående skript.
+# Odoo-modulen skickar in fakturabolagets värden från res.company i
+# per-körning-configen ("own_ids"/"own_names", se default_config) och ändrar
+# aldrig modul-globalerna; OWN_COMPANY / OWN_VAT_NUMBERS (miljövariablerna
+# INVOICE_OCR_OWN_COMPANY och INVOICE_OCR_OWN_VAT, se nedan) används bara när
+# anroparen inte skickar något, t.ex. i fristående skript.
 
 # "Org.nr", "Org. nummer", "Organisationsnr.", "Organisationsnummer"
 ORG_LABEL = r"(?:Organisationsnummer|Organisationsnr|Org\.?\s*(?:nr|nummer))"
@@ -521,8 +540,15 @@ def _extract_text_pdfplumber(pdf_bytes):
         return "\n\n".join(pages)
 
 
-def _extract_text_tesseract(pdf_bytes):
-    """Fallback: convert PDF pages to images and OCR them."""
+def _extract_text_tesseract(pdf_bytes, max_pages=None, scale=None):
+    """Fallback: convert PDF pages to images and OCR them.
+
+    ``max_pages`` caps the number of rendered pages (a 300-page PDF must not
+    pin a worker for minutes in the synchronous upload path) and ``scale``
+    controls the render resolution. Both come from the per-run config, with
+    the module globals (env INVOICE_OCR_MAX_PAGES / INVOICE_OCR_SCALE) as
+    defaults.
+    """
     if not HAS_TESSERACT:
         return ""
 
@@ -531,11 +557,22 @@ def _extract_text_tesseract(pdf_bytes):
     except ImportError:
         return ""
 
+    if max_pages is None:
+        max_pages = MAX_OCR_PAGES
+    if scale is None:
+        scale = OCR_SCALE
+
     pdf_doc = pdfium.PdfDocument(pdf_bytes)
+    total = len(pdf_doc)
+    if total > max_pages:
+        logger.warning(
+            "OCR: PDF:en har %s sidor men bara de %s forsta renderas "
+            "(INVOICE_OCR_MAX_PAGES). Texten kan saknas pa de sista sidorna.",
+            total, max_pages)
     pages = []
-    for i in range(len(pdf_doc)):
+    for i in range(min(total, max_pages)):
         page = pdf_doc[i]
-        bitmap = page.render(scale=2)  # 2x for better OCR
+        bitmap = page.render(scale=scale)  # 2x for better OCR
         pil_image = bitmap.to_pil()
         text = pytesseract.image_to_string(pil_image, lang="swe+eng")
         if text.strip():
@@ -543,29 +580,39 @@ def _extract_text_tesseract(pdf_bytes):
     return "\n\n".join(pages)
 
 
-def extract_text(pdf_bytes):
+def extract_text(pdf_bytes, config=None):
     """Extract text from PDF, with tesseract fallback for image-based PDFs."""
+    cfg = _cfg(config)
     text = _extract_text_pdfplumber(pdf_bytes)
     if len(text.strip()) < 50 and HAS_TESSERACT:
         # Probably an image-based PDF, try OCR
-        ocr_text = _extract_text_tesseract(pdf_bytes)
+        ocr_text = _extract_text_tesseract(
+            pdf_bytes, max_pages=cfg.get("max_ocr_pages"),
+            scale=cfg.get("ocr_scale"))
         if len(ocr_text.strip()) > len(text.strip()):
             text = ocr_text
     return text
 
 
-def extract_fields(text, own_ids=None, own_names=None):
+def extract_fields(text, own_ids=None, own_names=None, config=None):
     """Extract structured invoice fields from text.
 
     own_ids:   the receiving company's org/VAT numbers; skipped when extracting the
-               supplier's org.nr/VAT. None = OWN_VAT_NUMBERS (environment fallback).
+               supplier's org.nr/VAT.
     own_names: the receiving company's names; never taken as vendor_name.
-               None = OWN_COMPANY (environment fallback).
+    config:    per-run config (see default_config). Explicit own_ids/own_names win;
+               otherwise the config's "own_ids"/"own_names" are used, which default to
+               OWN_VAT_NUMBERS/OWN_COMPANY (environment fallback for standalone use).
     """
+    cfg = _cfg(config)
+    if own_ids is None:
+        own_ids = cfg["own_ids"]
+    if own_names is None:
+        own_names = cfg["own_names"]
     result = {}
     lines = text.split("\n")
-    own_keys = build_own_ids(own_ids) if own_ids is not None else _default_own_ids()
-    own_name_keys = build_own_names(own_names if own_names is not None else _default_own_names())
+    own_keys = build_own_ids(own_ids)
+    own_name_keys = build_own_names(own_names)
 
     # Standard same-line patterns
     for field, patterns in FIELD_PATTERNS.items():
@@ -714,13 +761,18 @@ def extract_fields(text, own_ids=None, own_names=None):
     vat_candidates = re.findall(r"VAT\s*Reg\.?\s*No\.?[\s:]*([A-Z]{2}\d{6,12})",
                                 text, re.IGNORECASE)
     if vat_candidates:
-        # Prefer non-own, non-SE; fall back to last occurrence
+        # Prefer non-own, non-SE; fall back to last occurrence. is_own_id compares
+        # normalized keys (spaces/dashes stripped, upper; SE…01 and the bare org.nr
+        # count as the same number) — company.vat is often stored with spaces and
+        # company_registry as NNNNNN-NNNN.
         non_own = [v for v in vat_candidates if not is_own_id(v, own_keys)]
         non_se = [v for v in non_own if not v.upper().startswith("SE")]
         if non_se:
             result["org_number"] = non_se[-1]
-        elif non_own:
-            result["org_number"] = non_own[-1]
+        # elif non_own: only SE candidates left — another Swedish party (or the
+        # customer block on a foreign invoice). We cannot tell supplier from
+        # customer here, so do NOT overwrite org_number with a guess; keep
+        # whatever the regex extraction found (e.g. "Organisationsnummer").
         # else: only own VAT found — leave any prior org_number value alone
 
     # Inget org.nr alls: svenskt momsreg.nr ("Momsreg.nr.: SE556000000001")
@@ -788,6 +840,14 @@ STAIK_API_KEY = os.environ.get("STAIK_API_KEY", "")
 # Reasoning-varianten. Basmodellen svarar direkt utan att rakna och far da fel pa
 # flertermssummor; matt 2026-09-04 gav den 18/24 mot 22/24 for -thinking.
 STAIK_MODEL = os.environ.get("STAIK_MODEL", "qwen3.6:35b-a3b-thinking")
+# Hard cap on one staik call. The Odoo model runs this synchronously inside the
+# create-transaction, so a call blocks a worker; 300 s let a hung request pin a
+# worker for minutes. 120 s still covers the slowest reasoning runs we have
+# measured (typically well under a minute).
+STAIK_TIMEOUT = int(os.environ.get("STAIK_TIMEOUT", "120"))
+# If the first AI call already took at least this many seconds, skip the retry —
+# two calls at STAIK_TIMEOUT would otherwise block the upload path for minutes.
+RETRY_SKIP_SECONDS = float(os.environ.get("INVOICE_AI_RETRY_SKIP_SECONDS", "60"))
 # Ett svar under den har granden betyder att modellen hoppade over resonemanget.
 # Samtliga korrekta svar i matningen lag pa 3400-7200 completion-tokens, de tva
 # felaktiga pa 462 och 649.
@@ -795,20 +855,97 @@ STAIK_MIN_COMPLETION_TOKENS = int(os.environ.get("STAIK_MIN_COMPLETION_TOKENS", 
 
 # Any other provider that speaks OpenAI's /chat/completions (Mistral, Groq, OpenRouter, Together,
 # DeepSeek, Azure OpenAI, Anthropic's compatibility layer, a local vLLM or LM Studio, ...):
-# provider "openai_compatible" with a base URL, key and model. Odoo's settings page fills these.
+# provider "openai_compatible" with a base URL, key and model. Odoo's settings page fills these
+# into the per-run config (see default_config); the globals are only env-derived defaults.
 AI_BASE_URL = os.environ.get("INVOICE_AI_BASE_URL", "")
 AI_API_KEY = os.environ.get("INVOICE_AI_API_KEY", "")
 AI_MODEL = os.environ.get("INVOICE_AI_MODEL", "")
-AI_TIMEOUT = int(os.environ.get("INVOICE_AI_TIMEOUT", "300"))
+# Per-call cap for every provider except staik (STAIK_TIMEOUT). Same reasoning as
+# STAIK_TIMEOUT: the upload path is synchronous, so a call must never pin a worker for long.
+AI_TIMEOUT = int(os.environ.get("INVOICE_AI_TIMEOUT", "120"))
 VENICE_URL = "https://api.venice.ai/api/v1"
 OPENAI_URL = "https://api.openai.com/v1"
 
 # The receiving company, so its own name/VAT number printed on the invoice is never taken
-# for the supplier. The Odoo model passes the invoice company's identities explicitly
-# (own_ids/own_names); these are the fallback for standalone use: set
-# INVOICE_OCR_OWN_COMPANY ("Acme AB") and INVOICE_OCR_OWN_VAT ("SE5566...", comma-separated).
+# for the supplier. The Odoo model passes the invoice company's identities (the company and
+# its branches) in the per-run config ("own_ids"/"own_names", see default_config); these
+# globals are only the fallback for standalone use: set INVOICE_OCR_OWN_COMPANY ("Acme AB")
+# and INVOICE_OCR_OWN_VAT ("SE5566...", comma-separated).
 OWN_COMPANY = os.environ.get("INVOICE_OCR_OWN_COMPANY", "").strip().lower()
 OWN_VAT_NUMBERS = {v.strip().upper() for v in os.environ.get("INVOICE_OCR_OWN_VAT", "").split(",") if v.strip()}
+
+
+def default_config():
+    """Per-run-konfiguration. Modul-globalerna (env-read vid import) är defaults.
+
+    Odoo-modellen bygger en egen dict från ir.config_parameter + res.company och
+    skickar in den till extract_invoice_data — den muterar INTE modul-globalerna,
+    som delas av alla körningar i worker-processen. För standalone-bruk räcker
+    extract_invoice_data(pdf) utan config.
+    """
+    return {
+        "provider": AI_PROVIDER,
+        "venice_api_key": VENICE_API_KEY,
+        "venice_model": VENICE_MODEL,
+        "ollama_url": OLLAMA_URL,
+        "ollama_model": OLLAMA_MODEL,
+        "openai_api_key": OPENAI_API_KEY,
+        "openai_model": OPENAI_MODEL,
+        "base_url": AI_BASE_URL,
+        "api_key": AI_API_KEY,
+        "model": AI_MODEL,
+        "timeout": AI_TIMEOUT,
+        "staik_url": STAIK_URL,
+        "staik_api_key": STAIK_API_KEY,
+        "staik_model": STAIK_MODEL,
+        "staik_timeout": STAIK_TIMEOUT,
+        "retry_skip_seconds": RETRY_SKIP_SECONDS,
+        "staik_min_completion_tokens": STAIK_MIN_COMPLETION_TOKENS,
+        # The receiving company, never the supplier: its org/VAT numbers and names.
+        # The Odoo model fills these per run from res.company (the bill's company and
+        # its branches); the env-derived globals are the standalone fallback.
+        "own_ids": sorted(OWN_VAT_NUMBERS),
+        "own_names": _default_own_names(),
+        "text_limit": TEXT_LIMIT,
+        "max_ocr_pages": MAX_OCR_PAGES,
+        "ocr_scale": OCR_SCALE,
+    }
+
+
+def _cfg(config):
+    """Merge a partial config dict over the defaults; None values are ignored."""
+    cfg = default_config()
+    if config:
+        cfg.update({k: v for k, v in config.items() if v is not None})
+    return cfg
+
+
+# Provider settings the Odoo module exposes. Each <key> is a config key, the system
+# parameter "invoice_ocr.<key>" and the settings-form field "invoice_ocr_<key>".
+PROVIDER_SETTINGS = (
+    "provider",
+    "staik_api_key", "staik_model",
+    "venice_api_key", "venice_model",
+    "openai_api_key", "openai_model",
+    "base_url", "api_key", "model",
+    "ollama_url", "ollama_model",
+)
+
+
+def config_from_settings(get, base=None):
+    """Per-run config from settings: `get(key)` returns the value for a PROVIDER_SETTINGS key.
+
+    Empty values keep the default (env-derived global or `base`), so a run with the
+    settings saved behaves exactly like the Verify button with the same values on the
+    form. Nothing is written to the module globals.
+    """
+    cfg = _cfg(base)
+    for key in PROVIDER_SETTINGS:
+        value = get(key)
+        if value:
+            cfg[key] = value.strip() if isinstance(value, str) else value
+    return cfg
+
 
 # json_schema tvingar fram giltig JSON hos staik. Fritt format ger trasiga svar.
 INVOICE_JSON_SCHEMA = {
@@ -948,23 +1085,26 @@ def _post(url, **kwargs):
     return requests.post(url, **kwargs)
 
 
-def resolve_endpoint():
+def resolve_endpoint(config=None):
     """(base_url, api_key, model) for the configured OpenAI-compatible provider.
 
-    Presets carry their URL and default model; "openai_compatible" takes all three from
-    AI_BASE_URL / AI_API_KEY / AI_MODEL. Ollama is not an OpenAI endpoint (see chat_json).
+    Everything comes from the per-run config (see default_config; the module globals are
+    only its env-derived defaults). Presets carry their URL and default model;
+    "openai_compatible" takes all three from base_url / api_key / model. Ollama is not an
+    OpenAI endpoint (see chat_json).
     """
-    p = (AI_PROVIDER or "").strip().lower()
+    cfg = _cfg(config)
+    p = (cfg["provider"] or "").strip().lower()
     if p == "staik":
-        base, key, model = STAIK_URL, STAIK_API_KEY, STAIK_MODEL
+        base, key, model = cfg["staik_url"], cfg["staik_api_key"], cfg["staik_model"]
     elif p == "venice":
-        base, key, model = VENICE_URL, VENICE_API_KEY, VENICE_MODEL
+        base, key, model = VENICE_URL, cfg["venice_api_key"], cfg["venice_model"]
     elif p == "openai":
-        base, key, model = OPENAI_URL, OPENAI_API_KEY, OPENAI_MODEL
+        base, key, model = OPENAI_URL, cfg["openai_api_key"], cfg["openai_model"]
     elif p in ("openai_compatible", "custom"):
-        base, key, model = AI_BASE_URL, AI_API_KEY, AI_MODEL
+        base, key, model = cfg["base_url"], cfg["api_key"], cfg["model"]
     else:
-        raise ValueError(f"unknown AI provider {AI_PROVIDER!r}")
+        raise ValueError(f"unknown AI provider {cfg['provider']!r}")
     base = (base or "").rstrip("/")
     if not base:
         raise ValueError(f"AI provider {p!r}: no base URL configured")
@@ -973,18 +1113,34 @@ def resolve_endpoint():
     return base, key or "", model
 
 
-def chat_json(prompt, text, schema, schema_name, max_tokens=8000, max_chars=6000, timeout=None):
+def _default_timeout(cfg):
+    """Per-call cap: STAIK_TIMEOUT for staik (1.8.1), INVOICE_AI_TIMEOUT for the rest."""
+    if (cfg["provider"] or "").strip().lower() == "staik":
+        return cfg["staik_timeout"]
+    return cfg["timeout"]
+
+
+def chat_json(prompt, text, schema, schema_name, max_tokens=8000, max_chars=None, timeout=None,
+              config=None):
     """One structured-output call to the configured provider.
 
     Returns (data, meta): `data` is the parsed JSON dict ({} when unparseable), `meta` has
     served_model, completion_tokens and finish_reason. Handles the provider quirks in one
     place: a 429 is retried once after 15 s; a 400 on `response_format` (provider without
     JSON-schema support) is retried as a plain completion; Ollama uses its own API.
+
+    Provider, keys, URLs and limits are read from `config` (merged over default_config()),
+    never from module globals set at run time — those are shared by every run in an Odoo
+    worker. `max_chars` defaults to the config's text_limit, `timeout` to the provider's
+    per-call cap (the upload path is synchronous, so every call is bounded).
     """
-    timeout = timeout or AI_TIMEOUT
-    if (AI_PROVIDER or "").lower() == "ollama":
-        return _ollama_chat_json(prompt, text, schema, max_chars, timeout)
-    base, key, model = resolve_endpoint()
+    cfg = _cfg(config)
+    if max_chars is None:
+        max_chars = cfg["text_limit"]
+    timeout = timeout or _default_timeout(cfg)
+    if (cfg["provider"] or "").strip().lower() == "ollama":
+        return _ollama_chat_json(prompt, text, schema, max_chars, timeout, cfg)
+    base, key, model = resolve_endpoint(cfg)
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
@@ -1010,6 +1166,9 @@ def chat_json(prompt, text, schema, schema_name, max_tokens=8000, max_chars=6000
     finish = choice.get("finish_reason")
     if finish == "length":
         logger.warning("Answer from %s was cut by max_tokens=%s; the JSON is incomplete.", model, max_tokens)
+    # staik faller TYST tillbaka till sin default-modell vid okant modellnamn, och
+    # model-faltet speglar basmodellen aven for -thinking. Antalet tokens ar darfor
+    # enda tillforlitliga tecknet pa att resonemanget faktiskt kordes.
     meta = {
         "served_model": j.get("model"),
         "completion_tokens": (j.get("usage") or {}).get("completion_tokens"),
@@ -1019,12 +1178,13 @@ def chat_json(prompt, text, schema, schema_name, max_tokens=8000, max_chars=6000
     return _parse_ai_json(choice["message"]["content"] or ""), meta
 
 
-def _ollama_chat_json(prompt, text, schema, max_chars, timeout):
+def _ollama_chat_json(prompt, text, schema, max_chars, timeout, cfg):
     """Ollama's native API; `format` takes a JSON schema since 0.5."""
+    model = cfg["ollama_model"]
     r = _post(
-        f"{OLLAMA_URL.rstrip('/')}/api/chat",
+        f"{(cfg['ollama_url'] or '').rstrip('/')}/api/chat",
         json={
-            "model": OLLAMA_MODEL, "stream": False, "format": schema or "json",
+            "model": model, "stream": False, "format": schema or "json",
             "options": {"temperature": 0},
             "messages": [{"role": "user", "content": prompt + text[:max_chars]}],
         },
@@ -1033,26 +1193,30 @@ def _ollama_chat_json(prompt, text, schema, max_chars, timeout):
     r.raise_for_status()
     j = r.json()
     meta = {"served_model": j.get("model"), "completion_tokens": j.get("eval_count"),
-            "finish_reason": j.get("done_reason"), "model": OLLAMA_MODEL}
+            "finish_reason": j.get("done_reason"), "model": model}
     return _parse_ai_json((j.get("message") or {}).get("content") or ""), meta
 
 
-def verify_provider():
+def verify_provider(config=None):
     """Cheap round-trip for the settings page: which model actually answers, and how fast.
 
     Exposes staik's silent fallback (an unknown model name is served by the default model,
     visible only in `served_model`) and any URL/key mistake before a real invoice is sent.
+    The settings page passes a config built from the form's (possibly unsaved) values; this
+    function never writes module globals, so an unsaved key is never used by real runs.
     """
+    cfg = _cfg(config)
+    provider = cfg["provider"]
     t0 = time.time()
     schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
     try:
         data, meta = chat_json('Reply with the JSON object {"ok": true} and nothing else.\n', "", schema, "ping",
-                               max_tokens=300, max_chars=0, timeout=60)
+                               max_tokens=300, max_chars=0, timeout=60, config=cfg)
     except Exception as e:  # noqa: BLE001 — the whole point is to report the failure
-        return {"ok": False, "provider": AI_PROVIDER, "error": str(e)[:300], "latency_s": round(time.time() - t0, 1)}
+        return {"ok": False, "provider": provider, "error": str(e)[:300], "latency_s": round(time.time() - t0, 1)}
     return {
         "ok": bool(isinstance(data, dict) and data.get("ok") is True),
-        "provider": AI_PROVIDER, "model_requested": meta.get("model"), "model_served": meta.get("served_model"),
+        "provider": provider, "model_requested": meta.get("model"), "model_served": meta.get("served_model"),
         "completion_tokens": meta.get("completion_tokens"), "latency_s": round(time.time() - t0, 1),
     }
 
@@ -1106,6 +1270,37 @@ def _strip_meta(data):
     return data
 
 
+# BAS-konton for EU-/importforvarv (se EXTRACTION_PROMPT ovan).
+EU_GOODS_ACCOUNT = "4515"    # Inköp av varor från annat EU-land, 25 %
+EU_SERVICES_ACCOUNT = "4535"  # Inköp av tjänster från annat EU-land, 25 %
+EX_GOODS_ACCOUNT = "4545"    # Import av varor, 25 % moms
+
+
+def remap_account_code(orig_code, is_eu_foreign=False, is_outside_eu=False,
+                       line_desc=""):
+    """Remappa inhemska BAS-inkopskonton till EU-reverse-charge-/importvarianter.
+
+    Varor 4000-4099 → 4515 (EU) / 4545 (utanfor EU). Tjanster 4500-4599 → 4535
+    (EU). Kostnadsklasser i 5xxx/6xxx (t.ex. 6231 molntjanster) lamnas ororda —
+    det ar kostnadskonton, inte "inkop fran EU"-konton; momssidorna hanteras av
+    skatten pa raden i stallet for kontot. line_desc finns for framtida
+    beskrivningsheuristik men anvands inte an.
+    """
+    if not is_eu_foreign and not is_outside_eu:
+        return orig_code
+    try:
+        code_int = int(str(orig_code or 0)[:4])
+    except (ValueError, TypeError):
+        return orig_code
+    if is_eu_foreign and 4000 <= code_int <= 4099:
+        return EU_GOODS_ACCOUNT
+    if is_outside_eu and 4000 <= code_int <= 4099:
+        return EX_GOODS_ACCOUNT
+    if is_eu_foreign and 4500 <= code_int <= 4599:
+        return EU_SERVICES_ACCOUNT
+    return orig_code
+
+
 def _num(v):
     try:
         return float(v)
@@ -1113,7 +1308,7 @@ def _num(v):
         return None
 
 
-def _ai_answer_problems(data, reference=None):
+def _ai_answer_problems(data, reference=None, config=None):
     """Tecken pa att svaret inte gar att lita pa. Tom lista = svaret ser rimligt ut.
 
     `reference` ar regex-extraktionen, dvs fakturans TRYCKTA belopp. Den ar det
@@ -1128,6 +1323,7 @@ def _ai_answer_problems(data, reference=None):
     """
     if not isinstance(data, dict) or not data:
         return ["tomt svar"]
+    cfg = _cfg(config)
     problems = []
     reference = reference or {}
 
@@ -1135,7 +1331,8 @@ def _ai_answer_problems(data, reference=None):
     # answering in 500 tokens is normal, a "-thinking" model doing so skipped its reasoning.
     ctok = data.get("_completion_tokens")
     model_name = str(data.get("_served_model") or data.get("_model") or "").lower()
-    if ctok is not None and ctok < STAIK_MIN_COMPLETION_TOKENS and ("think" in model_name or "reason" in model_name):
+    if (ctok is not None and ctok < cfg["staik_min_completion_tokens"]
+            and ("think" in model_name or "reason" in model_name)):
         problems.append(f"bara {ctok} completion-tokens (resonemanget hoppades over)")
 
     # 1. Mot fakturans tryckta belopp
@@ -1168,8 +1365,10 @@ def _ai_answer_problems(data, reference=None):
     return problems
 
 
-def _call_provider(text):
-    data, meta = chat_json(EXTRACTION_PROMPT, text, INVOICE_JSON_SCHEMA, "invoice", max_tokens=8000, max_chars=6000)
+def _call_provider(text, config=None):
+    cfg = _cfg(config)
+    data, meta = chat_json(EXTRACTION_PROMPT, text, INVOICE_JSON_SCHEMA, "invoice",
+                           max_tokens=8000, max_chars=cfg["text_limit"], config=cfg)
     if isinstance(data, dict) and data:
         # Diagnostics for _ai_answer_problems; stripped before the data reaches the invoice.
         data["_completion_tokens"] = meta.get("completion_tokens")
@@ -1178,34 +1377,50 @@ def _call_provider(text):
     return data
 
 
-def _extract_fields_ai(text, reference=None):
+def _extract_fields_ai(text, reference=None, config=None):
     """AI validation: extract invoice fields using configured LLM provider.
 
     Kor om anropet en gang om svaret ser opalitligt ut. Reasoning-modeller hoppar
     ibland over resonemanget och svarar rakt av, vilket ger fel pa flertermssummor.
     Det ar sporadiskt, sa en omkorning racker — men vi behaller det basta av de tva
     svaren i stallet for att blint ta det sista.
-    """
-    try:
-        data = _call_provider(text)
-    except Exception as e:
-        logger.warning("AI extraction failed (%s): %s", AI_PROVIDER, e)
-        return {}
 
-    problems = _ai_answer_problems(data, reference)
+    Omkörningen hoppas over om första anropet redan tog retry_skip_seconds —
+    anropet körs synkront inne i Odoo-transaktionen, och två stycken
+    STAIK_TIMEOUT-långa anrop skulle blockera upload-vägen i minuter.
+    """
+    cfg = _cfg(config)
+    provider = cfg["provider"]
+    t0 = time.monotonic()
+    try:
+        data = _call_provider(text, cfg)
+    except Exception as e:
+        logger.warning("AI extraction failed (%s): %s", provider, e)
+        return {}
+    elapsed = time.monotonic() - t0
+
+    problems = _ai_answer_problems(data, reference, cfg)
     if not problems:
+        return _strip_meta(data)
+
+    if elapsed >= cfg["retry_skip_seconds"]:
+        logger.warning(
+            "AI-svaret ser opalitligt ut (%s) men forsta anropet tog %.0f s — "
+            "hoppar over omkorningen for att inte blockera behandlingen. "
+            "Fakturan behover granskas manuellt.",
+            "; ".join(problems), elapsed)
         return _strip_meta(data)
 
     logger.warning("AI-svaret ser opalitligt ut (%s) — kor om en gang",
                    "; ".join(problems))
     try:
-        retry = _call_provider(text)
+        retry = _call_provider(text, cfg)
     except Exception as e:
         logger.warning("Omkorningen misslyckades (%s): %s — behaller forsta svaret",
-                       AI_PROVIDER, e)
+                       provider, e)
         return _strip_meta(data)
 
-    if not _ai_answer_problems(retry, reference):
+    if not _ai_answer_problems(retry, reference, cfg):
         logger.info("Omkorningen gav ett svar som gar ihop — anvander det")
         return _strip_meta(retry)
 
@@ -1214,16 +1429,19 @@ def _extract_fields_ai(text, reference=None):
     return _strip_meta(data)
 
 
-def extract_invoice_data(pdf_b64_or_bytes, own_ids=None, own_names=None):
+def extract_invoice_data(pdf_b64_or_bytes, config=None, *, own_ids=None, own_names=None):
     """Main entry point: extract invoice data from a PDF.
 
     Uses regex first, then AI to validate and fill gaps.
 
     Args:
         pdf_b64_or_bytes: Either base64-encoded string or raw bytes
+        config: optional per-run config dict (see default_config): provider
+            credentials, the receiving company ("own_ids"/"own_names") and OCR
+            limits. Falls back to the module globals (env-read defaults) when omitted.
         own_ids:   the receiving company's org/VAT numbers — never the supplier's
-                   (None = OWN_VAT_NUMBERS)
-        own_names: the receiving company's names (None = OWN_COMPANY)
+                   (overrides config["own_ids"])
+        own_names: the receiving company's names (overrides config["own_names"])
 
     Returns:
         dict with extracted fields + 'raw_text' key. 'auto_debit' is set to the
@@ -1235,15 +1453,21 @@ def extract_invoice_data(pdf_b64_or_bytes, own_ids=None, own_names=None):
     else:
         pdf_bytes = pdf_b64_or_bytes
 
-    text = extract_text(pdf_bytes)
-    return extract_invoice_data_from_text(text, own_ids=own_ids, own_names=own_names)
+    cfg = _cfg(config)
+    text = extract_text(pdf_bytes, cfg)
+    return extract_invoice_data_from_text(text, config=cfg, own_ids=own_ids, own_names=own_names)
 
 
-def extract_invoice_data_from_text(text, own_ids=None, own_names=None):
+def extract_invoice_data_from_text(text, own_ids=None, own_names=None, config=None):
     """Like extract_invoice_data, on already extracted PDF text (testable without a PDF)."""
-    own_keys = build_own_ids(own_ids) if own_ids is not None else _default_own_ids()
-    regex_fields = extract_fields(text, own_ids=own_ids, own_names=own_names)
-    ai_fields = _extract_fields_ai(text, reference=regex_fields)
+    cfg = _cfg(config)
+    if own_ids is not None:
+        cfg["own_ids"] = own_ids
+    if own_names is not None:
+        cfg["own_names"] = own_names
+    own_keys = build_own_ids(cfg["own_ids"])
+    regex_fields = extract_fields(text, config=cfg)
+    ai_fields = _extract_fields_ai(text, reference=regex_fields, config=cfg)
     return _merge_fields(text, regex_fields, ai_fields, own_keys)
 
 

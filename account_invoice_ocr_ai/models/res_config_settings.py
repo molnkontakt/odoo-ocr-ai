@@ -48,24 +48,25 @@ class ResConfigSettings(models.TransientModel):
     invoice_ocr_ollama_url = fields.Char(string="Ollama URL", config_parameter="invoice_ocr.ollama_url", default="http://localhost:11434")
     invoice_ocr_ollama_model = fields.Char(string="Ollama model", config_parameter="invoice_ocr.ollama_model", default="qwen2.5:7b")
 
+    def _invoice_ocr_form_config(self):
+        """Per-run config from the values on the form (saved or not) — same rules as a real run.
+
+        Empty fields keep the environment defaults, exactly as an empty system parameter does
+        in account.move._invoice_ocr_config, so Verify tests what a run would use after Save.
+        Nothing is written to the library's module globals: an unsaved key is never used by a
+        real extraction, and a cleared key stops working as soon as it is saved.
+        """
+        self.ensure_one()
+        from ..lib import invoice_ocr
+
+        return invoice_ocr.config_from_settings(lambda key: self[f"invoice_ocr_{key}"])
+
     def action_invoice_ocr_verify_provider(self):
         """Round-trip with the values on the form (saved or not) and report which model answered."""
         self.ensure_one()
         from ..lib import invoice_ocr
 
-        invoice_ocr.AI_PROVIDER = self.invoice_ocr_provider or "staik"
-        invoice_ocr.STAIK_API_KEY = self.invoice_ocr_staik_api_key or ""
-        invoice_ocr.STAIK_MODEL = self.invoice_ocr_staik_model or invoice_ocr.STAIK_MODEL
-        invoice_ocr.VENICE_API_KEY = self.invoice_ocr_venice_api_key or ""
-        invoice_ocr.VENICE_MODEL = self.invoice_ocr_venice_model or invoice_ocr.VENICE_MODEL
-        invoice_ocr.OPENAI_API_KEY = self.invoice_ocr_openai_api_key or ""
-        invoice_ocr.OPENAI_MODEL = self.invoice_ocr_openai_model or invoice_ocr.OPENAI_MODEL
-        invoice_ocr.AI_BASE_URL = self.invoice_ocr_base_url or ""
-        invoice_ocr.AI_API_KEY = self.invoice_ocr_api_key or ""
-        invoice_ocr.AI_MODEL = self.invoice_ocr_model or ""
-        invoice_ocr.OLLAMA_URL = self.invoice_ocr_ollama_url or invoice_ocr.OLLAMA_URL
-        invoice_ocr.OLLAMA_MODEL = self.invoice_ocr_ollama_model or invoice_ocr.OLLAMA_MODEL
-        res = invoice_ocr.verify_provider()
+        res = invoice_ocr.verify_provider(self._invoice_ocr_form_config())
         if res.get("ok"):
             served = res.get("model_served") or "?"
             requested = res.get("model_requested") or "?"

@@ -102,8 +102,11 @@ class AccountMove(models.Model):
                 continue
             try:
                 self._invoice_ocr_extend(move, files_data)
-                # Commit per move so a later timeout doesn't lose prior OCR work
-                self.env.cr.commit()
+                # No commit here: _extend_with_attachments runs inside the create
+                # transaction, so committing would also flush super()'s work and
+                # the create itself. Durability across moves is only needed on
+                # the bulk server-action path (data/server_actions.xml), which
+                # commits per move on purpose.
             except Exception as e:
                 logger.warning("OCR auto-fill failed for move %s: %s", move.id, e)
 
@@ -114,38 +117,40 @@ class AccountMove(models.Model):
     # ------------------------------------------------------------------
 
     @api.model
-    def _invoice_ocr_apply_settings(self, company=None):
-        """Push Odoo's settings into the library module and return it.
+    def _invoice_ocr_config(self, company=None):
+        """Per-run config for the OCR library from Odoo's settings and the receiving company.
 
         Shared with hr_expense_ocr_ai. System parameters win over environment defaults; the
-        receiving company's names and org/VAT numbers (the company and its branches) go along
-        so they are never taken for the supplier. _invoice_ocr_extend also passes them
-        explicitly to extract_invoice_data.
+        receiving company's identities — org/VAT numbers and names, partners and bank
+        accounts of the company and its branches (_ocr_own_context) — go along as own_*
+        keys, so they are never taken for the supplier.
+
+        Returns a dict for invoice_ocr.extract_invoice_data / chat_json. It does NOT mutate
+        the library's module globals: they are shared by every run in the worker process, so
+        concurrent runs (bulk server action, multi-company users, the settings page's Verify
+        button) would otherwise read another company's VAT or another provider's key, and a
+        key cleared in the settings would keep working until the next restart.
         """
         from ..lib import invoice_ocr
 
         ICP = self.env["ir.config_parameter"].sudo()
+        cfg = invoice_ocr.config_from_settings(lambda key: ICP.get_param(f"invoice_ocr.{key}"))
+        # Org/VAT numbers are normalized inside the library (invoice_ocr.build_own_ids),
+        # so no need to pre-clean here.
+        own = self._ocr_own_context(company or self.env.company)
+        cfg.update({f"own_{key}": value for key, value in own.items()})
+        return cfg
 
-        def param(key, default):
-            return ICP.get_param(key) or default
-
-        invoice_ocr.AI_PROVIDER = param("invoice_ocr.provider", invoice_ocr.AI_PROVIDER)
-        invoice_ocr.STAIK_API_KEY = param("invoice_ocr.staik_api_key", invoice_ocr.STAIK_API_KEY)
-        invoice_ocr.STAIK_MODEL = param("invoice_ocr.staik_model", invoice_ocr.STAIK_MODEL)
-        invoice_ocr.VENICE_API_KEY = param("invoice_ocr.venice_api_key", invoice_ocr.VENICE_API_KEY)
-        invoice_ocr.VENICE_MODEL = param("invoice_ocr.venice_model", invoice_ocr.VENICE_MODEL)
-        invoice_ocr.OPENAI_API_KEY = param("invoice_ocr.openai_api_key", invoice_ocr.OPENAI_API_KEY)
-        invoice_ocr.OPENAI_MODEL = param("invoice_ocr.openai_model", invoice_ocr.OPENAI_MODEL)
-        invoice_ocr.AI_BASE_URL = param("invoice_ocr.base_url", invoice_ocr.AI_BASE_URL)
-        invoice_ocr.AI_API_KEY = param("invoice_ocr.api_key", invoice_ocr.AI_API_KEY)
-        invoice_ocr.AI_MODEL = param("invoice_ocr.model", invoice_ocr.AI_MODEL)
-        invoice_ocr.OLLAMA_URL = param("invoice_ocr.ollama_url", invoice_ocr.OLLAMA_URL)
-        invoice_ocr.OLLAMA_MODEL = param("invoice_ocr.ollama_model", invoice_ocr.OLLAMA_MODEL)
-        company = company or self.env.company
-        ids, _names = self._ocr_own_identities(company)
-        invoice_ocr.OWN_COMPANY = (company.name or "").strip().lower()
-        invoice_ocr.OWN_VAT_NUMBERS = {v.replace(" ", "").upper() for v in ids}
-        return invoice_ocr
+    @api.model
+    def _ocr_own_from_config(self, cfg):
+        """The own-company context (see _ocr_own_context) carried by a per-run config."""
+        return {
+            "ids": cfg.get("own_ids") or [],
+            "names": cfg.get("own_names") or [],
+            "partner_ids": cfg.get("own_partner_ids") or [],
+            "bank_keys": cfg.get("own_bank_keys") or set(),
+            "account_keys": cfg.get("own_account_keys") or set(),
+        }
 
     def _invoice_ocr_extend(self, move, files_data):
         ICP = self.env["ir.config_parameter"].sudo()
@@ -165,12 +170,15 @@ class AccountMove(models.Model):
         if not pdf_data:
             return
 
-        invoice_ocr = self._invoice_ocr_apply_settings(move.company_id)
+        # Lazy-import to keep module loadable when libs missing
+        from ..lib import invoice_ocr
 
-        own = self._ocr_own_context(move.company_id)
+        # One per-run config: provider settings plus the receiving company's identities,
+        # used both by the library and by the own-company guards below.
+        cfg = self._invoice_ocr_config(move.company_id)
+        own = self._ocr_own_from_config(cfg)
         try:
-            data = invoice_ocr.extract_invoice_data(
-                pdf_data, own_ids=own["ids"], own_names=own["names"])
+            data = invoice_ocr.extract_invoice_data(pdf_data, config=cfg)
         except Exception as e:
             logger.warning("invoice_ocr.extract_invoice_data failed: %s", e)
             return
@@ -304,7 +312,9 @@ class AccountMove(models.Model):
         # Redan bokförd via bankraden?
         prebooked = self._ocr_find_prebooked_statement_lines(move, data)
 
-        # Log a chatter note with confidence info
+        # Log a chatter note with confidence info. Values come straight out of
+        # OCR/LLM output and may contain arbitrary characters, so escape them —
+        # same reasoning as _check_ocr_totals, which uses Markup.
         conflicts = data.get("_conflicts") or []
         items = [
             Markup("<li>%s: <code>%s</code></li>") % (k, data[k])
@@ -647,26 +657,15 @@ class AccountMove(models.Model):
 
         # For EU/EX: also remap account_code so domestic 4xxx → corresponding foreign account
         # e.g. 4000 (Sw goods) → 4515 (EU goods 25%) ; 6230-range services stay the same
-        # Map by description heuristics done per-line below
+        # Map by description heuristics done per-line below. The actual remap
+        # lives in lib/invoice_ocr.remap_account_code so it can be unit-tested
+        # without Odoo; the closure only carries the per-move country context.
+        from ..lib import invoice_ocr as _ocr
+
         def remap_account_code(orig_code, line_desc=""):
-            if not is_eu_foreign and not is_outside_eu:
-                return orig_code
-            try:
-                code_int = int(str(orig_code or 0)[:4])
-            except (ValueError, TypeError):
-                return orig_code
-            # Goods inköpskonton: 4000-4099 → EU/EX motsvarighet
-            if is_eu_foreign and 4000 <= code_int <= 4099:
-                return "4515"  # Inköp av varor från annat EU-land 25%
-            if is_outside_eu and 4000 <= code_int <= 4099:
-                return "4545"  # Import av varor 25% moms
-            # Services 4500-4599 in BAS: 4535 (EU services 25%), 4531 (services 25% own use)
-            if is_eu_foreign and 4500 <= code_int <= 4599:
-                return "4535"
-            # Cloud/SaaS in 6230-range stays as-is (it's a cost class, not a "purchase from EU" account)
-            # but if AI returned 6231 for an EU vendor, the line still needs the EU tax tag —
-            # we keep the cost account but the tax handles VAT side
-            return orig_code
+            return _ocr.remap_account_code(
+                orig_code, is_eu_foreign=is_eu_foreign,
+                is_outside_eu=is_outside_eu, line_desc=line_desc)
 
         line_vals_list = []
 
