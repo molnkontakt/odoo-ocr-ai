@@ -193,3 +193,27 @@ def test_the_runs_account_list_reaches_the_model_and_the_check(monkeypatch):
 ])
 def test_normalize_currency(value, iso):
     assert inv.normalize_currency(value) == iso
+
+
+# ── Vendor names (#13) ───────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(("ocr", "partner", "rule"), [
+    ("Example Bank AB (publ)", "Example Bank", "full"),
+    ("EXAMPLE CONSULTING AB", "Example Consulting AB", "full"),
+    ("Example Consulting", "Example Consulting Stockholm AB", "tokens"),
+    ("Acme Sverige AB", "Other Sverige AB", None),
+    ("Example Supplier AB", "Example Design AB", None),
+    ("Sverige AB", "Sverige AB", "full"),
+    ("Sverige AB", "Example Sverige AB", None),   # generic words only: never by tokens
+    ("Example GmbH", "Example AS", "full"),
+    ("", "Example AB", None),
+])
+def test_name_match(ocr, partner, rule):
+    assert inv.name_match(ocr, partner) == rule
+
+
+def test_name_tokens_and_giro_digits():
+    assert inv.name_tokens("Example Bank Sverige AB (publ)") == ["example"]
+    assert inv.name_tokens("X & Y Oy") == []
+    assert inv.giro_digits("BG 123-4566") == "1234566"
+    assert inv.giro_digits(None) == ""

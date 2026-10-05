@@ -74,6 +74,14 @@ never used as the supplier:
 
 - Its org/VAT numbers are skipped when the supplier's org number is extracted;
   if the regex only finds own numbers, the LLM's value is used instead.
+- **Vendor matching**, in this order: the VAT number, the Swedish org number,
+  the bankgiro/plusgiro (the same digits as an account the bill's company may
+  use, never part of a longer number), then the name, only among the company's
+  vendors: the same name apart from legal form and punctuation, or every
+  distinctive word of it (not "AB", "Sverige" …). More than one partner on a rule
+  is no match. The commercial partner is used, a vendor already on the bill is
+  kept (nothing is looked up or created), and the chatter note says which rule
+  matched; a match on the name alone is flagged for checking.
 - The vendor is never the own company, a contact under it, or another partner
   (archived ones too) carrying its org/VAT number. A pre-set own company is
   replaced by the vendor from the document.

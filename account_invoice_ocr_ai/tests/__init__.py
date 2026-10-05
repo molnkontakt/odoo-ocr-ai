@@ -7,6 +7,7 @@ from . import (
     test_ocr_long_text,
     test_ocr_savepoint,
     test_ocr_vat,
+    test_ocr_vendor,
     test_payment_reference,
     test_provider_settings,
 )

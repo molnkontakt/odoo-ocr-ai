@@ -29,7 +29,8 @@ class TestOcrGuards(OcrBillCase):
         cls.own_bg = Bank.create({"partner_id": cls.own_partner.id,
                                   "acc_number": "BG " + fx.OWN_BANKGIRO})
         cls.vendor = cls.env["res.partner"].create(
-            {"name": "Example Bank", "vat": fx.VENDOR_VAT, "is_company": True})
+            {"name": "Example Bank", "vat": fx.VENDOR_VAT, "is_company": True,
+             "supplier_rank": 1})
         cls.expense = cls.company_data["default_account_expense"]
         cls.payable = cls.company_data["default_account_payable"]
         cls.bank_journal = cls.company_data["default_journal_bank"]

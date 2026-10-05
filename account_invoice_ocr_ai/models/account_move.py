@@ -319,11 +319,16 @@ class AccountMove(models.Model):
                     notes.append(_("%(field)s %(value)s is not a valid date – not used.",
                                    field=key, value=data.pop(key)))
         auto_debit = data.get("auto_debit")
-        partner_id = self._resolve_partner_from_ocr(data, own=own, notes=notes, company=company)
         # ---- Build write vals ----------------------------------------
         vals = {}
         current_is_own = bool(move.partner_id) and self._ocr_is_own_partner(move.partner_id, own)
-        if partner_id and (not move.partner_id or current_is_own):
+        # A vendor set on the bill is kept (unless it is the own company): no lookup, no
+        # vendor created from the document.
+        partner_id = None
+        if not move.partner_id or current_is_own:
+            partner_id = self._resolve_partner_from_ocr(data, own=own, notes=notes,
+                                                        company=company)
+        if partner_id:
             vals["partner_id"] = partner_id
             if current_is_own:
                 notes.append(_("Leverantören var satt till det egna bolaget (%s) – "
@@ -711,7 +716,15 @@ class AccountMove(models.Model):
 
         Never returns the receiving company's partner (or a contact under it): on a vendor
         bill the own company is the buyer, not the seller. Only partners and bank accounts
-        the bill's `company` may use are considered (#7).
+        the bill's `company` may use are considered (#7). Returns the commercial partner's
+        id, and a note says which rule matched (#13):
+
+        1. the VAT number, 2. the Swedish org number, 3. the bankgiro/plusgiro, compared
+        digit for digit with the partner's account (never a substring of another number),
+        4. the name, among the company's vendors only: the same name apart from legal form
+        and punctuation, else every distinctive word of the name (not 'AB', 'Sverige' …).
+        More than one partner on a rule is no match. 5. Otherwise a vendor with a name and
+        an org/VAT number or giro number is created.
         """
         from ..lib import invoice_ocr
 
@@ -721,6 +734,12 @@ class AccountMove(models.Model):
         notes = notes if notes is not None else []
         own_keys = invoice_ocr.build_own_ids(own["ids"])
         own_names = invoice_ocr.build_own_names(own["names"])
+
+        def matched(partner, how):
+            partner = partner.commercial_partner_id
+            notes.append(_("Vendor %(vendor)s: matched on %(how)s.",
+                           vendor=partner.display_name, how=how))
+            return partner.id
 
         # 1. VAT (any country prefix already in OCR, or Swedish org number)
         org_raw = (data.get("org_number") or "").strip()
@@ -733,7 +752,7 @@ class AccountMove(models.Model):
             p = self._ocr_partner_search([("vat", "=", org_raw)], own, notes,
                                          _("Momsreg.nr %s") % org_raw, company=company)
             if p:
-                return p.id
+                return matched(p, _("the VAT number %s", org_raw))
 
         # 2. Swedish org number — multiple variants
         org_clean = re.sub(r"[^0-9]", "", org_raw)
@@ -742,31 +761,28 @@ class AccountMove(models.Model):
             for v in [f"SE{org_clean}01", f"SE{org_clean}", org_clean]:
                 p = self._ocr_partner_search([("vat", "=", v)], own, [], how, company=company)
                 if p:
-                    return p.id
+                    return matched(p, _("the org number %s", org_raw))
             p = self._ocr_partner_search([("vat", "ilike", org_clean)], own, notes, how,
                                          company=company)
             if p:
-                return p.id
+                return matched(p, _("the org number %s", org_raw))
 
-        # 3. Plusgiro / bankgiro
+        # 3. Plusgiro / bankgiro: the same digits, not a substring of another account
         for field in ("plusgiro", "bankgiro"):
             bg = (data.get(field) or "").strip()
-            if not bg:
-                continue
-            bg_clean = re.sub(r"[^0-9]", "", bg)
+            bg_clean = invoice_ocr.giro_digits(bg)
             if not bg_clean or self._ocr_is_own_bank_number(bg_clean, own):
                 continue  # det egna kontot säger inget om leverantören
-            Bank = self.env["res.partner.bank"]
-            bank = Bank.search(
-                [*Bank._check_company_domain(company),
-                 ("sanitized_acc_number", "ilike", bg_clean),
-                 ("partner_id", "not in", own["partner_ids"]),
-                 ("partner_id.commercial_partner_id", "not in", own["partner_ids"])],
-                limit=1)
-            if bank:
-                return bank.partner_id.id
+            partners = self._ocr_giro_accounts(bg_clean, company, own).partner_id
+            partners = partners.commercial_partner_id
+            if len(partners) == 1:
+                return matched(partners, f"{field} {bg}")
+            if partners:
+                notes.append(_("%(field)s %(number)s belongs to several partners (%(names)s) – "
+                               "none was chosen.", field=field, number=bg,
+                               names=", ".join(partners.mapped("display_name"))))
 
-        # 4. Vendor name fuzzy
+        # 4. Vendor name, among the company's vendors
         name = (data.get("vendor_name") or "").strip()
         if name:
             # Strip OCR noise prefixes
@@ -777,20 +793,12 @@ class AccountMove(models.Model):
                            "användes inte.") % name)
             name = ""
         if name:
-            # Exact match first
-            p = self._ocr_partner_search(
-                [("name", "=ilike", name), ("is_company", "=", True)], own, notes,
-                _("Namnet \"%s\"") % name, company=company)
-            if p:
-                return p.id
-            # Substring match — only if exactly one
-            tokens = [t for t in re.split(r"\s+", name) if len(t) >= 4]
-            for t in tokens:
-                p = self._ocr_partner_search(
-                    [("name", "ilike", t), ("is_company", "=", True)], own, [], "", limit=2,
-                    company=company)
-                if len(p) == 1:
-                    return p.id
+            partner = self._ocr_partner_by_name(name, own, notes, company)
+            if partner:
+                notes.append(_("Vendor %(vendor)s: matched on the name \"%(name)s\" only, no "
+                               "VAT, org or giro number matched – check that it is the right "
+                               "vendor.", vendor=partner.display_name, name=name))
+                return partner.id
 
         # 5. Auto-create partner if we have a name + org/VAT
         # Ett autogiro-underlag trycker KÖPARENS konto, inte leverantörens — lägg
@@ -822,9 +830,51 @@ class AccountMove(models.Model):
                     "partner_id": new_partner.id,
                     "acc_number": acc,
                 })
+            notes.append(_("Vendor %s: not found, created from the document.",
+                           new_partner.display_name))
             return new_partner.id
 
         return None
+
+    def _ocr_giro_accounts(self, digits, company, own):
+        """Bank accounts the company may use whose number is exactly these giro digits
+        ('BG 123-4566' for '1234566'), never the buyer's own (#13)."""
+        from ..lib import invoice_ocr
+
+        Bank = self.env["res.partner.bank"]
+        banks = Bank.search([
+            *Bank._check_company_domain(company),
+            ("sanitized_acc_number", "ilike", digits),
+            ("partner_id", "not in", own["partner_ids"]),
+            ("partner_id.commercial_partner_id", "not in", own["partner_ids"]),
+        ])
+        return banks.filtered(
+            lambda b: invoice_ocr.giro_digits(b.sanitized_acc_number) == digits)
+
+    def _ocr_partner_by_name(self, name, own, notes, company):
+        """The company's one vendor (supplier_rank > 0) whose name matches `name`
+        (invoice_ocr.name_match): the same name wins over one with all distinctive words.
+        Several partners on the best rule: none, and a note."""
+        from ..lib import invoice_ocr
+
+        tokens = invoice_ocr.name_tokens(name)
+        if not tokens:
+            return self.env["res.partner"]
+        found = self._ocr_partner_search(
+            [("name", "ilike", max(tokens, key=len)), ("supplier_rank", ">", 0)], own, notes,
+            _("Namnet \"%s\"") % name, limit=100, company=company)
+        for rule in ("full", "tokens"):
+            partners = found.filtered(
+                lambda p, rule=rule: invoice_ocr.name_match(name, p.name) == rule
+            ).commercial_partner_id
+            if len(partners) == 1:
+                return partners
+            if partners:
+                notes.append(_("The name \"%(name)s\" matches several vendors (%(names)s) – "
+                               "none was chosen.", name=name,
+                               names=", ".join(partners.mapped("display_name"))))
+                break
+        return self.env["res.partner"]
 
     @api.model
     def _ocr_partner_country_code(self, partner):
@@ -1286,12 +1336,15 @@ class AccountMove(models.Model):
             if not bg_clean:
                 continue
             Bank = self.env["res.partner.bank"]
-            bank = Bank.search([
+            banks = Bank.search([
                 *Bank._check_company_domain(move.company_id),
-                ("partner_id", "=", partner_id),
+                ("partner_id", "child_of", partner_id),
                 ("sanitized_acc_number", "ilike", bg_clean),
                 ("active", "=", True),
-            ], limit=1)
+            ])
+            # The same number, not one that merely contains these digits (#13)
+            bank = banks.filtered(lambda b, digits=bg_clean: re.sub(
+                r"\D", "", b.sanitized_acc_number or "") == digits)[:1]
             if bank:
                 move.partner_bank_id = bank.id
                 return

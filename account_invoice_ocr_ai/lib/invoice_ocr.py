@@ -458,6 +458,43 @@ def _name_key(name):
     return re.sub(r"[\s,.\-()]+", "", s)
 
 
+# Legal forms that NAME_STOPWORDS does not list (two-letter ones would be noise there)
+LEGAL_FORM_WORDS = frozenset({
+    "as", "aps", "oy", "oyj", "bv", "nv", "sa", "sarl", "srl", "spa", "ag", "plc", "hb", "kb",
+})
+
+
+def name_tokens(name):
+    """The distinctive words of a company name: lower case, without legal forms, countries
+    and generic words (NAME_STOPWORDS, LEGAL_FORM_WORDS)."""
+    words = re.findall(r"[^\W_]+", str(name or "").lower())
+    return [w for w in words
+            if w not in NAME_STOPWORDS and w not in LEGAL_FORM_WORDS and len(w) >= 2]
+
+
+def name_match(ocr_name, partner_name):
+    """How a vendor name read from a document matches a partner's name (#13).
+
+    'full': the same name apart from case, spaces, punctuation and legal form ('Example
+    Bank AB (publ)' and 'Example Bank'); 'tokens': every distinctive word of the document's
+    name is a word of the partner's name ('Example Supplier AB' and 'Example Supplier
+    Stockholm AB'); None otherwise. A name of generic words only never matches by tokens,
+    so 'Acme Sverige AB' is not 'Other Sverige AB'.
+    """
+    key = _name_key(ocr_name)
+    if key and len(key) >= 3 and key == _name_key(partner_name):
+        return "full"
+    tokens = name_tokens(ocr_name)
+    if tokens and set(tokens) <= set(name_tokens(partner_name)):
+        return "tokens"
+    return None
+
+
+def giro_digits(value):
+    """The digits of a bankgiro/plusgiro or account number ('BG 123-4566' → '1234566')."""
+    return re.sub(r"\D", "", str(value or ""))
+
+
 def build_own_names(names):
     """Normaliserade egna bolagsnamn (gemener, utan blanksteg och bolagsform).
 
