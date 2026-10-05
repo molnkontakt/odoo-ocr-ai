@@ -430,3 +430,77 @@ def test_parse_amount_comma_as_thousands_separator():
 
 def test_grand_total_with_comma_thousands_separator():
     assert inv.extract_fields("Grand total $1,234\n")["total_amount"] == 1234.0
+
+
+# ── Dates: only real calendar dates, English months, anchored labels (#16) ────
+
+def test_parse_date_returns_only_valid_iso_dates():
+    assert inv._parse_date("3 March 2026") == "2026-03-03"
+    assert inv._parse_date("12 May 2026") == "2026-05-12"
+    assert inv._parse_date("March 3, 2026") == "2026-03-03"
+    assert inv._parse_date("Sep 17, 2026") == "2026-09-17"
+    assert inv._parse_date("17 sept. 2026") == "2026-09-17"
+    assert inv._parse_date("1 mars 2026") == "2026-03-01"
+    assert inv._parse_date("1 okt 2026") == "2026-10-01"
+    assert inv._parse_date("2026/09/17") == "2026-09-17"
+    assert inv._parse_date("9.4.2026") == "2026-04-09"
+    # one valid reading only: the mm/dd one
+    assert inv._parse_date("09/15/2026") == "2026-09-15"
+    for junk in ("2026-02-30", "2026-15-09", "17/09/26", "170917", "null", "N/A", "",
+                 "3 Foo 2026", None):
+        assert inv._parse_date(junk) is None, junk
+
+
+def test_ambiguous_slash_date_has_two_readings():
+    assert inv._date_readings("09/04/2026") == ["2026-04-09", "2026-09-04"]
+    assert inv._date_readings("12/12/2026") == ["2026-12-12"]
+    assert inv.iso_date("09/04/2026") == "2026-04-09"
+
+
+def test_datum_label_is_anchored():
+    text = "Leveransdatum 2026-02-01\nFaktura\nDatum 2026-03-05\n"
+    assert inv.extract_fields(text)["invoice_date"] == "2026-03-05"
+    text = "Förfallodatum: 2026-04-04\nDatum: 2026-03-05\n"
+    fields = inv.extract_fields(text)
+    assert fields["invoice_date"] == "2026-03-05"
+    assert fields["due_date"] == "2026-04-04"
+    assert "invoice_date" not in inv.extract_fields("Orderdatum 2026-01-20\n")
+
+
+def test_unparsable_regex_date_never_wins():
+    assert inv.extract_fields("Invoice date: 3 March 2026\n")["invoice_date"] == "2026-03-03"
+    fields = inv.extract_fields("Fakturadatum: 2026-02-30\nDatum 2026-03-05\n")
+    assert fields["invoice_date"] == "2026-03-05"
+    assert "invoice_date" not in inv.extract_fields("Fakturadatum: 2026-02-30\n")
+    assert inv.extract_fields("Due date: 09/15/2026\n")["due_date"] == "2026-09-15"
+
+
+def _merge_dates(regex_text, ai):
+    regex = inv.extract_fields(regex_text)
+    return inv._merge_fields(regex_text, regex, ai, set())
+
+
+def test_ambiguous_date_takes_the_ais_reading():
+    text = "Invoice date: 09/04/2026\n"
+    out = _merge_dates(text, {"invoice_date": "2026-09-04"})
+    assert out["invoice_date"] == "2026-09-04"
+    assert any("2026-04-09 or 2026-09-04" in n for n in out["_notes"])
+    assert "_conflicts" not in out
+    out = _merge_dates(text, {"invoice_date": "2026-04-09"})
+    assert out["invoice_date"] == "2026-04-09" and "_notes" not in out
+    # no AI date (or another one): day/month, with a note
+    out = _merge_dates(text, {})
+    assert out["invoice_date"] == "2026-04-09"
+    assert any("day/month" in n for n in out["_notes"])
+    out = _merge_dates(text, {"invoice_date": "2026-01-01"})
+    assert out["invoice_date"] == "2026-04-09"
+    assert any(c.startswith("invoice_date:") for c in out["_conflicts"])
+
+
+def test_invalid_ai_date_is_dropped_with_a_note():
+    out = _merge_dates("no dates here\n", {"invoice_date": "2026-02-30", "due_date": "N/A"})
+    assert "invoice_date" not in out and "due_date" not in out
+    assert sum("not a valid date" in n for n in out["_notes"]) == 2
+    # a valid AI due date still wins over the regex one (unchanged)
+    out = _merge_dates("Förfallodatum: 2026-04-04\n", {"due_date": "2026-04-05"})
+    assert out["due_date"] == "2026-04-05"

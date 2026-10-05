@@ -300,6 +300,17 @@ class AccountMove(models.Model):
             notes.append(_("Org.nr %s på fakturan är bolagets eget (köparen) – "
                            "användes inte som leverantörens.") % own_nr)
         notes += data.get("_notes") or []
+        # Only real calendar dates are written: a value the ORM cannot read would make the
+        # write raise and lose the whole fill. The library already validates; this guards
+        # against anything else (another library version, a patched extraction).
+        for key in ("invoice_date", "due_date"):
+            if data.get(key) is not None:
+                value = invoice_ocr.iso_date(data[key])
+                if value:
+                    data[key] = value
+                else:
+                    notes.append(_("%(field)s %(value)s is not a valid date – not used.",
+                                   field=key, value=data.pop(key)))
         auto_debit = data.get("auto_debit")
         partner_id = self._resolve_partner_from_ocr(data, own=own, notes=notes)
         # ---- Build write vals ----------------------------------------

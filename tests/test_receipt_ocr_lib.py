@@ -119,3 +119,53 @@ def test_guard_falls_back_to_the_printed_total():
     kept, notes = r._apply_guards({"total": 18.0, "confidence": 0.9}, TEXT, regex)
     assert kept["total"] == 418.0
     assert any("418.00" in n for n in notes)
+
+
+# ── Receipt dates: validated (#30) and checked against the text (#31) ─────────
+
+def test_clean_drops_invalid_dates():
+    for bad in ("17/09/26", "170917", "2026-02-30", "Sep 31, 2026"):
+        out = r._clean({"date": bad}, [])
+        assert "date" not in out and out["_bad_date"] == bad
+    for placeholder in ("null", "N/A", " "):
+        assert r._clean({"date": placeholder}, []) == {}
+    assert r._clean({"date": "2026-09-17"}, [])["date"] == "2026-09-17"
+    assert r._clean({"date": "17.09.2026"}, [])["date"] == "2026-09-17"
+
+
+def test_date_in_text_formats():
+    for printed in ("2026-09-17", "2026.09.17", "2026/9/17", "20260917", "17/09/2026",
+                    "17.9.2026", "17-09-26", "260917", "09/17/2026", "17 sep 2026",
+                    "Sep 17, 2026", "Datum 2026-09-17 10:14"):
+        assert r._date_in_text("2026-09-17", f"Kvitto {printed} x"), printed
+    assert not r._date_in_text("2026-09-17", "Kvitto 2026-09-18")
+    assert not r._date_in_text("2020-09-17", TEXT)
+    assert not r._date_in_text("2026-09-17", "Art 20260917123")
+    assert not r._date_in_text("not a date", TEXT)
+
+
+def test_unseen_ai_date_falls_back_to_the_printed_date():
+    regex = r._regex_fields(TEXT)
+    kept, notes = r._apply_guards({"date": "2020-09-17", "confidence": 0.9}, TEXT, regex)
+    assert kept["date"] == "2026-09-17"
+    assert any("2020-09-17" in n for n in notes)
+    kept, notes = r._apply_guards({"date": "2020-09-17", "confidence": 0.9},
+                                  "Totalt 418,00\n", {})
+    assert "date" not in kept and any("ignored" in n for n in notes)
+    kept, notes = r._apply_guards({"date": "2026-09-17", "confidence": 0.9}, "x 260917 y", {})
+    assert kept["date"] == "2026-09-17" and not notes
+
+
+def test_regex_date_reads_day_first_dates():
+    assert r._regex_fields("Kvitto 17/09/2026 10:14")["date"] == "2026-09-17"
+    assert r._regex_fields("Kvitto 17.09.2026")["date"] == "2026-09-17"
+    assert "date" not in r._regex_fields("Kvitto 31.02.2026")
+
+
+def test_bad_ai_date_keeps_the_regex_date(monkeypatch):
+    monkeypatch.setattr(r, "read_text", lambda *a, **k: TEXT)
+    monkeypatch.setattr(r, "_chat_json", lambda *a, **k: {
+        "total": 418.0, "date": "17/09/26", "confidence": 0.9})
+    out = r.extract_receipt_data(b"x", "image/jpeg", "receipt.jpg")
+    assert out["fields"]["date"] == "2026-09-17"
+    assert any("17/09/26" in n for n in out["notes"])

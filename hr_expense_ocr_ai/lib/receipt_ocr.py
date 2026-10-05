@@ -103,7 +103,9 @@ TOTAL_LINE_RE = re.compile(
 # purchase line, then sums ("Summa" is often before a discount, "Belopp" on a card slip
 # can include a cash withdrawal). Within the best label the last line wins.
 TOTAL_LABEL_RANK = (("att betala", "total", "slutsumma"), ("kort", "kop", "köp"), ("summa", "belopp"))
-DATE_RE = re.compile(r"(20\d{2})[-./](\d{2})[-./](\d{2})")
+DATE_RE = re.compile(r"(?<!\d)(20\d{2})[-./](\d{1,2})[-./](\d{1,2})(?!\d)")
+# 17/09/2026, 17.09.2026, 17-09-2026: day first, as on Swedish receipts
+DMY_DATE_RE = re.compile(r"(?<!\d)(\d{1,2})[-./](\d{1,2})[-./](20\d{2})(?!\d)")
 
 
 def _total_label_rank(label):
@@ -132,12 +134,39 @@ def _regex_fields(text):
     total = _regex_total(text)
     if total is not None:
         out["total"] = total
-    m = DATE_RE.search(text)
-    if m:
-        y, mo, d = (int(x) for x in m.groups())
-        with contextlib.suppress(ValueError):
-            out["date"] = date(y, mo, d).isoformat()
+    for regex, order in ((DATE_RE, (1, 2, 3)), (DMY_DATE_RE, (3, 2, 1))):
+        for m in regex.finditer(text):
+            y, mo, d = (int(m.group(i)) for i in order)
+            with contextlib.suppress(ValueError):
+                out["date"] = date(y, mo, d).isoformat()
+                break
+        if "date" in out:
+            break
     return out
+
+
+def _date_in_text(iso, text):
+    """True when the date `iso` (YYYY-MM-DD) is printed in `text` in a usual receipt format.
+
+    2026-09-17, 2026.09.17, 2026/9/17, 20260917, 17/09/2026, 17.9.2026, 17-09-26, 260917,
+    09/17/2026 and 17 sep 2026 / Sep 17, 2026 all count; a date inside a longer number
+    does not.
+    """
+    try:
+        day = date.fromisoformat(str(iso))
+    except ValueError:
+        return False
+    y, yy = f"{day.year}", f"{day.year % 100:02d}"
+    m, d = rf"0?{day.month}", rf"0?{day.day}"
+    names = "|".join(sorted((re.escape(k) for k, v in inv.MONTHS.items() if v == day.month),
+                            key=len, reverse=True))
+    forms = [
+        rf"{y}[-./]{m}[-./]{d}", rf"{y}{day.month:02d}{day.day:02d}",
+        rf"{d}[-./]{m}[-./](?:{y}|{yy})", rf"{yy}{day.month:02d}{day.day:02d}",
+        rf"{m}/{d}/{y}",
+        rf"{d}\.?[ \t]*(?:{names})\.?,?[ \t]*{y}", rf"(?:{names})\.?[ \t]*{d},?[ \t]*{y}",
+    ]
+    return re.search(r"(?<!\d)(?:" + "|".join(forms) + r")(?!\d)", text, re.IGNORECASE) is not None
 
 
 # ── AI ────────────────────────────────────────────────────────────────────────
@@ -164,7 +193,7 @@ PROMPT = """You are reading the OCR text of a Swedish till receipt (kvitto) for 
 Fields:
 - merchant: shop / company name EXACTLY as it appears in the OCR text (e.g. "OKQ8", "Jula"). If no shop name is readable in the text, use null — never guess a chain from the products.
 - receipt_number: kvittonummer / kvitto nr if printed, else null.
-- date: purchase date as YYYY-MM-DD. Swedish receipts print dates as 2026-09-17 or 17/09/2026 or 170917. null if unreadable.
+- date: purchase date as YYYY-MM-DD. Swedish receipts print dates as 2026-09-17 or 17/09/2026 or 260917 (YYMMDD). null if unreadable.
 - total: the amount actually paid, VAT included, as a number (e.g. 389.00). Look for "Totalt", "Summa", "Att betala", "Köp", the card line. Never the VAT base ("Underlag"/"Netto") and never the VAT amount.
 - vat_amount: VAT ("Moms") amount as a number, or null.
 - currency: "SEK" unless clearly another currency.
@@ -210,16 +239,18 @@ def _clean(data, categories):
         if isinstance(v, str) and v.strip() and v.strip().lower() not in ("null", "none", "unknown"):
             out[k] = v.strip()
     for k in ("total", "vat_amount", "confidence"):
-        v = inv._num(data.get(k))
+        v = inv._to_number(data.get(k))
         if v is not None:
             out[k] = v
+    # Only a real calendar date; anything else ('17/09/26', '170917', '2026-02-30', 'N/A')
+    # is reported as _bad_date instead of reaching the expense, where the write would fail.
     d = data.get("date")
-    if isinstance(d, str):
-        p = inv._parse_date(d) if hasattr(inv, "_parse_date") else None
+    if isinstance(d, str) and d.strip() and d.strip().lower() not in ("null", "none", "unknown", "n/a"):
+        p = inv.iso_date(d)
         if p:
-            out["date"] = p if isinstance(p, str) else p.isoformat()
-        elif DATE_RE.search(d):
-            out["date"] = _regex_fields(d).get("date")
+            out["date"] = p
+        else:
+            out["_bad_date"] = d.strip()
     codes = {c[0] for c in (categories or [])}
     if out.get("category_code") and out["category_code"] not in codes:
         out.pop("category_code")
@@ -258,6 +289,15 @@ def _apply_guards(fields, text, regex=None):
     if fields.get("merchant") and not _merchant_in_text(fields["merchant"], text):
         notes.append(f"butiksnamnet \"{fields['merchant']}\" finns inte i kvittotexten — ignorerat")
         fields.pop("merchant")
+    if fields.get("date") and not _date_in_text(fields["date"], text):
+        printed = regex.get("date")
+        if printed and printed != fields["date"] and _date_in_text(printed, text):
+            notes.append(f"the date {fields['date']} is not printed on the receipt — "
+                         f"used the receipt's date {printed}")
+            fields["date"] = printed
+        else:
+            notes.append(f"the date {fields['date']} is not printed on the receipt — ignored")
+            fields.pop("date")
     if fields.get("total") is not None and not _total_in_text(fields["total"], text):
         printed = regex.get("total")
         if printed is not None and _total_in_text(printed, text):
@@ -291,11 +331,14 @@ def extract_receipt_data(raw, mimetype=None, filename=None, categories=None, con
     except Exception as e:  # noqa: BLE001 — AI:n får aldrig fälla mailhämtningen
         logger.warning("receipt AI extraction failed (%s): %s", cfg["provider"], e)
         ai = {}
-    if ai:
+    bad_date = ai.pop("_bad_date", None)
+    if ai or bad_date:
         # AI ser hela sammanhanget; regex fyller bara luckor
         fields = dict(regex)
         fields.update(ai)
         fields, notes = _apply_guards(fields, text, regex)
+        if bad_date:
+            notes.insert(0, f"the model's date {bad_date!r} is not a valid date — ignored")
         result.update(fields=fields, source="ai", notes=notes)
     elif regex:
         result.update(fields=regex, source="regex", notes=["AI-tolkningen misslyckades; bara regex"])

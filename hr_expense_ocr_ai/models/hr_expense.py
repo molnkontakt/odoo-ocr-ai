@@ -116,6 +116,8 @@ class HrExpense(models.Model):
         return Move._ocr_result("filled")
 
     def _expense_ocr_apply(self, result, by_code, att, force=False):
+        from ..lib import receipt_ocr
+
         self.ensure_one()
         f = result.get("fields") or {}
         notes = list(result.get("notes") or [])
@@ -125,8 +127,14 @@ class HrExpense(models.Model):
             vals["total_amount_currency"] = round(float(f["total"]), 2)
             filled.append(_("belopp %s", vals["total_amount_currency"]))
         if f.get("date") and (force or not self.date or self.date == today):
-            vals["date"] = f["date"]
-            filled.append(_("datum %s", f["date"]))
+            # Only a real calendar date is written: anything else would make the write
+            # raise and lose every other value read from the receipt.
+            day = receipt_ocr.inv.iso_date(f["date"])
+            if day:
+                vals["date"] = day
+                filled.append(_("datum %s", day))
+            else:
+                notes.append(_("the date %s is not a valid date – not used", f["date"]))
         if f.get("category_code") and (force or not self.product_id):
             product = by_code.get(f["category_code"])
             if product:

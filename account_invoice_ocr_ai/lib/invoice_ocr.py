@@ -15,9 +15,11 @@ import base64
 import io
 import json
 import logging
+import math
 import os
 import re
 import time
+from datetime import date
 
 import pdfplumber
 
@@ -42,14 +44,17 @@ MAX_OCR_PAGES = int(os.environ.get("INVOICE_OCR_MAX_PAGES", "10"))
 OCR_SCALE = float(os.environ.get("INVOICE_OCR_SCALE", "2"))
 
 
-# ── Swedish date formats ─────────────────────────────────────────────────────
+# ── Date formats ────────────────────────────────────────────────────────────
 
+_MONTH_WORD = r"[A-Za-zÅÄÖåäö]{3,9}\.?"
 DATE_PATTERNS = [
-    r"\d{4}-\d{2}-\d{2}",       # 2026-03-01
-    r"\d{4}\.\d{2}\.\d{2}",     # 2026.03.01
-    r"\d{2}\.\d{2}\.\d{4}",     # 31.03.2026 (ALSO/DE format)
-    r"\d{2}/\d{2}/\d{4}",       # 09/04/2026 (Hetzner format)
-    r"\d{1,2}\s+\w+\s+\d{4}",   # 1 mars 2026
+    r"\d{4}-\d{2}-\d{2}",                          # 2026-03-01
+    r"\d{4}\.\d{2}\.\d{2}",                        # 2026.03.01
+    r"\d{4}/\d{2}/\d{2}",                          # 2026/03/01
+    r"\d{1,2}\.\d{1,2}\.\d{4}",                    # 31.03.2026 (ALSO/DE format)
+    r"\d{1,2}/\d{1,2}/\d{4}",                      # 09/04/2026 (Hetzner format)
+    r"\d{1,2}\.?[ \t]+" + _MONTH_WORD + r",?[ \t]+\d{4}",   # 1 mars 2026, 3 March 2026
+    _MONTH_WORD + r"[ \t]+\d{1,2}(?:st|nd|rd|th)?,?[ \t]+\d{4}",  # March 3, 2026
 ]
 
 SWEDISH_MONTHS = {
@@ -57,38 +62,70 @@ SWEDISH_MONTHS = {
     "maj": "05", "juni": "06", "juli": "07", "augusti": "08",
     "september": "09", "oktober": "10", "november": "11", "december": "12",
 }
+# Swedish and English month names and their usual abbreviations → month number
+MONTHS = {name: int(num) for name, num in SWEDISH_MONTHS.items()}
+MONTHS.update({
+    "january": 1, "february": 2, "march": 3, "may": 5, "june": 6, "july": 7,
+    "august": 8, "october": 10,
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7, "aug": 8,
+    "sep": 9, "sept": 9, "okt": 10, "oct": 10, "nov": 11, "dec": 12,
+})
+
+
+def _month(word):
+    return MONTHS.get(str(word or "").lower().rstrip("."))
+
+
+# (full-match pattern, [(year, month, day) group numbers per reading])
+_DATE_FORMS = [
+    (r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})", [(1, 2, 3)]),
+    (r"(\d{1,2})\.(\d{1,2})\.(\d{4})", [(3, 2, 1)]),
+    (r"(\d{1,2})[/-](\d{1,2})[/-](\d{4})", [(3, 2, 1), (3, 1, 2)]),   # dd/mm, then mm/dd
+    (r"(\d{1,2})\.? (" + _MONTH_WORD + r"),? (\d{4})", [(3, 2, 1)]),
+    (r"(" + _MONTH_WORD + r") (\d{1,2})(?:st|nd|rd|th)?,? (\d{4})", [(3, 1, 2)]),
+]
+
+
+def _date_readings(text):
+    """The valid ISO dates a printed date can mean: none, one, or two for NN/NN/YYYY.
+
+    'NN/NN/YYYY' is read as dd/mm first (Swedish and European invoices) and as mm/dd
+    second; only readings that are real calendar dates are returned, so '09/15/2026'
+    gives only 2026-09-15 and '09/04/2026' gives 2026-04-09 and 2026-09-04.
+    """
+    t = re.sub(r"\s+", " ", str(text or "").strip())
+    for pattern, order in _DATE_FORMS:
+        m = re.fullmatch(pattern, t)
+        if m:
+            parts = [tuple(_month(m.group(i)) or m.group(i) for i in ymd) for ymd in order]
+            break
+    else:
+        return []
+    readings = []
+    for y, mo, d in parts:
+        try:
+            iso = date(int(y), int(mo), int(d)).isoformat()
+        except ValueError:
+            continue
+        if iso not in readings:
+            readings.append(iso)
+    return readings
 
 
 def _parse_date(text):
-    """Try to parse a date string into YYYY-MM-DD format."""
-    text = text.strip()
+    """A printed date as YYYY-MM-DD, or None unless it is a real calendar date.
 
-    # 2026-03-01
-    if re.match(r"^\d{4}-\d{2}-\d{2}$", text):
-        return text
+    Ambiguous 'NN/NN/YYYY' gives the dd/mm reading (see _date_readings).
+    """
+    readings = _date_readings(text)
+    return readings[0] if readings else None
 
-    # 2026.03.01
-    if re.match(r"^\d{4}\.\d{2}\.\d{2}$", text):
-        return text.replace(".", "-")
 
-    # 31.03.2026 (dd.mm.yyyy — ALSO format)
-    m = re.match(r"^(\d{2})\.(\d{2})\.(\d{4})$", text)
-    if m:
-        return f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
-
-    # 01/03/2026
-    m = re.match(r"^(\d{2})/(\d{2})/(\d{4})$", text)
-    if m:
-        return f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
-
-    # 1 mars 2026
-    m = re.match(r"^(\d{1,2})\s+(\w+)\s+(\d{4})$", text, re.IGNORECASE)
-    if m:
-        month = SWEDISH_MONTHS.get(m.group(2).lower())
-        if month:
-            return f"{m.group(3)}-{month}-{m.group(1).zfill(2)}"
-
-    return text
+def iso_date(value):
+    """`value` as a valid YYYY-MM-DD string, or None (also for date objects and junk)."""
+    if isinstance(value, date):
+        return value.isoformat()
+    return _parse_date(value) if isinstance(value, str) else None
 
 
 # ── Öresavrundning och justeringar utanför moms ─────────────────────────────
@@ -227,7 +264,8 @@ FIELD_PATTERNS = {
     ],
     "invoice_date": [
         r"(?:Fakturadatum|Invoice\s*date)[\s.:]*(" + "|".join(DATE_PATTERNS) + ")",
-        r"(?:Datum)[\s.:]*(" + "|".join(DATE_PATTERNS) + ")",
+        # \b: not the end of Leveransdatum, Förfallodatum, Orderdatum, …
+        r"\bDatum\b[\s.:]*(" + "|".join(DATE_PATTERNS) + ")",
         # English: "Order Date: 2026-03-10 16:23:56"
         r"(?:Order\s*Date)[\s.:]*(" + "|".join(DATE_PATTERNS) + ")",
     ],
@@ -660,15 +698,30 @@ def extract_fields(text, own_ids=None, own_names=None, config=None):
     own_keys = build_own_ids(own_ids)
     own_name_keys = build_own_names(own_names)
 
+    def set_date(field, raw):
+        """Store a printed date if it is a real date; remember both readings if ambiguous."""
+        readings = _date_readings(raw)
+        if not readings:
+            return False
+        result[field] = readings[0]
+        if len(readings) > 1:
+            result.setdefault("_ambiguous_dates", {})[field] = readings
+        return True
+
     # Standard same-line patterns
     for field, patterns in FIELD_PATTERNS.items():
+        if field in ("invoice_date", "due_date"):
+            # The first match that is a real date (an unparsable one never wins)
+            for pattern in patterns:
+                if any(set_date(field, m.group(1)) for m in re.finditer(
+                        pattern, text, re.IGNORECASE | re.MULTILINE)):
+                    break
+            continue
         for pattern in patterns:
             m = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
             if m:
                 value = m.group(1).strip()
-                if field in ("invoice_date", "due_date"):
-                    value = _parse_date(value)
-                elif field in ("total_amount", "vat_amount", "subtotal"):
+                if field in ("total_amount", "vat_amount", "subtotal"):
                     parsed = _parse_amount(value)
                     if parsed is not None:
                         value = parsed
@@ -728,7 +781,8 @@ def extract_fields(text, own_ids=None, own_names=None, config=None):
                     if m:
                         value = m.group(1).strip()
                         if field in ("invoice_date", "due_date"):
-                            value = _parse_date(value)
+                            set_date(field, value)
+                            break
                         elif field in ("bankgiro", "plusgiro"):
                             value = re.sub(r"\s+", "", value)
                         result[field] = value
@@ -771,13 +825,13 @@ def extract_fields(text, own_ids=None, own_names=None, config=None):
         if m:
             result["invoice_number"] = m.group(1)
     if "invoice_date" not in result:
-        m = re.search(r"Datum\s+(\d{2}\.\d{2}\.\d{4})", text)
+        m = re.search(r"\bDatum\s+(\d{2}\.\d{2}\.\d{4})", text)
         if m:
-            result["invoice_date"] = _parse_date(m.group(1))
+            set_date("invoice_date", m.group(1))
     if "due_date" not in result:
         m = re.search(r"Förfallodatum\s+(\d{2}\.\d{2}\.\d{4})", text)
         if m:
-            result["due_date"] = _parse_date(m.group(1))
+            set_date("due_date", m.group(1))
 
     # ALSO-specific: "Totalt belopp SEK 3.020,81" or "Totalt belopp 3.020,81SEK"
     if "total_amount" not in result:
@@ -1356,6 +1410,22 @@ def _num(v):
         return None
 
 
+def _to_number(value):
+    """A number from an AI answer: numbers as they are, strings via _parse_amount, else None.
+
+    '1 234,00' (a locale-formatted amount) is 1234.0; booleans, NaN and lists are None.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        number = _parse_amount(value)
+    else:
+        return None
+    return number if number is not None and math.isfinite(number) else None
+
+
 def _ai_answer_problems(data, reference=None, config=None):
     """Tecken pa att svaret inte gar att lita pa. Tom lista = svaret ser rimligt ut.
 
@@ -1536,14 +1606,40 @@ def _merge_fields(text, regex_fields, ai_fields, own_keys):
     final = {}
     all_keys = set(list(regex_fields.keys()) + list(ai_fields.keys()))
     conflicts = []
+    notes = []
     own_skipped = list(regex_fields.get("_own_ids_skipped") or [])
-    for key in all_keys:
-        if key == "_own_ids_skipped":
+    ambiguous = regex_fields.get("_ambiguous_dates") or {}
+    for key in sorted(all_keys):
+        if key in ("_own_ids_skipped", "_ambiguous_dates"):
             continue
         ai_val = ai_fields.get(key)
         regex_val = regex_fields.get(key)
         ai_has = key in ai_fields and ai_val is not None
         regex_has = key in regex_fields and regex_val is not None
+
+        if key in ("invoice_date", "due_date"):
+            # Only real calendar dates take part (the regex only keeps valid ones).
+            ai_date = iso_date(ai_val) if ai_has else None
+            if ai_has and not ai_date:
+                notes.append(f"{key}: the AI's {ai_val!r} is not a valid date – not used")
+            readings = ambiguous.get(key) or []
+            if regex_has and ai_date and ai_date in readings:
+                # NN/NN/YYYY with both parts <= 12: the AI's reading decides
+                if ai_date != regex_val:
+                    notes.append(f"{key}: the printed date can be read as {' or '.join(readings)} – "
+                                 f"used {ai_date}, as the AI read it")
+                final[key] = ai_date
+                continue
+            if readings:
+                notes.append(f"{key}: the printed date can be read as {' or '.join(readings)} – "
+                             f"used {readings[0]} (day/month)")
+            if regex_has and ai_date and ai_date != regex_val:
+                conflicts.append(f"{key}: regex={regex_val} ai={ai_date}")
+            if regex_has and (key in REGEX_WINS or not ai_date):
+                final[key] = regex_val
+            elif ai_date:
+                final[key] = ai_date
+            continue
 
         if key == "org_number":
             # Köparens eget org.nr är ALDRIG leverantörens. Regex vinner bara om den
@@ -1577,6 +1673,8 @@ def _merge_fields(text, regex_fields, ai_fields, own_keys):
         final["_conflicts"] = conflicts
     if own_skipped:
         final["_own_ids_skipped"] = own_skipped
+    if notes:
+        final["_notes"] = notes
 
     # Ett bankgiro har 7–8 siffror (Peppol SE-R-009). Längre är ett kontonummer —
     # på ett autogiro-underlag har AI:n gissat köparens clearing+konto (och vid

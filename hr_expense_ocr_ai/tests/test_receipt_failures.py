@@ -43,10 +43,25 @@ class TestReceiptFailures(TransactionCase):
 
     def test_bad_value_on_write_is_a_user_error(self):
         expense = self._expense()
-        result = {"text": "x", "source": "ai", "notes": [], "fields": {"date": "2026-02-30"}}
+        HrExpense = type(self.env["hr.expense"])
+        result = {"text": "x", "source": "ai", "notes": [], "fields": {}}
         with mock.patch.object(receipt_ocr, "extract_receipt_data", return_value=result), \
-                self.assertRaises(UserError):
+                mock.patch.object(HrExpense, "_expense_ocr_apply", side_effect=ValueError("bad value")), \
+                self.assertRaises(UserError) as cm:
             expense.action_read_receipt()
+        self.assertIn("Receipt OCR failed for receipt.jpg: bad value", str(cm.exception))
+
+    def test_invalid_date_is_not_written_and_the_rest_is(self):
+        """A date the ORM cannot read no longer loses the whole read (#30)."""
+        expense = self._expense()
+        today = expense.date
+        result = {"text": "x", "source": "ai", "notes": [],
+                  "fields": {"date": "2026-02-30", "total": 418.0}}
+        with mock.patch.object(receipt_ocr, "extract_receipt_data", return_value=result):
+            expense.action_read_receipt()
+        self.assertEqual(expense.total_amount_currency, 418.0)
+        self.assertEqual(expense.date, today)
+        self.assertIn("2026-02-30 is not a valid date", self._bodies(expense))
 
     def test_automatic_path_rolls_back_and_notes_the_failure(self):
         expense = self._expense()

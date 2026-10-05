@@ -2,10 +2,12 @@
 
 A failure halfway through (after a partner was auto-created, or an SQL error) rolls back
 only the OCR's own writes, leaves the transaction usable and is noted on the bill. The
-upload hook only reports "imported" to core when OCR actually filled the bill.
+upload hook only reports "imported" to core when OCR actually filled the bill. A date the
+ORM cannot read is left out with a note instead of failing the whole fill (#16).
 """
 from unittest import mock
 
+from odoo.addons.account_invoice_ocr_ai.lib import invoice_ocr
 from odoo.tests import tagged
 from odoo.tools import mute_logger
 
@@ -84,3 +86,25 @@ class TestOcrSavepoint(OcrBillCase):
         self.assertNotIn("OCR could not fill in this bill", self._bodies(move))
         result = self.env["account.move"]._invoice_ocr_extend(move, PDF)
         self.assertEqual(result["status"], "skipped")
+
+    def test_invalid_dates_are_not_written_and_the_rest_is(self):
+        """A date the ORM cannot read no longer loses the whole fill (#16)."""
+        move = self._new_bill()
+        data = dict(AI_NEW_VENDOR, invoice_date="2026-02-30", due_date="15/09/26",
+                    raw_text=TEXT_NEW_VENDOR)
+        with mock.patch.object(invoice_ocr, "extract_invoice_data", return_value=data):
+            result = self.env["account.move"]._invoice_ocr_extend_safe(move, PDF)
+        self.assertEqual(result["status"], "filled")
+        self.assertEqual(move.ref, "4711")
+        self.assertFalse(move.invoice_date)
+        bodies = self._bodies(move)
+        self.assertIn("invoice_date 2026-02-30 is not a valid date", bodies)
+        self.assertIn("due_date 15/09/26 is not a valid date", bodies)
+
+    def test_english_month_name_end_to_end(self):
+        move = self._new_bill()
+        text = TEXT_NEW_VENDOR.replace("Fakturadatum: 2026-06-01", "Invoice date: 3 March 2026")
+        ai = dict(AI_NEW_VENDOR, invoice_date="2026-03-03")
+        with self._patch_ocr(text, ai):
+            self.env["account.move"]._invoice_ocr_extend(move, PDF)
+        self.assertEqual(str(move.invoice_date), "2026-03-03")
