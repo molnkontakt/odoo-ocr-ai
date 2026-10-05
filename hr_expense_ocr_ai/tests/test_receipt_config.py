@@ -35,3 +35,12 @@ class TestReceiptConfig(TransactionCase):
         self.assertEqual(cfg["api_key"], "K-receipt")
         self.assertIn(expense.company_id.name, cfg["own_names"])
         self.assertEqual(_globals(), before)
+
+    def test_disable_is_stored_and_respected(self):
+        ICP = self.env["ir.config_parameter"].sudo()
+        self.env["res.config.settings"].create({"expense_ocr_enabled": False}).set_values()
+        self.assertEqual(ICP.get_param("expense_ocr.enabled"), "False")
+        self.assertFalse(self.env["hr.expense"]._expense_ocr_enabled())
+        self.assertFalse(self.env["res.config.settings"].create({}).expense_ocr_enabled)
+        self.env["res.config.settings"].create({"expense_ocr_enabled": True}).set_values()
+        self.assertTrue(self.env["hr.expense"]._expense_ocr_enabled())

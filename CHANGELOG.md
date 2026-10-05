@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `account_invoice_ocr_ai` 19.0.1.11.1, `hr_expense_ocr_ai` 19.0.1.1.1: the *Invoice OCR on
+  upload* and *Expense receipt OCR* switches can be turned off. An unticked Boolean
+  `config_parameter` deletes the parameter and a missing parameter read as on, so the
+  switch never stuck; `set_values` now stores "True"/"False" explicitly (#6, #27). OCR no
+  longer runs on bills Odoo already imported electronically (UBL/Peppol, embedded
+  Factur-X/ZUGFeRD: `_extend_with_attachments` returned a truthy result), so it no longer
+  overwrites their lines and due date with a reading of the PDF (#18).
+
 - `account_invoice_ocr_ai` 19.0.1.11.0: guards against booking a vendor bill with the
   buyer as vendor. The receiving company's org/VAT numbers, names, partners and bank
   accounts are read from `res.company` (the bill's company and its branches) instead of

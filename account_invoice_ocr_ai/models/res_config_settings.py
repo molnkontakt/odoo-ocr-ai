@@ -48,6 +48,18 @@ class ResConfigSettings(models.TransientModel):
     invoice_ocr_ollama_url = fields.Char(string="Ollama URL", config_parameter="invoice_ocr.ollama_url", default="http://localhost:11434")
     invoice_ocr_ollama_model = fields.Char(string="Ollama model", config_parameter="invoice_ocr.ollama_model", default="qwen2.5:7b")
 
+    def set_values(self):
+        """Store the on/off switch explicitly as "True"/"False".
+
+        A Boolean with config_parameter deletes the parameter when unticked, and a missing
+        parameter reads as "on" (the default for new installs), so switching OCR off never
+        stuck. A stored "False" reads as off both in the form (str2bool) and in the code.
+        """
+        res = super().set_values()
+        self.env["ir.config_parameter"].sudo().set_param(
+            "invoice_ocr.enabled", "True" if self.invoice_ocr_enabled else "False")
+        return res
+
     def _invoice_ocr_form_config(self):
         """Per-run config from the values on the form (saved or not) — same rules as a real run.
 

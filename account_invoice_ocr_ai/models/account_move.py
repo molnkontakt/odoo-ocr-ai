@@ -95,6 +95,12 @@ class AccountMove(models.Model):
         # Only run on draft vendor bills (and only when invoked at create time)
         if not new:
             return res
+        # Odoo already imported an electronic invoice (UBL/Peppol, embedded
+        # Factur-X/ZUGFeRD): lines, due date and payment terms come from it, and OCR would
+        # only overwrite them with a worse reading of the PDF. A plain PDF has no decoder in
+        # CE and gives res = None, so OCR runs as before.
+        if res:
+            return res
         for move in self:
             if move.move_type != "in_invoice":
                 continue

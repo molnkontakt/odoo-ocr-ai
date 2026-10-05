@@ -11,3 +11,11 @@ class ResConfigSettings(models.TransientModel):
         help="Läser kvittofoton på inmailade utlägg och på utkast som får en huvudbilaga. "
              "Använder samma AI-leverantör och nycklar som faktura-OCR:en.",
     )
+
+    def set_values(self):
+        """Store the on/off switch explicitly as "True"/"False" (see account_invoice_ocr_ai:
+        an unticked Boolean config_parameter is deleted, and a missing one reads as on)."""
+        res = super().set_values()
+        self.env["ir.config_parameter"].sudo().set_param(
+            "expense_ocr.enabled", "True" if self.expense_ocr_enabled else "False")
+        return res
