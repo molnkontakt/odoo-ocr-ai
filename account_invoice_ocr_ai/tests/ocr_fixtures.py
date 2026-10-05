@@ -4,7 +4,7 @@ Modelled on a bank's invoice for a one-off fee that is debited automatically fro
 buyer's account. Every party, number and account here is INVENTED: org numbers use the
 placeholder series 999999-xxxx (with a correct check digit, so Odoo's VAT validation
 accepts them), the buyer's account uses clearing number 9999, and the bankgiro numbers
-are placeholders. The text imitates pdfplumber's output, where spaces are often lost
+are placeholders (with a correct mod-10 check digit, which the library checks). The text imitates pdfplumber's output, where spaces are often lost
 ('Betalningavfakturanskermedautomatik…').
 
 Shared by tests/test_own_company_guards.py (pytest, repo root) and the Odoo tests in
@@ -18,7 +18,7 @@ OWN_VAT = "SE999999000601"
 # Clearing 9999, account 0012345; IBAN with a valid checksum
 OWN_ACCOUNT_PRINTED = "99990012345"
 OWN_IBAN = "SE7499900000099990012345"
-OWN_BANKGIRO = "999-0001"
+OWN_BANKGIRO = "999-0003"
 
 # The vendor: a bank charging a fee
 VENDOR_NAME = "Example Bank AB"
@@ -29,7 +29,7 @@ VENDOR_VAT = "SE999999001401"
 SISTER_NAME = "Example Sister Association"
 SISTER_ORG = "999999-0030"
 SISTER_VAT = "SE999999003001"
-SISTER_BANKGIRO = "999-0002"
+SISTER_BANKGIRO = "999-0029"
 
 INVOICE_NUMBER = "900000000001"
 
@@ -77,7 +77,7 @@ AI_ANSWER_OWN_ORG = {
 # An ordinary invoice that is paid manually (no auto debit)
 PLAIN_VENDOR_NAME = "Example Supplier AB"
 PLAIN_VENDOR_ORG = "999999-0022"
-PLAIN_VENDOR_BANKGIRO = "123-4567"
+PLAIN_VENDOR_BANKGIRO = "123-4566"
 PLAIN_INVOICE_TEXT = """Faktura
 Example Supplier AB
 Org.nr: 999999-0022
@@ -85,6 +85,6 @@ Fakturanummer: 4711
 Fakturadatum: 2026-06-01
 Förfallodatum: 2026-06-30
 Att betala: 1 250,00
-Bankgiro: 123-4567
+Bankgiro: 123-4566
 Betala enkelt med autogiro – anslut dig till autogiro på vår webb!
 """

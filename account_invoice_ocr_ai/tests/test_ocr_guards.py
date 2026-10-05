@@ -175,14 +175,14 @@ class TestOcrGuards(OcrBillCase):
             "name": "Acme Receiver Sverige AB", "vat": fx.OWN_VAT,
             "is_company": True, "active": False})
         dup_bank = self.env["res.partner.bank"].create(
-            {"partner_id": dup.id, "acc_number": "BG 999-0003"})
+            {"partner_id": dup.id, "acc_number": "BG 999-0011"})
         dup.active = True
         own = self.env["account.move"]._ocr_own_context(self.company)
         self.assertIn(dup.id, own["partner_ids"])
-        self.assertTrue(self.env["account.move"]._ocr_is_own_bank_number("999-0003", own))
+        self.assertTrue(self.env["account.move"]._ocr_is_own_bank_number("999-0011", own))
         partner, _notes = self._resolve({"vendor_name": "Acme Receiver Sverige AB"})
         self.assertFalse(partner)
-        partner, _notes = self._resolve({"bankgiro": "999-0003"})
+        partner, _notes = self._resolve({"bankgiro": "999-0011"})
         self.assertFalse(partner)
         move = self._new_bill(partner_id=dup.id)
         move.partner_bank_id = dup_bank

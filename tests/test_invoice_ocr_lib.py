@@ -233,7 +233,7 @@ def test_extract_invoice_data_merge_regex_wins_and_conflicts(monkeypatch):
         "total_amount": 2636.00,
         "subtotal": 2121.00,
         "vat_amount": 515.00,
-        "ocr_number": "123456789",
+        "ocr_number": "1234567897",
     }
     ai_fields = {
         "vendor_name": "AI Vendor AB",
@@ -259,7 +259,7 @@ def test_extract_invoice_data_merge_regex_wins_and_conflicts(monkeypatch):
     assert data["vat_amount"] == 515.00
     assert data["invoice_date"] == "2026-03-01"
     assert data["invoice_number"] == "1033"
-    assert data["ocr_number"] == "123456789"
+    assert data["ocr_number"] == "1234567897"
     # AI fyller det regex inte hittar
     assert data["lines"] == ai_fields["lines"]
     assert data["currency"] == "SEK"
@@ -574,3 +574,57 @@ def test_line_amount_is_the_source_of_truth():
     assert q({"quantity": 3, "unit_price": 50, "amount": 100}) == (1.0, 100)   # 3 × 33.33 ≠ 100
     assert q({"quantity": -1, "unit_price": 100, "amount": -100}) == (-1, 100)
     assert q({"amount": 0}) is None and q({}) is None
+
+
+# ── Bankgiro, plusgiro and OCR reference: one line, whole labels, check digits (#14) ──
+
+def test_giro_and_ocr_values_stay_on_their_line():
+    f = inv.extract_fields
+    assert f("Bankgiro: 123-4566\n123 45 Exempelstad\n")["bankgiro"] == "123-4566"
+    assert f("OCR: 1234 5678\n2026 03\n")["ocr_number"] == "12345678"
+    assert f("Org.nr Bankgiro\n999999-0014 123-4566\n")["bankgiro"] == "123-4566"
+    out = f("Bankgiro Plusgiro\n123-4566 99 99 01-2\n")
+    assert out["bankgiro"] == "123-4566" and out["plusgiro"] == "999901-2"
+    assert f("Fakturanummer OCR-nummer\n1033 1234567897\n")["ocr_number"] == "1234567897"
+    out = f("Förfallodatum OCR\n2026-03-26 1234567897\n")
+    assert out["ocr_number"] == "1234567897" and out["due_date"] == "2026-03-26"
+    assert "bankgiro" not in f("SUBG 5\n")
+    assert "plusgiro" not in f("kvitto.jpg 12\n")
+    assert f("Bankgironummer: 9998-0005\n")["bankgiro"] == "9998-0005"
+    assert f("PG 99 99 01-2\n")["plusgiro"] == "999901-2"
+
+
+def test_valid_giro_or_ocr():
+    v = inv.valid_giro_or_ocr
+    assert v("bankgiro", "123-4566") and v("bankgiro", "9998-0005")
+    assert not v("bankgiro", "123-4567")            # check digit
+    assert not v("bankgiro", "9999-0012345")        # an account number
+    assert not v("bankgiro", "BG 123-4566")         # letters
+    assert v("plusgiro", "99 99 01-2") and not v("plusgiro", "99 99 01-3")
+    assert not v("plusgiro", "1")
+    assert v("ocr_number", "1234567897") and not v("ocr_number", "1234567898")
+
+
+def _merge_giro(regex, ai):
+    return inv._merge_fields("", regex, ai, set())
+
+
+def test_merge_falls_back_to_a_valid_ai_value():
+    out = _merge_giro({"bankgiro": "123-4567"}, {"bankgiro": "123-4566"})
+    assert out["bankgiro"] == "123-4566"
+    assert any("used the AI's 123-4566" in n for n in out["_notes"])
+    out = _merge_giro({"plusgiro": "99 99 01-2"}, {"plusgiro": "999901-3"})
+    assert out["plusgiro"] == "99 99 01-2" and "_notes" not in out
+    out = _merge_giro({"ocr_number": "12345678972026"}, {"ocr_number": "1234567897"})
+    assert out["ocr_number"] == "1234567897"
+
+
+def test_merge_drops_invalid_values_with_a_note():
+    out = _merge_giro({"plusgiro": "12"}, {})
+    assert "plusgiro" not in out and any("plusgiro '12'" in n for n in out["_notes"])
+    out = _merge_giro({"ocr_number": "1234567898"}, {"ocr_number": "1234567898"})
+    assert "ocr_number" not in out
+    # an RF reference (letters) and an OCR number cut back to the invoice number are valid
+    assert _merge_giro({}, {"ocr_number": "RF18 5390 0754 7034"})["ocr_number"] == "RF18 5390 0754 7034"
+    out = _merge_giro({"ocr_number": "123456789711123", "invoice_number": "1234567897"}, {})
+    assert out["ocr_number"] == "123456789711123"

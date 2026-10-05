@@ -253,6 +253,15 @@ def amount_in_text(value, text):
 
 # ── Field extraction patterns ────────────────────────────────────────────────
 
+OCR_LABEL = r"\b(?:OCR[ _-]?(?:nummer|nr)|OCR|Betalningsreferens)\b"
+BANKGIRO_LABEL = r"(?:\bBankgiro(?:nummer|nr)?|\bBG|\bBg\.?)(?![A-Za-zÅÄÖåäö])"
+PLUSGIRO_LABEL = r"(?:\bPlusgiro(?:nummer|nr)?|\bPG|\bPg\.?)(?![A-Za-zÅÄÖåäö])"
+# 123-4567, 1234-5678, 12345678
+BANKGIRO_VALUE = r"(\d{3,4}[ \t-]?\d{4})(?![\d-])"
+# 12 34 56-7, 123456-7, 1234567-8, 12345678
+PLUSGIRO_VALUE = r"(\d(?:[ \t]?\d){0,6}[ \t]?-?[ \t]?\d)(?![\d-])"
+
+
 FIELD_PATTERNS = {
     "invoice_number": [
         # Same-line: "Fakturanummer: 1033", "Invoice no.: 084000802912"
@@ -301,14 +310,17 @@ FIELD_PATTERNS = {
         # English: "Subtotal €549.00" or "Total exclude tax €539.00"
         r"(?:Subtotal|Total\s*exclu\w*\s*tax)[\s.:]*[€$£]?([\d\s.,]+)",
     ],
+    # Values stay on the label's line ([ \t], never \s, which also matches a line break and
+    # glued the next line's digits on); a label on one row with the value on the next is
+    # handled by the next-line patterns below. Labels are whole words ('SUBG 5' is no BG).
     "ocr_number": [
-        r"(?:OCR|OCR[_-]?nummer|OCR[_-]?nr|Betalningsreferens)[\s.:]*(\d[\d\s]*\d)",
+        OCR_LABEL + r"[ \t.:]*(\d[\d \t]*\d)",
     ],
     "bankgiro": [
-        r"(?:Bankgiro|BG|Bg\.?)[\s.:]*([\d\s-]+\d)",
+        BANKGIRO_LABEL + r"[ \t.:]*" + BANKGIRO_VALUE,
     ],
     "plusgiro": [
-        r"(?:Plusgiro|PG|Pg\.?)[\s.:]*([\d\s-]+\d)",
+        PLUSGIRO_LABEL + r"[ \t.:]*" + PLUSGIRO_VALUE,
     ],
     # org_number hanteras separat i _extract_org_number: fakturan trycker ofta
     # BÅDA parternas org.nr, och det första efter en etikett är inte sällan
@@ -329,9 +341,36 @@ NEXTLINE_PATTERNS_ORDERED = [
     ("invoice_number", [r"(?:Fakturanummer|Faktura\s*nr|Invoice\s*(?:no|number))"]),
     ("invoice_date", [r"(?:Fakturadatum|Invoice\s*date)"]),
     ("due_date", [r"(?:Förfallodatum|Förfallodag|Due\s*date)"]),
-    ("bankgiro", [r"(?:Bankgiro|BG\b)"]),
-    ("plusgiro", [r"(?:Plusgiro|PG\b)"]),
+    ("bankgiro", [BANKGIRO_LABEL]),
+    ("plusgiro", [PLUSGIRO_LABEL]),
+    #   Fakturanummer  OCR-nummer
+    #   1033           1234567897
+    ("ocr_number", [OCR_LABEL]),
 ]
+
+# A value on the line under its label: the candidates of that kind on the next line,
+# filtered by format and check digit; the one closest to the label's column wins
+# (several labels often share a row, with their values in the same order below).
+NEXTLINE_CANDIDATES = {
+    "bankgiro": r"(?<![\d-])(\d{3,4}[ -]?\d{4})(?![\d-])",
+    "plusgiro": r"(?<![\d-])(\d(?: ?\d){0,6} ?- ?\d)(?![\d-])",
+    "ocr_number": r"(?<![\d-])(\d{2,25})(?![\d-])",
+}
+
+
+def _nextline_number(field, label_col, line, exclude=()):
+    """The `field` value on `line` closest to `label_col`, or None (see NEXTLINE_CANDIDATES)."""
+    best = None
+    for m in re.finditer(NEXTLINE_CANDIDATES[field], line):
+        digits = re.sub(r"\D", "", m.group(1))
+        if any(digits in o for o in exclude if o):
+            continue  # part of an org.nr printed on the same line
+        if not valid_giro_or_ocr(field, digits):
+            continue
+        distance = abs(m.start() - label_col)
+        if best is None or distance < best[0]:
+            best = (distance, re.sub(r"\s+", "", m.group(1)))
+    return best[1] if best else None
 
 
 # ── Egna identiteter ─────────────────────────────────────────────────────────
@@ -496,6 +535,17 @@ def ocr_mod10(number):
         d = int(ch) * (2 if i % 2 else 1)
         total += d - 9 if d > 9 else d
     return total % 10 == 0
+
+
+def valid_giro_or_ocr(field, value):
+    """True when `value` has the length and mod-10 check digit of a bankgiro (7-8 digits),
+    a plusgiro (2-8 digits) or an OCR reference (2-25 digits); dashes and spaces ignored."""
+    raw = str(value or "")
+    if re.search(r"[^\d\s-]", raw):
+        return False
+    digits = re.sub(r"\D", "", raw)
+    low, high = {"bankgiro": (7, 8), "plusgiro": (2, 8), "ocr_number": (2, 25)}[field]
+    return low <= len(digits) <= high and ocr_mod10(digits)
 
 
 def valid_payment_reference(ocr_number, invoice_number=None):
@@ -758,24 +808,20 @@ def extract_fields(text, own_ids=None, own_names=None, config=None):
                         m = re.match(r"(\d[\d/-]*)", next_line)
                     elif field in ("invoice_date", "due_date"):
                         m = re.match(r"(" + "|".join(DATE_PATTERNS) + ")", next_line)
-                    elif field in ("bankgiro", "plusgiro"):
-                        # Avoid matching org.nr (6-4 digits) as bankgiro (4-4 digits):
-                        # any org.nr printed on the line (the buyer's or the supplier's)
-                        orgs = {re.sub(r"\D", "", o) for o in re.findall(ORG_VALUE, next_line)}
-                        orgs |= {k for k in own_keys if k.isdigit()}
+                    elif field in ("bankgiro", "plusgiro", "ocr_number"):
+                        # Never an org.nr (6-4 digits) printed on the line, the buyer's or
+                        # the supplier's, taken for a bankgiro (4-4 digits). A ten-digit OCR
+                        # reference looks like an org.nr, so for OCR only the known ones count.
+                        orgs = {k for k in own_keys if k.isdigit()}
+                        if field != "ocr_number":
+                            orgs |= {re.sub(r"\D", "", o) for o in re.findall(ORG_VALUE, lines[j])}
                         if result.get("org_number"):
                             orgs.add(re.sub(r"\D", "", result["org_number"]))
-                        candidates = re.findall(r"(\d{4}[\s-]?\d{4})", next_line)
-                        m = None
-                        for c in candidates:
-                            if any(re.sub(r"\D", "", c) in o for o in orgs if o):
-                                continue  # Skip — this is an org.nr
-                            # Create a fake match-like object
-                            class _M:
-                                def __init__(self, v): self._v = v
-                                def group(self, _): return self._v
-                            m = _M(c)
-                            break
+                        label = re.search(pattern, line, re.IGNORECASE)
+                        value = _nextline_number(field, label.start(), lines[j], orgs)
+                        if value:
+                            result[field] = value
+                        break
                     else:
                         m = None
                     if m:
@@ -783,8 +829,6 @@ def extract_fields(text, own_ids=None, own_names=None, config=None):
                         if field in ("invoice_date", "due_date"):
                             set_date(field, value)
                             break
-                        elif field in ("bankgiro", "plusgiro"):
-                            value = re.sub(r"\s+", "", value)
                         result[field] = value
                         break
                     break  # Only check first non-empty line after label
@@ -1694,6 +1738,13 @@ def extract_invoice_data_from_text(text, own_ids=None, own_names=None, config=No
     return final
 
 
+def _valid_field_value(key, value, fields):
+    """Is a bankgiro/plusgiro/OCR value usable? OCR references with letters (RF) are."""
+    if key == "ocr_number":
+        return bool(valid_payment_reference(value, fields.get("invoice_number")))
+    return valid_giro_or_ocr(key, value)
+
+
 def _merge_fields(text, regex_fields, ai_fields, own_keys):
     """Merge the regex and AI fields (pure function, no network calls)."""
     # Merge. Regex vinner pa SIFFROR och identifierare, AI pa beskrivande falt.
@@ -1781,14 +1832,29 @@ def _merge_fields(text, regex_fields, ai_fields, own_keys):
     if notes:
         final["_notes"] = notes
 
-    # Ett bankgiro har 7–8 siffror (Peppol SE-R-009). Längre är ett kontonummer —
-    # på ett autogiro-underlag har AI:n gissat köparens clearing+konto (och vid
-    # omkörning en avkortad variant) som leverantörens bankgiro.
-    bg = final.get("bankgiro")
-    if bg is not None and not 7 <= len(re.sub(r"\D", "", str(bg))) <= 8:
-        final.pop("bankgiro")
-        final.setdefault("_notes", []).append(
-            f"'{bg}' har inte 7–8 siffror och är inget bankgiro – användes inte")
+    # Bankgiro (7–8 digits, Peppol SE-R-009), plusgiro (2–8) and OCR reference (2–25) all
+    # end in a mod-10 check digit (#14). A value that fails is never used: the regex value
+    # wins when it is valid, else the AI's when that one is, else the field stays empty.
+    # A longer "bankgiro" is an account number — on an auto-debit document the LLM has
+    # taken the buyer's clearing+account number (or a truncated one) for the bankgiro.
+    for key in ("bankgiro", "plusgiro", "ocr_number"):
+        candidates = [(src, val) for src, val in (("regex", regex_fields.get(key)),
+                                                  ("AI", ai_fields.get(key))) if val]
+        if not candidates:
+            continue
+        valid = [(src, val) for src, val in candidates if _valid_field_value(key, val, final)]
+        rejected = [f"'{val}'" for src, val in candidates if (src, val) not in valid]
+        if valid:
+            src, val = valid[0]
+            final[key] = val
+            if rejected and src == "AI":
+                final.setdefault("_notes", []).append(
+                    f"{key} {', '.join(rejected)} from the document fails the length or check-digit "
+                    f"test – used the AI's {val}")
+        else:
+            final.pop(key, None)
+            final.setdefault("_notes", []).append(
+                f"{key} {' / '.join(dict.fromkeys(rejected))} fails the length or check-digit test – not used")
 
     # Dras fakturan automatiskt från köparens konto? Då ska den inte betalas manuellt.
     auto_debit = detect_auto_debit(text)

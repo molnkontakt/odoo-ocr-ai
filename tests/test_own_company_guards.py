@@ -133,7 +133,7 @@ def test_merge_drops_account_number_posing_as_bankgiro(bad):
     assert out["_notes"]
 
 
-@pytest.mark.parametrize("ok", ["123-4567", "1234-5678"])
+@pytest.mark.parametrize("ok", ["123-4566", "9998-0005"])
 def test_merge_keeps_real_bankgiro(ok):
     assert _merge({"bankgiro": ok}, {})["bankgiro"] == ok
 
