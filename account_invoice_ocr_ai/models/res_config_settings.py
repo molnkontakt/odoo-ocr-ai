@@ -21,6 +21,17 @@ class ResConfigSettings(models.TransientModel):
         config_parameter="invoice_ocr.provider",
         default="staik",
     )
+    # A Char (shown as a text area): res.config.settings only stores Char, not Text, in a
+    # system parameter.
+    invoice_ocr_account_list = fields.Char(
+        string="Accounts for invoice lines",
+        config_parameter="invoice_ocr.account_list",
+        help="The account codes the AI may choose for invoice lines, one per line as "
+             "\"code: hint\", e.g. \"6540: IT services (consulting, managed services)\". "
+             "Empty: the built-in Swedish BAS list. Only accounts that exist in the bill "
+             "company's chart are sent; a line with another code gets the purchase journal's "
+             "default account.",
+    )
     # staik
     invoice_ocr_staik_api_key = fields.Char(string="staik API key", config_parameter="invoice_ocr.staik_api_key")
     invoice_ocr_staik_model = fields.Char(

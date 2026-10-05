@@ -148,3 +148,28 @@ class TestOcrVat(OcrBillCase):
         move = self._bill(self.de_vendor, [], subtotal=500.0, vat_amount=0.0, total_amount=500.0)
         self._assert_tax(move.invoice_line_ids, "purchase_goods_tax_25_EC")
         self.assertEqual(move.invoice_line_ids.account_id.code, "4515")
+
+    # -- the account list (#24) --------------------------------------------------------
+
+    def test_account_list_only_has_the_charts_accounts(self):
+        Move = self.env["account.move"]
+        codes = [code for code, _hint in Move._ocr_account_list(self.company)]
+        self.assertIn("4000", codes)
+        self.assertIn("6540", codes)
+        self.assertNotIn("6231", codes, "not in l10n_se's chart")
+        self.assertNotIn("6990", codes)
+        self.env["res.config.settings"].create({
+            "invoice_ocr_account_list": "6540: IT services\n9999: not in the chart\n5010: Rent",
+        }).set_values()
+        self.assertEqual(Move._ocr_account_list(self.company),
+                         [("6540", "IT services"), ("5010", "Rent")])
+
+    def test_account_not_in_the_chart_gets_the_fallback(self):
+        move = self._bill(self.se_vendor, [
+            {"description": "Cloud", "amount": 100.0, "vat_rate": 25, "account_code": "6231"},
+        ])
+        line = move.invoice_line_ids
+        self.assertEqual(line.account_id, move.journal_id.default_account_id)
+        self.assertEqual(line.account_id.code, "4000")
+        self._assert_tax(line, "purchase_tax_25_goods")
+        self.assertIn("account 6231 is not in the account list", self._bodies(move))

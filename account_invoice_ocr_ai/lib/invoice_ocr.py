@@ -1062,6 +1062,8 @@ def default_config():
         "own_ids": sorted(OWN_VAT_NUMBERS),
         "own_names": _default_own_names(),
         "text_limit": TEXT_LIMIT,
+        # The account codes the model may choose, [(code, hint)]; None = DEFAULT_ACCOUNTS.
+        "accounts": None,
         "max_ocr_pages": MAX_OCR_PAGES,
         "ocr_scale": OCR_SCALE,
     }
@@ -1102,42 +1104,133 @@ def config_from_settings(get, base=None):
     return cfg
 
 
-# json_schema tvingar fram giltig JSON hos staik. Fritt format ger trasiga svar.
-INVOICE_JSON_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "vendor_name": {"type": ["string", "null"]},
-        "invoice_number": {"type": ["string", "null"]},
-        "invoice_date": {"type": ["string", "null"]},
-        "due_date": {"type": ["string", "null"]},
-        "total_amount": {"type": ["number", "null"]},
-        "subtotal": {"type": ["number", "null"]},
-        "vat_amount": {"type": ["number", "null"]},
-        "currency": {"type": ["string", "null"]},
-        "ocr_number": {"type": ["string", "null"]},
-        "bankgiro": {"type": ["string", "null"]},
-        "plusgiro": {"type": ["string", "null"]},
-        "org_number": {"type": ["string", "null"]},
-        "lines": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "description": {"type": "string"},
-                    "quantity": {"type": "number"},
-                    "unit_price": {"type": "number"},
-                    "amount": {"type": "number"},
-                    "vat_rate": {"type": "number"},
-                    "account_code": {"type": "string"},
-                },
-                "required": ["description", "amount", "vat_rate", "account_code"],
+# The default account list: Swedish BAS codes with a hint for the model each. The Odoo
+# module sends only the ones that exist in the bill company's chart, and the list can be
+# replaced in the settings (invoice_ocr.account_list, one "code: hint" per line).
+DEFAULT_ACCOUNTS = (
+    ("4000", "Inköp av varor från Sverige (physical goods, hardware)"),
+    ("4515", "Inköp av varor från annat EU-land, 25%"),
+    ("4535", "Inköp av tjänster från annat EU-land, 25%"),
+    ("4545", "Import av varor, 25% moms"),
+    ("5010", "Lokalhyra (office rent)"),
+    ("5252", "Leasing av datorer (computer leasing)"),
+    ("5410", "Förbrukningsinventarier (consumables, small equipment)"),
+    ("5420", "Programvaror (packaged software, on-premise licenses)"),
+    ("5610", "Personbilar (vehicle costs)"),
+    ("5810", "Biljetter (train, flight, bus, taxi, public transport tickets)"),
+    ("5820", "Hyrbilskostnader (car hire)"),
+    ("5831", "Kost och logi i Sverige (hotel/accommodation in Sweden)"),
+    ("5832", "Kost och logi i utlandet (hotel/accommodation abroad)"),
+    ("5890", "Övriga resekostnader (other travel costs)"),
+    ("6110", "Kontorsmateriel (office supplies, paper, toner)"),
+    ("6211", "Fast telefoni (fixed-line telephony)"),
+    ("6212", "Mobiltelefon (mobile phone subscriptions and call charges)"),
+    ("6230", "Datakommunikation (internet, broadband)"),
+    ("6231", "Datamolntjänster (cloud services, SaaS, hosting, domains, security software "
+             "subscriptions like SentinelOne/Lookout/M365)"),
+    ("6250", "Postbefordran (postage)"),
+    ("6310", "Företagsförsäkringar (business insurance)"),
+    ("6420", "Ersättningar till revisor (audit fees)"),
+    ("6530", "Redovisningstjänster (accounting services)"),
+    ("6540", "IT-tjänster (IT consulting, managed services)"),
+    ("6570", "Bankkostnader (bank fees only)"),
+    ("6910", "Licensavgifter och royalties"),
+    ("6990", "Övriga externa kostnader (reminder/late-payment fees, other charges)"),
+    ("7570", "Premier för arbetsmarknadsförsäkringar (Fora, Collectum etc)"),
+)
+
+
+def parse_account_list(text):
+    """[(code, hint)] from the settings text: one account per line, "code: hint" (or
+    "code = hint", or just the code). Blank lines and lines starting with # are skipped,
+    and so is a line that does not start with an account code. Codes are unique."""
+    accounts, seen = [], set()
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = re.match(r"(\d{3,})\s*(?:[:=–-]\s*)?(.*)$", line)
+        if not m or m.group(1) in seen:
+            continue
+        seen.add(m.group(1))
+        accounts.append((m.group(1), m.group(2).strip()))
+    return accounts
+
+
+def accounts_in_chart(accounts, chart_codes, sub_account_codes=None):
+    """The `accounts` whose code exists in the chart: the code itself (`chart_codes`), or
+    a longer code under it (6540 for a chart that has 65400) among `sub_account_codes`
+    (default: all chart codes; the Odoo module passes only expense accounts, so a BAS
+    purchase code is never matched to another chart's 400000 sales account). Order and
+    hints are kept."""
+    codes = {str(c) for c in chart_codes or () if c}
+    subs = codes if sub_account_codes is None else {str(c) for c in sub_account_codes if c}
+    return [(code, hint) for code, hint in accounts or ()
+            if code in codes or any(c.startswith(code) and c != code for c in subs)]
+
+
+def _accounts(cfg):
+    """The run's account list: the config's (filtered by the Odoo module), else the default."""
+    accounts = cfg.get("accounts")
+    return DEFAULT_ACCOUNTS if accounts is None else accounts
+
+
+def invoice_json_schema(accounts=DEFAULT_ACCOUNTS):
+    """The answer's JSON schema; account_code is limited to the codes of `accounts` (#24)."""
+    codes = [code for code, _hint in accounts or ()]
+    line_props = {
+        "description": {"type": "string"},
+        "quantity": {"type": "number"},
+        "unit_price": {"type": "number"},
+        "amount": {"type": "number"},
+        "vat_rate": {"type": "number"},
+        "account_code": {"type": "string", "enum": codes} if codes else {"type": ["string", "null"]},
+    }
+    required = ["description", "amount", "vat_rate"] + (["account_code"] if codes else [])
+    return {
+        "type": "object",
+        "properties": {
+            "vendor_name": {"type": ["string", "null"]},
+            "invoice_number": {"type": ["string", "null"]},
+            "invoice_date": {"type": ["string", "null"]},
+            "due_date": {"type": ["string", "null"]},
+            "total_amount": {"type": ["number", "null"]},
+            "subtotal": {"type": ["number", "null"]},
+            "vat_amount": {"type": ["number", "null"]},
+            "currency": {"type": ["string", "null"]},
+            "ocr_number": {"type": ["string", "null"]},
+            "bankgiro": {"type": ["string", "null"]},
+            "plusgiro": {"type": ["string", "null"]},
+            "org_number": {"type": ["string", "null"]},
+            "lines": {
+                "type": "array",
+                "items": {"type": "object", "properties": line_props, "required": required},
             },
         },
-    },
-    "required": ["vendor_name", "total_amount", "subtotal", "vat_amount", "lines"],
-}
+        "required": ["vendor_name", "total_amount", "subtotal", "vat_amount", "lines"],
+    }
 
-EXTRACTION_PROMPT = """Extract the following fields from this Swedish vendor invoice. Return ONLY valid JSON, no other text.
+
+# json_schema tvingar fram giltig JSON hos staik. Fritt format ger trasiga svar.
+INVOICE_JSON_SCHEMA = invoice_json_schema()
+
+
+def check_account_codes(data, accounts):
+    """Drop an AI line's account_code that is not in `accounts` (the list the model was
+    given), so the line gets the company's fallback account. Returns (data, notes)."""
+    codes = {code for code, _hint in accounts or ()}
+    notes = []
+    for line in data.get("lines") or []:
+        code = line.get("account_code")
+        if code and code not in codes:
+            line.pop("account_code")
+            if codes:
+                notes.append(f"line '{line.get('description') or line.get('amount')}': account "
+                             f"{code} is not in the account list – the default account is used")
+    return data, notes
+
+
+EXTRACTION_PROMPT_TEMPLATE = """Extract the following fields from this Swedish vendor invoice. Return ONLY valid JSON, no other text.
 
 Fields:
 - vendor_name: company name of the invoice sender / accounting counterparty.
@@ -1163,35 +1256,7 @@ Fields:
   - unit_price: price per unit excl VAT
   - amount: line total excl VAT
   - vat_rate: VAT percentage (25, 12, 6, or 0)
-  - account_code: use ONLY these account codes from our chart of accounts:
-    4000 = Inköp av varor från Sverige (physical goods, hardware)
-    4515 = Inköp av varor från annat EU-land, 25%
-    4535 = Inköp av tjänster från annat EU-land, 25%
-    4545 = Import av varor, 25% moms
-    5010 = Lokalhyra (office rent)
-    5252 = Leasing av datorer (computer leasing)
-    5410 = Förbrukningsinventarier (consumables, small equipment)
-    5420 = Programvaror (packaged software, on-premise licenses)
-    5610 = Personbilar (vehicle costs)
-    5810 = Biljetter (train, flight, bus, taxi, public transport tickets)
-    5820 = Hyrbilskostnader (car hire)
-    5831 = Kost och logi i Sverige (hotel/accommodation in Sweden)
-    5832 = Kost och logi i utlandet (hotel/accommodation abroad)
-    5890 = Övriga resekostnader (other travel costs)
-    6110 = Kontorsmateriel (office supplies, paper, toner)
-    6211 = Fast telefoni (fixed-line telephony)
-    6212 = Mobiltelefon (mobile phone subscriptions and call charges)
-    6230 = Datakommunikation (internet, broadband)
-    6231 = Datamolntjänster (cloud services, SaaS, hosting, domains, security software subscriptions like SentinelOne/Lookout/M365)
-    6250 = Postbefordran (postage)
-    6310 = Företagsförsäkringar (business insurance)
-    6420 = Ersättningar till revisor (audit fees)
-    6530 = Redovisningstjänster (accounting services)
-    6540 = IT-tjänster (IT consulting, managed services)
-    6570 = Bankkostnader (bank fees only)
-    6910 = Licensavgifter och royalties
-    6990 = Övriga externa kostnader (reminder/late-payment fees, other charges)
-    7570 = Premier för arbetsmarknadsförsäkringar (Fora, Collectum etc)
+  - account_code: {accounts}
 
 IMPORTANT:
 - vat_rate must be one of 25, 12, 6 or 0 — never any other number. Swedish rates:
@@ -1205,16 +1270,17 @@ IMPORTANT:
   guessing. Use the PURCHASE date as invoice_date; if the document also shows a travel or
   delivery date, the purchase date still wins.
 - PÅMINNELSEAVGIFT / förseningsavgift / dröjsmålsränta on a supplier invoice is
-  OUTSIDE the scope of VAT: give those lines account_code 6990 and vat_rate 0,
-  never 25. A telecom invoice whose printed VAT is less than 25% of the printed
+  OUTSIDE the scope of VAT: give those lines vat_rate 0, never 25, and account_code
+  6990 (or, if 6990 is not in the list, the list's account for other external
+  costs). A telecom invoice whose printed VAT is less than 25% of the printed
   net almost always contains such a fee — put it on its own line so the VAT adds up.
 - A RABATT / discount / credit line is NOT such a fee. It reduces the price of the
   service it belongs to, so it MUST carry the SAME account_code and the SAME
-  vat_rate as that service (typically 25) — never 6990 and never vat_rate 0.
+  vat_rate as that service (typically 25) — never the fee account and never vat_rate 0.
   Best of all: subtract it from that service's own line instead of listing it
   separately.
 - subtotal + vat_amount must equal total_amount. If the invoice has fees, charges, or adjustments beyond the line items, include them as separate lines.
-- Use the SAME account code for similar services on the same invoice. E.g. if all lines are cloud/SaaS services, use 6231 for all of them including platform fees.
+- Use the SAME account code for similar services on the same invoice. E.g. if all lines are cloud/SaaS services, use one account (6231 if it is in the list) for all of them including platform fees.
 - COMPLETENESS BEATS BREVITY: the `lines` amounts MUST sum to `subtotal`. Never
   drop a printed amount to make the list shorter — aggregate instead. A telecom
   invoice with one block per phone number becomes ONE line per subscriber, using
@@ -1231,6 +1297,19 @@ If a field cannot be found, set to null.
 
 Invoice text:
 """
+
+
+def build_extraction_prompt(accounts=DEFAULT_ACCOUNTS):
+    """The extraction prompt with `accounts` [(code, hint)] as the only account codes (#24)."""
+    if accounts:
+        rows = "\n".join(f"    {code} = {hint}" if hint else f"    {code}" for code, hint in accounts)
+        block = "use ONLY these account codes from our chart of accounts:\n" + rows
+    else:
+        block = "null (no accounts to choose from)"
+    return EXTRACTION_PROMPT_TEMPLATE.replace("{accounts}", block)
+
+
+EXTRACTION_PROMPT = build_extraction_prompt()
 
 
 def _post(url, **kwargs):
@@ -1841,8 +1920,9 @@ def _ai_answer_problems_unsafe(data, reference, cfg):
 
 def _call_provider(text, config=None):
     cfg = _cfg(config)
-    data, meta = chat_json(EXTRACTION_PROMPT, text, INVOICE_JSON_SCHEMA, "invoice",
-                           max_tokens=8000, max_chars=cfg["text_limit"], config=cfg)
+    accounts = _accounts(cfg)
+    data, meta = chat_json(build_extraction_prompt(accounts), text, invoice_json_schema(accounts),
+                           "invoice", max_tokens=8000, max_chars=cfg["text_limit"], config=cfg)
     data = _sanitize_ai(data)
     if data:
         # Diagnostics for _ai_answer_problems; stripped before the data reaches the invoice.
@@ -1956,7 +2036,10 @@ def extract_invoice_data_from_text(text, own_ids=None, own_names=None, config=No
     except Exception as e:  # noqa: BLE001 — the regex fields must survive any AI failure (#10)
         logger.warning("AI step failed (%s) — keeping the regex fields", e, exc_info=True)
         ai_fields, ai_error = {}, f"{type(e).__name__}: {e}"[:300]
+    ai_fields, account_notes = check_account_codes(ai_fields, _accounts(cfg))
     final = _merge_fields(text, regex_fields, ai_fields, own_keys)
+    if account_notes:
+        final.setdefault("_notes", []).extend(account_notes)
     if ai_error:
         final.setdefault("_notes", []).append(
             f"the AI step failed ({ai_error}) – only the values read by the regex were used")

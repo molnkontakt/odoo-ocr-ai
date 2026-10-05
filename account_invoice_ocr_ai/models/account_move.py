@@ -19,17 +19,6 @@ from odoo import _, api, fields, models, modules
 logger = logging.getLogger(__name__)
 
 
-# --- BAS account fallbacks per VAT rate (domestic purchases) ------------------
-
-ACCOUNT_FALLBACKS = {
-    # Domestic purchases
-    25: 4000,    # 25% Sweden goods/services default
-    12: 4000,
-    6: 4000,
-    0: 4000,
-}
-
-
 class AccountMove(models.Model):
     _inherit = "account.move"
 
@@ -263,6 +252,7 @@ class AccountMove(models.Model):
         # One per-run config: provider settings plus the receiving company's identities,
         # used both by the library and by the own-company guards below.
         cfg = self._invoice_ocr_config(move.company_id)
+        cfg["accounts"] = self._ocr_account_list(move.company_id)
         own = self._ocr_own_from_config(cfg)
         try:
             data = invoice_ocr.extract_invoice_data(pdf_data, config=cfg)
@@ -562,7 +552,8 @@ class AccountMove(models.Model):
 
     @api.model
     def _ocr_account(self, company, code):
-        """The account with `code` in `company`'s chart, else its first sub-account, else empty.
+        """The account with `code` in `company`'s chart, else its first expense sub-account
+        (6540 → 65400 on a longer-coded chart), else an empty recordset.
 
         Searches `code`, not `code_store`: code_store is company-dependent and resolves
         through the active company, while `code` resolves through company.root_id (so it
@@ -574,7 +565,34 @@ class AccountMove(models.Model):
             return Account
         domain = list(Account._check_company_domain(company))
         return (Account.search([*domain, ("code", "=", code)], limit=1)
-                or Account.search([*domain, ("code", "=like", f"{code}%")], limit=1))
+                or Account.search([*domain, ("code", "=like", f"{code}_%"),
+                                   ("account_type", "=like", "expense%")], limit=1))
+
+    @api.model
+    def _ocr_account_list(self, company):
+        """The accounts the model may choose for `company`'s bills: [(code, hint)] (#24).
+
+        The list in the settings (invoice_ocr.account_list, one "code: hint" per line), or
+        the built-in Swedish BAS list when that is empty, limited to the accounts that exist
+        in the company's chart: a code the chart does not have is never offered.
+        """
+        from ..lib import invoice_ocr
+
+        text = self.env["ir.config_parameter"].sudo().get_param("invoice_ocr.account_list")
+        accounts = invoice_ocr.parse_account_list(text) or invoice_ocr.DEFAULT_ACCOUNTS
+        Account = self.env["account.account"].with_company(company)
+        chart = Account.search(list(Account._check_company_domain(company)))
+        expense = chart.filtered(lambda a: a.account_type.startswith("expense"))
+        return invoice_ocr.accounts_in_chart(accounts, chart.mapped("code"), expense.mapped("code"))
+
+    @api.model
+    def _ocr_fallback_account(self, move):
+        """The account for a line without a usable account code: the purchase journal's
+        default account, else the company's default expense account."""
+        journal_account = move.journal_id.default_account_id
+        if journal_account and journal_account.account_type.startswith("expense"):
+            return journal_account
+        return move.company_id.expense_account_id
 
     @api.model
     def _ocr_tax(self, company, xmlid):
@@ -890,7 +908,7 @@ class AccountMove(models.Model):
             rate = line["vat_rate"]
             description = str(line.get("description") or "")
             account = self._ocr_line_account(move, line.get("account_code"), region, rate,
-                                             treatment)
+                                             treatment, notes)
             lv = {
                 "name": description or data.get("invoice_number") or "Faktura",
                 "quantity": quantity,
@@ -939,10 +957,14 @@ class AccountMove(models.Model):
             line["amount"] = round(line["amount"] + share, 2)
             line.pop("unit_price", None)
 
-    def _ocr_line_account(self, move, code, region, rate, treatment):
-        """The line's account in the bill's company: the BAS account for the purchase
-        (invoice_ocr.account_candidates, e.g. 4000 from an EU supplier is 4515), else the
-        code as given, else the fallback account."""
+    def _ocr_line_account(self, move, code, region, rate, treatment, notes):
+        """The line's account in the bill's company.
+
+        The BAS account for the purchase (invoice_ocr.account_candidates, e.g. 4000 from an
+        EU supplier is 4515), else the code as given, else the fallback account (the
+        journal's default, see _ocr_fallback_account), remapped the same way. A code that is
+        not in the chart is noted.
+        """
         from ..lib import invoice_ocr as lib
 
         company = move.company_id
@@ -950,11 +972,17 @@ class AccountMove(models.Model):
             account = self._ocr_account(company, candidate)
             if account:
                 return account
-        for candidate in lib.account_candidates("4000", region, rate, treatment):
-            account = self._ocr_account(company, candidate)
-            if account:
-                return account
-        return self.env["account.account"]
+        fallback = self._ocr_fallback_account(move)
+        if fallback:
+            for candidate in lib.account_candidates(fallback.code, region, rate, treatment):
+                account = self._ocr_account(company, candidate)
+                if account:
+                    fallback = account
+                    break
+        if code:
+            notes.append(_("Account %(code)s is not in the chart of accounts – used %(account)s.",
+                           code=code, account=fallback.display_name or "–"))
+        return fallback
 
     def _ocr_apply_total_adjustments(self, move, data):
         """Rätta öresavrundning och justeringar utanför moms mot fakturans tryckta belopp.

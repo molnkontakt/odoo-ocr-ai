@@ -49,6 +49,9 @@
                     <setting string="Ollama model" invisible="invoice_ocr_provider != 'ollama'">
                         <field name="invoice_ocr_ollama_model"/>
                     </setting>
+                    <setting string="Accounts for invoice lines" help="The account codes the AI may choose, one per line as 'code: hint'. Empty: the built-in Swedish BAS list. Only accounts that exist in the bill company's chart are offered.">
+                        <field name="invoice_ocr_account_list" widget="text" placeholder="6540: IT services (consulting, managed services)"/>
+                    </setting>
                 </block>
             </xpath>
         </field>

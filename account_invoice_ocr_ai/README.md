@@ -119,6 +119,20 @@ failed OCR run is noted the same way.
 | `invoice_ocr.openai_api_key`, `invoice_ocr.openai_model` | OpenAI (default `gpt-4o-mini`) |
 | `invoice_ocr.base_url`, `invoice_ocr.api_key`, `invoice_ocr.model` | any other endpoint speaking OpenAI's `/chat/completions`: Mistral, Groq, OpenRouter, Together, DeepSeek, Azure OpenAI, Anthropic's compatibility layer, vLLM, LM Studio … Base URL up to the API version |
 | `invoice_ocr.ollama_url`, `invoice_ocr.ollama_model` | local Ollama (native API, JSON-schema `format`) |
+| `invoice_ocr.account_list` | *Accounts for invoice lines*: the account codes the model may choose, one per line as `code: hint`; empty = the built-in list (see below) |
+
+### Accounts for invoice lines
+
+The model picks each line's account from a list of codes with a short hint each
+("6540: IT-tjänster (IT consulting, managed services)"). The default is a
+Swedish BAS list (`DEFAULT_ACCOUNTS` in `lib/invoice_ocr.py`); replace it in the
+settings with your own, one `code: hint` per line. Only the codes that exist in
+the bill company's chart (or have expense sub-accounts there, e.g. 65400 for
+6540) are sent, the answer's schema allows only those codes, and an answer with
+another code is noted and gets the fallback account: the purchase journal's
+default account, else the company's default expense account. For a reverse-charge
+purchase the BAS foreign-purchase account is used when the chart has it (see
+*VAT treatment*).
 
 **Verify provider** on the settings page does a one-token round-trip with the
 values on the form — saved or not — and shows which model actually answered
@@ -187,8 +201,8 @@ and the `tesseract-ocr` binary with `swe` + `eng` language data.
 
 - Lines are only created when the bill has none yet. Delete the lines and run
   OCR again to re-read.
-- The account map is a Swedish BAS default. Adjust `ACCOUNT_FALLBACKS` in
-  `models/account_move.py` and `remap_account_code` in `lib/invoice_ocr.py`
-  for another chart of accounts.
+- The account list and the VAT rules follow Swedish BAS and l10n_se. For another
+  chart, set your own account list in the settings; goods and services are told
+  apart by BAS account ranges (`GOODS_ACCOUNT_RANGES` in `lib/invoice_ocr.py`).
 - Every pre-filled bill must be reviewed before posting; the model does make
   mistakes, especially on multi-rate invoices.

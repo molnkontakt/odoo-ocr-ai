@@ -113,3 +113,73 @@ def test_merge_records_supplier_se_vat_numbers():
     own = inv.build_own_ids(["SE999999000601"])
     final = inv._merge_fields("VAT SE999999001401, buyer SE999999000601", {}, {}, own)
     assert final["_se_vat_numbers"] == ["SE999999001401"]
+
+
+# ── The account list (#24) ───────────────────────────────────────────────────
+
+def test_parse_account_list():
+    text = "6540: IT services\n  6230 = Internet \n# a comment\n\n4000\nno code here\n6540: again\n5010 – Rent"
+    assert inv.parse_account_list(text) == [
+        ("6540", "IT services"), ("6230", "Internet"), ("4000", ""), ("5010", "Rent")]
+    assert inv.parse_account_list("") == []
+    assert inv.parse_account_list(None) == []
+
+
+def test_accounts_in_chart_keeps_only_existing_codes():
+    accounts = [("4000", "goods"), ("6231", "cloud"), ("6540", "IT"), ("6990", "fees")]
+    assert inv.accounts_in_chart(accounts, ["4000", "6540", "6991"]) == [
+        ("4000", "goods"), ("6540", "IT")]
+    # a longer-coded chart: sub-accounts count, but only among the given expense codes
+    assert inv.accounts_in_chart(accounts, ["400000", "654000"], ["654000"]) == [("6540", "IT")]
+    assert inv.accounts_in_chart(accounts, []) == []
+
+
+def test_prompt_and_schema_offer_only_the_listed_accounts():
+    accounts = [("4000", "Inköp av varor"), ("6540", "IT-tjänster")]
+    prompt = inv.build_extraction_prompt(accounts)
+    assert "    4000 = Inköp av varor\n    6540 = IT-tjänster\n" in prompt
+    assert "6231 =" not in prompt and "6990 =" not in prompt
+    schema = inv.invoice_json_schema(accounts)
+    line = schema["properties"]["lines"]["items"]
+    assert line["properties"]["account_code"]["enum"] == ["4000", "6540"]
+    assert "account_code" in line["required"]
+    # no accounts: the model leaves the code empty, every line gets the fallback account
+    assert "account_code: null (no accounts to choose from)" in inv.build_extraction_prompt([])
+    empty = inv.invoice_json_schema([])["properties"]["lines"]["items"]
+    assert "enum" not in empty["properties"]["account_code"]
+    assert "account_code" not in empty["required"]
+    # the default prompt is the built-in BAS list
+    assert "    6231 = Datamolntjänster" in inv.EXTRACTION_PROMPT
+
+
+def test_check_account_codes_drops_codes_outside_the_list():
+    data = {"lines": [{"description": "Cloud", "amount": 10.0, "account_code": "6231"},
+                      {"description": "IT", "amount": 5.0, "account_code": "6540"},
+                      {"amount": 1.0}]}
+    data, notes = inv.check_account_codes(data, [("6540", "IT")])
+    assert "account_code" not in data["lines"][0]
+    assert data["lines"][1]["account_code"] == "6540"
+    assert notes == ["line 'Cloud': account 6231 is not in the account list – the default "
+                     "account is used"]
+    _data, notes = inv.check_account_codes({"lines": [{"amount": 1.0, "account_code": "6540"}]}, [])
+    assert notes == []
+
+
+def test_the_runs_account_list_reaches_the_model_and_the_check(monkeypatch):
+    seen = {}
+
+    def fake_chat_json(prompt, text, schema, name, **kwargs):
+        seen.update(prompt=prompt, schema=schema)
+        return {"vendor_name": "Example Supplier AB", "subtotal": 100.0,
+                "lines": [{"description": "Cloud", "amount": 100.0, "vat_rate": 25,
+                           "account_code": "6231"}]}, {}
+
+    monkeypatch.setattr(inv, "chat_json", fake_chat_json)
+    cfg = {"accounts": [("6540", "IT"), ("5010", "Rent")], "retry_skip_seconds": 0}
+    data = inv.extract_invoice_data_from_text("Faktura\nNetto 100,00\n", config=cfg)
+    assert "    6540 = IT\n    5010 = Rent" in seen["prompt"]
+    assert "6231 =" not in seen["prompt"]
+    enum = seen["schema"]["properties"]["lines"]["items"]["properties"]["account_code"]["enum"]
+    assert enum == ["6540", "5010"]
+    assert "account_code" not in data["lines"][0]
+    assert any("account 6231 is not in the account list" in n for n in data["_notes"])
