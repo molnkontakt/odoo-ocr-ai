@@ -1454,35 +1454,214 @@ def _strip_meta(data):
     return data
 
 
-# BAS-konton for EU-/importforvarv (se EXTRACTION_PROMPT ovan).
-EU_GOODS_ACCOUNT = "4515"    # Inköp av varor från annat EU-land, 25 %
-EU_SERVICES_ACCOUNT = "4535"  # Inköp av tjänster från annat EU-land, 25 %
-EX_GOODS_ACCOUNT = "4545"    # Import av varor, 25 % moms
+# ── VAT treatment of a vendor bill (BAS accounts, l10n_se taxes) ─────────────
+# Every line gets its own tax, chosen after its final account is known (#8): goods or
+# services is read off the account (BAS), the region off the supplier's country, and
+# whether VAT was charged off the document's printed VAT (#22). The tax is named by its
+# l10n_se template id (data/template/account.tax-se.csv), which the Odoo module resolves
+# per company.
+
+EU_COUNTRY_CODES = frozenset({
+    "AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "ES", "FI", "FR", "GR", "HR", "HU", "IE",
+    "IT", "LT", "LU", "LV", "MT", "NL", "PL", "PT", "RO", "SE", "SI", "SK",
+})
+# VAT number prefixes that are not the ISO country code: the inverse of Odoo's
+# EU_EXTRA_VAT_CODES (odoo/addons/base/models/res_partner.py).
+VAT_PREFIX_COUNTRY = {"EL": "GR", "XI": "GB"}
+SWEDISH_VAT_RATES = (25, 12, 6)
+
+# Goods purchases (BAS): 4000–4499, EU goods 4510–4529 (4515–4517) and import of goods
+# 4540–4549 (4545–4547). Everything else is a service: 4530–4539 (4531–4533 services from
+# outside the EU, 4535–4537 from the EU) and the other cost accounts, 5xxx–7xxx.
+GOODS_ACCOUNT_RANGES = ((4000, 4499), (4510, 4529), (4540, 4549))
+# Exempt or out-of-scope costs: a line with VAT rate 0 on these accounts gets no tax, also
+# from a foreign supplier (no reverse charge on a reminder fee, bank charge, insurance
+# premium or interest): insurance 63xx, bank charges 657x, other external costs and fees
+# 699x, statutory insurance premiums 75xx, financial items 8xxx.
+OUT_OF_SCOPE_ACCOUNT_RANGES = ((6300, 6399), (6570, 6579), (6990, 6999), (7500, 7599),
+                               (8000, 8999))
+# The BAS purchase accounts per region, kind and rate, and the 45xx families they form.
+FOREIGN_PURCHASE_ACCOUNTS = {
+    ("eu", "goods"): {25: "4515", 12: "4516", 6: "4517"},
+    ("eu", "services"): {25: "4535", 12: "4536", 6: "4537"},
+    ("non_eu", "goods"): {25: "4545", 12: "4546", 6: "4547"},
+    ("non_eu", "services"): {25: "4531", 12: "4532", 6: "4533"},
+}
+_FOREIGN_PURCHASE_RANGES = ((4510, 4529), (4530, 4539), (4540, 4549))
 
 
-def remap_account_code(orig_code, is_eu_foreign=False, is_outside_eu=False,
-                       line_desc=""):
-    """Remappa inhemska BAS-inkopskonton till EU-reverse-charge-/importvarianter.
+def country_from_vat(vat):
+    """The ISO country code of a VAT number's prefix ('EL…' is GR, 'XI…' GB), or None."""
+    m = re.match(r"\s*([A-Za-z]{2})(?=[\s\d])", str(vat or ""))
+    if not m:
+        return None
+    prefix = m.group(1).upper()
+    return VAT_PREFIX_COUNTRY.get(prefix, prefix)
 
-    Varor 4000-4099 → 4515 (EU) / 4545 (utanfor EU). Tjanster 4500-4599 → 4535
-    (EU). Kostnadsklasser i 5xxx/6xxx (t.ex. 6231 molntjanster) lamnas ororda —
-    det ar kostnadskonton, inte "inkop fran EU"-konton; momssidorna hanteras av
-    skatten pa raden i stallet for kontot. line_desc finns for framtida
-    beskrivningsheuristik men anvands inte an.
+
+def vat_region(country_code):
+    """'domestic' (Sweden, or unknown), 'eu' (another EU country) or 'non_eu'."""
+    code = (country_code or "").strip().upper()
+    if not code or code == "SE":
+        return "domestic"
+    return "eu" if code in EU_COUNTRY_CODES else "non_eu"
+
+
+def account_number(code):
+    """The first four digits of an account code as a number ('45150' → 4515), or None."""
+    m = re.match(r"\s*(\d{4})", str(code or ""))
+    return int(m.group(1)) if m else None
+
+
+def _in_ranges(code, ranges):
+    n = account_number(code)
+    return n is not None and any(lo <= n <= hi for lo, hi in ranges)
+
+
+def is_goods_account(code):
+    """True for a goods-purchase account (see GOODS_ACCOUNT_RANGES); False means a service."""
+    return _in_ranges(code, GOODS_ACCOUNT_RANGES)
+
+
+def is_out_of_scope_account(code):
+    """True for an account of exempt or out-of-scope costs (see OUT_OF_SCOPE_ACCOUNT_RANGES)."""
+    return _in_ranges(code, OUT_OF_SCOPE_ACCOUNT_RANGES)
+
+
+def line_vat_rate(value):
+    """A line's VAT rate as a whole number (25.0 → 25), or None."""
+    number = _to_number(value)
+    return None if number is None else int(round(number))
+
+
+def bill_vat_treatment(region, vat_charged, swedish_vat):
+    """How the bill's VAT is booked: 'domestic', 'reverse_charge' or 'foreign_vat'.
+
+    * domestic supplier: Swedish input VAT ('domestic');
+    * foreign supplier that charged VAT: Swedish VAT (it shows a Swedish VAT number) is
+      booked like a domestic purchase; any other VAT is foreign VAT, which is never
+      deductible in Sweden and is booked as part of the cost ('foreign_vat');
+    * foreign supplier that charged no VAT: the buyer accounts for it ('reverse_charge').
     """
-    if not is_eu_foreign and not is_outside_eu:
-        return orig_code
-    try:
-        code_int = int(str(orig_code or 0)[:4])
-    except (ValueError, TypeError):
-        return orig_code
-    if is_eu_foreign and 4000 <= code_int <= 4099:
-        return EU_GOODS_ACCOUNT
-    if is_outside_eu and 4000 <= code_int <= 4099:
-        return EX_GOODS_ACCOUNT
-    if is_eu_foreign and 4500 <= code_int <= 4599:
-        return EU_SERVICES_ACCOUNT
-    return orig_code
+    if region == "domestic":
+        return "domestic"
+    if vat_charged:
+        return "domestic" if swedish_vat else "foreign_vat"
+    return "reverse_charge"
+
+
+def reverse_charge_rate(rate):
+    """The Swedish rate a reverse-charge line is taxed at: the line's rate if Swedish, else 25."""
+    return rate if rate in SWEDISH_VAT_RATES else 25
+
+
+def line_gets_reverse_charge(account_code, rate):
+    """False for a VAT-0 line on an out-of-scope account (fee, bank charge …), else True."""
+    return bool(rate) or not is_out_of_scope_account(account_code)
+
+
+def line_tax_xmlid(account_code, rate, region, treatment):
+    """The l10n_se template id of the purchase tax for one line, or None (no tax).
+
+    `account_code` is the line's final account: it decides goods or services.
+      domestic        → purchase_tax_<rate>_<goods|services>   (input VAT, box 48)
+      reverse charge  → purchase_<goods|services>_tax_<rate>_EC  (EU: box 20 / 21)
+                        purchase_<goods|services>_tax_<rate>_NEC (outside the EU: box 50 / 22)
+      foreign VAT     → None (in the cost, no Swedish VAT)
+    A domestic line at 0 % or at a rate that is not Swedish gets no tax; a reverse-charge
+    line at 0 % on an out-of-scope account gets none either, any other one is taxed at its
+    Swedish rate or 25 %.
+    """
+    kind = "goods" if is_goods_account(account_code) else "services"
+    if treatment == "domestic":
+        return f"purchase_tax_{rate}_{kind}" if rate in SWEDISH_VAT_RATES else None
+    if treatment != "reverse_charge" or region not in ("eu", "non_eu"):
+        return None
+    if not line_gets_reverse_charge(account_code, rate):
+        return None
+    suffix = "EC" if region == "eu" else "NEC"
+    return f"purchase_{kind}_tax_{reverse_charge_rate(rate)}_{suffix}"
+
+
+def remap_account_code(code, region="domestic", rate=25):
+    """The BAS purchase account for a foreign purchase on `code`, else `code` unchanged.
+
+    For a reverse-charge purchase from another EU country (`region` 'eu') or from outside
+    the EU ('non_eu'): domestic goods purchases 4000–4069/4090–4099 become EU goods
+    (4515/4516/4517) or import of goods (4545/4546/4547) by `rate`, and an account of the
+    wrong 45xx family or rate is moved to the right one: EU goods 4510–4529, import of
+    goods 4540–4549, services 4530–4539 (4531–4533 outside the EU, 4535–4537 EU). The
+    4000–4499 goods accounts stay goods and 4530–4539 services stay services. Other cost
+    accounts (5xxx–7xxx, e.g. 6540 IT services) and BAS 2026's foreign goods-for-resale
+    accounts 4070–4089 are left as they are: the line's tax reports the purchase.
+    """
+    if region not in ("eu", "non_eu"):
+        return code
+    n = account_number(code)
+    if n is None:
+        return code
+    foreign = any(lo <= n <= hi for lo, hi in _FOREIGN_PURCHASE_RANGES)
+    if not foreign and not (4000 <= n <= 4069 or 4090 <= n <= 4099):
+        return code
+    kind = "goods" if is_goods_account(code) else "services"
+    accounts = FOREIGN_PURCHASE_ACCOUNTS[(region, kind)]
+    return accounts.get(rate) or accounts[25]
+
+
+def account_candidates(code, region, rate, treatment):
+    """Account codes to try for a line, best first: the remapped BAS account at the line's
+    rate, at 25 %, then the code as given. Only reverse-charge lines that get a tax are
+    remapped (a fee line on 6990 stays, and so does a line booked with foreign VAT)."""
+    if not code:
+        return []
+    out = []
+    if treatment == "reverse_charge" and line_gets_reverse_charge(code, rate):
+        out = [remap_account_code(code, region, reverse_charge_rate(rate)),
+               remap_account_code(code, region, 25)]
+    return list(dict.fromkeys([*out, str(code)]))
+
+
+def document_vat(data):
+    """The VAT amount on the document: printed (regex) first, else the AI's, else total −
+    net. None when nothing is known."""
+    printed = (data or {}).get("_printed") or {}
+    for source in (printed, data or {}):
+        vat = _num(source.get("vat_amount"))
+        if vat is not None:
+            return vat
+    for source in (printed, data or {}):
+        total, net = _num(source.get("total_amount")), _num(source.get("subtotal"))
+        if total is not None and net is not None:
+            return round(total - net, 2)
+    return None
+
+
+def spread_amount(amounts, total):
+    """`total` split over `amounts` in proportion, in cents; the remainder goes to the
+    largest amount, so the shares add up to `total` exactly."""
+    if not amounts:
+        return []
+    base = sum(amounts)
+    shares = ([round(total * a / base, 2) for a in amounts] if base
+              else [0.0] * len(amounts))
+    largest = max(range(len(amounts)), key=lambda i: abs(amounts[i]))
+    shares[largest] = round(shares[largest] + total - sum(shares), 2)
+    return shares
+
+
+# A Swedish VAT number: SE + org.nr (10 digits) + 01, as printed ('SE 999999-0014 01')
+SE_VAT_RE = re.compile(r"(?<![A-Za-z0-9])SE[ \t]?(\d{6})[ \t-]?(\d{4})[ \t]?01(?!\d)")
+
+
+def se_vat_numbers(text, own_keys=frozenset()):
+    """The Swedish VAT numbers printed in `text` that are not the buyer's own (`own_keys`
+    from build_own_ids)."""
+    found = []
+    for m in SE_VAT_RE.finditer(text or ""):
+        vat = f"SE{m.group(1)}{m.group(2)}01"
+        if not is_own_id(vat, set(own_keys)) and vat not in found:
+            found.append(vat)
+    return found
 
 
 def _num(v):
@@ -1934,6 +2113,12 @@ def _merge_fields(text, regex_fields, ai_fields, own_keys):
         final["vendor_name"] = declared
         final.setdefault("_conflicts", []).append(
             f"vendor_name: marketplace VAT-declarer override → {declared}")
+
+    # Swedish VAT numbers on the document other than the buyer's: a foreign supplier that
+    # shows one is registered for VAT in Sweden, so VAT it charges is Swedish VAT (#22).
+    se_vat = se_vat_numbers(text, own_keys)
+    if se_vat:
+        final["_se_vat_numbers"] = se_vat
 
     # Dras fakturan automatiskt från köparens konto? Då ska den inte betalas manuellt.
     auto_debit = detect_auto_debit(text)

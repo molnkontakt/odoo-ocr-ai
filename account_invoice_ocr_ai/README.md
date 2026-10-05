@@ -16,12 +16,44 @@ OCR + LLM pre-fill of vendor bills in Odoo 19 Community.
    (totals must add up, reasoning models must actually have reasoned); an
    unreliable answer is retried once.
 5. Creates or updates the draft bill: partner (auto-created with country from
-   the VAT prefix when unknown), dates, references, bank details, lines with
-   BAS account and VAT rate. EU suppliers get reverse-charge taxes and the
-   account is remapped from the 4000 range to 4515/4535/4545. Marketplace
-   invoices use the VAT-declaring entity as vendor.
+   the VAT prefix when unknown; `EL` is Greece, `XI` the UK), dates,
+   references, bank details, lines with BAS account and a purchase tax per line
+   (see *VAT treatment* below). Marketplace invoices use the VAT-declaring
+   entity as vendor.
 6. Posts a chatter note with everything it read, any regex/AI conflicts and the
    checks below.
+
+### VAT treatment
+
+Every line gets its own tax, chosen once its final account is known. Accounts,
+taxes, partners and bank accounts are always those of the bill's company, also
+when another company is active. Taxes are l10n_se's, found by their template id
+for the bill's company; on another chart a domestic tax is found by rate, and a
+reverse-charge tax only by its l10n_se-style name ("25% EU G"), never guessed.
+
+- **Goods or services** follows the line's account (BAS): goods are 4000–4499,
+  4510–4529 (EU goods, 4515–4517) and 4540–4549 (import, 4545–4547); everything
+  else is a service, including 4530–4539 (4531–4533 from outside the EU,
+  4535–4537 from the EU) and the 5xxx–7xxx cost accounts.
+- **Swedish vendor** (or no country): Swedish input VAT at the line's rate,
+  `25% G` or `25% S` etc. A 0 % line gets no tax.
+- **Foreign vendor, no VAT on the document**: reverse charge per line, at the
+  line's Swedish rate or 25 %: EU goods `EU G` (box 20), EU services `EU S`
+  (box 21), import of goods `EX G` (box 50), services from outside the EU
+  `EX S` (box 22). A domestic goods account (4000–4099) becomes 4515–4517 or
+  4545–4547, and a 45xx account of the wrong region or rate is moved to the
+  right one; other cost accounts stay. Import of goods gets a note that the VAT
+  base is the customs value on the customs bill, not the invoice amount. A
+  0 % line on an account for exempt or out-of-scope costs (insurance 63xx, bank
+  charges 657x, fees 699x, statutory premiums 75xx, financial items 8xxx) gets
+  no tax: a reminder fee is never reverse-charged at 25 %.
+- **Foreign vendor charging Swedish VAT** (it shows a Swedish VAT number, e.g. a
+  marketplace's "VAT declared by"): Swedish input VAT, no reverse charge, and a
+  note.
+- **Foreign vendor charging foreign VAT** (a hotel abroad): foreign VAT is not
+  deductible in Sweden, so the printed VAT is added to the cost of the lines
+  that carry it, the lines get no tax and no reverse charge, and a note says
+  so (ask for a corrected invoice if it should have been reverse-charged).
 
 ### Guards
 

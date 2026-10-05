@@ -321,32 +321,45 @@ def test_extract_invoice_data_config_is_passed_through(monkeypatch):
 
 def test_remap_account_code_domestic_unchanged():
     assert inv.remap_account_code("4000") == "4000"
-    assert inv.remap_account_code("6231", is_eu_foreign=False, is_outside_eu=False) == "6231"
+    assert inv.remap_account_code("4515", "domestic") == "4515"
+    assert inv.remap_account_code("6231", "domestic") == "6231"
 
 
 def test_remap_account_code_eu_reverse_charge():
-    assert inv.remap_account_code("4000", is_eu_foreign=True) == "4515"
-    assert inv.remap_account_code(4000, is_eu_foreign=True) == "4515"
-    assert inv.remap_account_code("4099", is_eu_foreign=True) == "4515"
-    assert inv.remap_account_code("4510", is_eu_foreign=True) == "4535"
-    assert inv.remap_account_code("4590", is_eu_foreign=True) == "4535"
-    # Kostnadsklasser (5xxx/6xxx) remappas inte
-    assert inv.remap_account_code("6231", is_eu_foreign=True) == "6231"
-    assert inv.remap_account_code("5010", is_eu_foreign=True) == "5010"
+    assert inv.remap_account_code("4000", "eu") == "4515"
+    assert inv.remap_account_code(4000, "eu") == "4515"
+    assert inv.remap_account_code("4099", "eu") == "4515"
+    assert inv.remap_account_code("4000", "eu", 12) == "4516"
+    # EU goods stay goods: 4515 is no longer swallowed by a 4500-4599 → 4535 rule (#35.5)
+    assert inv.remap_account_code("4515", "eu") == "4515"
+    assert inv.remap_account_code("4510", "eu") == "4515"
+    assert inv.remap_account_code("4515", "eu", 6) == "4517"
+    assert inv.remap_account_code("4545", "eu") == "4515"   # import account for an EU supplier
+    assert inv.remap_account_code("4535", "eu") == "4535"
+    assert inv.remap_account_code("4531", "eu") == "4535"   # the non-EU services account
+    assert inv.remap_account_code("4535", "eu", 12) == "4536"
+    # Kostnadsklasser (5xxx/6xxx) remappas inte, inte heller 4100-4499 och 4500
+    assert inv.remap_account_code("6231", "eu") == "6231"
+    assert inv.remap_account_code("5010", "eu") == "5010"
+    assert inv.remap_account_code("4400", "eu") == "4400"
+    assert inv.remap_account_code("4500", "eu") == "4500"
+    # BAS 2026's foreign goods-for-resale accounts are left as chosen
+    assert inv.remap_account_code("4075", "eu") == "4075"
 
 
 def test_remap_account_code_outside_eu():
-    assert inv.remap_account_code("4000", is_outside_eu=True) == "4545"
-    assert inv.remap_account_code("4050", is_outside_eu=True) == "4545"
-    # Utanför EU remappas bara varor; 45xx och kostnadsklasser lämnas orörda
-    assert inv.remap_account_code("4510", is_outside_eu=True) == "4510"
-    assert inv.remap_account_code("6231", is_outside_eu=True) == "6231"
+    assert inv.remap_account_code("4000", "non_eu") == "4545"
+    assert inv.remap_account_code("4050", "non_eu") == "4545"
+    assert inv.remap_account_code("4515", "non_eu") == "4545"
+    assert inv.remap_account_code("4535", "non_eu") == "4531"
+    assert inv.remap_account_code("4535", "non_eu", 6) == "4533"
+    assert inv.remap_account_code("6231", "non_eu") == "6231"
 
 
 def test_remap_account_code_unparsable_passthrough():
-    assert inv.remap_account_code(None, is_eu_foreign=True) is None
-    assert inv.remap_account_code("", is_eu_foreign=True) == ""
-    assert inv.remap_account_code("ab12", is_eu_foreign=True) == "ab12"
+    assert inv.remap_account_code(None, "eu") is None
+    assert inv.remap_account_code("", "eu") == ""
+    assert inv.remap_account_code("ab12", "eu") == "ab12"
 
 
 # ── Config-injektion ─────────────────────────────────────────────────────────

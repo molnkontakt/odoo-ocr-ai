@@ -357,7 +357,7 @@ class AccountMove(models.Model):
 
         # Create lines from AI lines if move has none
         if not move.invoice_line_ids:
-            self._create_lines_from_ocr(move, data)
+            self._create_lines_from_ocr(move, data, notes)
 
         # Extraherat bankgiro/plusgiro/konto som är bolagets eget
         own_numbers = set()
@@ -747,9 +747,10 @@ class AccountMove(models.Model):
                 vals["vat"] = org_raw
             elif org_clean:
                 vals["vat"] = f"SE{org_clean}01" if len(org_clean) == 10 else org_clean
-            # Country guess from VAT prefix
-            if vals.get("vat"):
-                cc = vals["vat"][:2]
+            # Country from the VAT prefix; Greek numbers start with EL and Northern Irish
+            # ones with XI, which are no country codes (#22)
+            cc = invoice_ocr.country_from_vat(vals.get("vat"))
+            if cc:
                 country = self.env["res.country"].search([("code", "=", cc)], limit=1)
                 if country:
                     vals["country_id"] = country.id
@@ -764,139 +765,196 @@ class AccountMove(models.Model):
 
         return None
 
-    def _create_lines_from_ocr(self, move, data):
-        """Create invoice_line_ids from AI-extracted data."""
-        ai_lines = data.get("lines")
+    @api.model
+    def _ocr_partner_country_code(self, partner):
+        """The vendor's country code: its country, else its VAT number's prefix (EL is GR)."""
+        from ..lib import invoice_ocr
 
-        company = move.company_id
+        partner = partner.commercial_partner_id
+        if partner.country_id:
+            return partner.country_id.code
+        code = invoice_ocr.country_from_vat(partner.vat)
+        if code and self.env["res.country"].search_count([("code", "=", code)], limit=1):
+            return code
+        return None
 
-        def acct(code):
-            return self._ocr_account(company, code).id or None
+    @api.model
+    def _ocr_swedish_vat_number(self, partner, data):
+        """A Swedish VAT or org number of the vendor, from the document or the partner, or None.
 
-        # Determine VAT context based on partner country
-        EU_NON_SE = {
-            "AT","BE","BG","HR","CY","CZ","DK","EE","FI","FR","DE","GR",
-            "HU","IE","IT","LV","LT","LU","MT","NL","PL","PT","RO","SK",
-            "SI","ES",
-        }
-        partner_cc = (move.partner_id.country_id.code or "").upper() if move.partner_id and move.partner_id.country_id else ""
-        is_eu_foreign = partner_cc in EU_NON_SE
-        is_outside_eu = bool(partner_cc) and partner_cc != "SE" and not is_eu_foreign
+        A foreign supplier that shows one is registered for VAT in Sweden: VAT it charges is
+        Swedish VAT, deductible as input VAT (#22).
+        """
+        found = list(data.get("_se_vat_numbers") or [])
+        org = str(data.get("org_number") or "").strip()
+        if org.upper().startswith("SE") or re.fullmatch(r"\d{6}-?\d{4}", org):
+            found.append(org)
+        vat = (partner.commercial_partner_id.vat or "").strip()
+        if vat.upper().startswith("SE"):
+            found.append(vat)
+        return found[0] if found else None
 
-        # Alla svenska momssatser, inte bara 25 och 12. 6 % gäller bl.a. persontransport
-        # (SJ, taxi, kollektivtrafik), böcker och tidningar — utan den raden hamnade
-        # tågbiljetter helt utan moms och totalen stämde inte.
-        # The bill company's own taxes, by l10n_se template id (#7).
-        RATES = (25, 12, 6)
-        if is_eu_foreign:
-            xmlid = "purchase_services_tax_%s_EC"
-        elif is_outside_eu:
-            xmlid = "purchase_services_tax_%s_NEC"
-        else:
-            xmlid = "purchase_tax_%s_goods"
-        taxes = {r: self._ocr_tax(company, xmlid % r) for r in RATES}
-        taxes = {r: t for r, t in taxes.items() if t}
+    @api.model
+    def _ocr_bill_lines(self, data):
+        """The lines to create: the AI's lines, or one line from the totals.
 
-        # For EU/EX: also remap account_code so domestic 4xxx → corresponding foreign account
-        # e.g. 4000 (Sw goods) → 4515 (EU goods 25%) ; 6230-range services stay the same
-        # Map by description heuristics done per-line below. The actual remap
-        # lives in lib/invoice_ocr.remap_account_code so it can be unit-tested
-        # without Odoo; the closure only carries the per-move country context.
-        from ..lib import invoice_ocr as _ocr
-
-        def remap_account_code(orig_code, line_desc=""):
-            return _ocr.remap_account_code(
-                orig_code, is_eu_foreign=is_eu_foreign,
-                is_outside_eu=is_outside_eu, line_desc=line_desc)
-
-        line_vals_list = []
-
-        if ai_lines and isinstance(ai_lines, list) and len(ai_lines) > 0:
-            for al in ai_lines:
-                if not isinstance(al, dict):
-                    continue
-                # The line's amount is what the answer was checked against: quantity and
-                # unit price only when they agree with it (#11).
-                qty_price = _ocr.line_quantity_and_price(al)
-                if not qty_price:
-                    continue
-                quantity, price_unit = qty_price
-                description = str(al.get("description") or "")
-                code = remap_account_code(al.get("account_code"), description)
-                fallback = "4515" if is_eu_foreign else ("4545" if is_outside_eu else "4000")
-                acc_id = acct(code) or acct(fallback)
-                lv = {
-                    "name": description or data.get("invoice_number") or "Faktura",
-                    "quantity": quantity,
-                    "price_unit": price_unit,
-                    "account_id": acc_id,
-                }
-                vat_rate = al.get("vat_rate")
-                # On EU reverse-charge invoices the AI sees "0%" but Odoo still needs
-                # the 25% EU S tax to generate 2614/2645 entries. Default rate to 25.
-                if (is_eu_foreign or is_outside_eu) and (vat_rate in (None, 0)):
-                    vat_rate = 25
-                try:
-                    vat_rate = int(round(float(vat_rate))) if vat_rate is not None else None
-                except (TypeError, ValueError):
-                    vat_rate = None
-                if vat_rate in taxes:
-                    lv["tax_ids"] = [(6, 0, [taxes[vat_rate].id])]
-                elif vat_rate not in (None, 0):
-                    logger.warning(
-                        "OCR: ingen inköpsmoms hittad för %s%% (%s) — raden får ingen moms",
-                        vat_rate, description[:60])
-                line_vals_list.append((0, 0, lv))
-        else:
-            # Single-line fallback from totals
-            total = data.get("total_amount")
-            vat = data.get("vat_amount")
-            subtotal = data.get("subtotal")
-            if total and vat and not subtotal:
-                subtotal = total - vat
-            elif subtotal and vat and not total:
-                total = subtotal + vat
-            elif total and not vat and not subtotal:
-                subtotal = total
-            elif total and subtotal and not vat:
-                vat = round(total - subtotal, 2)
-            # Sanity: subtotal+vat ≈ total else trust total
-            if total and subtotal and vat:
-                expected = round(subtotal + vat, 2)
-                if abs(expected - total) > 1.0:
-                    subtotal = round(total - vat, 2)
-            if subtotal and subtotal > 0:
-                code = remap_account_code(data.get("account_code"))
-                fallback = "4515" if is_eu_foreign else ("4545" if is_outside_eu else "4000")
-                acc_id = acct(code) or acct(fallback)
-                lv = {
-                    "name": data.get("invoice_number") or "Faktura",
-                    "quantity": 1,
-                    "price_unit": subtotal,
-                    "account_id": acc_id,
-                }
-                # Härled satsen ur tryckta belopp i stället för att anta 25 %. Ett kvitto på
-                # 95,00 med 5,38 moms är 6 %, inte 25 % — avrunda till närmaste giltiga sats.
+        Each is a dict with amount, and maybe quantity, unit_price, vat_rate, account_code
+        and description. The single line from the totals derives its VAT rate from the
+        printed amounts (95,00 with 5,38 VAT is 6 %, not 25 %).
+        """
+        lines = [dict(line) for line in data.get("lines") or [] if isinstance(line, dict)]
+        if lines:
+            return lines
+        total = data.get("total_amount")
+        vat = data.get("vat_amount")
+        subtotal = data.get("subtotal")
+        if total and vat and not subtotal:
+            subtotal = total - vat
+        elif subtotal and vat and not total:
+            total = subtotal + vat
+        elif total and not vat and not subtotal:
+            subtotal = total
+        elif total and subtotal and not vat:
+            vat = round(total - subtotal, 2)
+        # Sanity: subtotal+vat ≈ total else trust total
+        if total and subtotal and vat:
+            expected = round(subtotal + vat, 2)
+            if abs(expected - total) > 1.0:
+                subtotal = round(total - vat, 2)
+        if not subtotal or subtotal <= 0:
+            return []
+        rate = None
+        if vat and subtotal:
+            pct = round(vat / subtotal * 100)
+            rate = min((25, 12, 6), key=lambda r: abs(r - pct))
+            if abs(rate - pct) > 2:
+                logger.warning("OCR: moms %.2f på netto %.2f ger %s%%, ingen giltig sats matchar",
+                               vat, subtotal, pct)
                 rate = None
-                if vat and subtotal:
-                    pct = round(vat / subtotal * 100)
-                    rate = min(taxes, key=lambda r: abs(r - pct), default=None)
-                    if rate is not None and abs(rate - pct) > 2:
-                        logger.warning(
-                            "OCR: moms %.2f på netto %.2f ger %s%%, ingen giltig sats matchar",
-                            vat, subtotal, pct)
-                        rate = None
-                # EU/utanför EU: momsen är 0 på fakturan men förvärvsmoms ska ändå bokas
-                if rate is None and (is_eu_foreign or is_outside_eu):
-                    rate = 25
-                if rate in taxes:
-                    lv["tax_ids"] = [(6, 0, [taxes[rate].id])]
-                line_vals_list.append((0, 0, lv))
+        return [{"description": data.get("invoice_number") or "Faktura", "amount": subtotal,
+                 "vat_rate": rate}]
 
+    def _create_lines_from_ocr(self, move, data, notes=None):
+        """Create the bill's lines from the AI's lines (or the totals), each with its own tax.
+
+        The tax is chosen per line once its final account is known (#8): goods or services
+        from the account (BAS), the region from the vendor's country, and from the printed
+        VAT whether VAT was charged at all (#22) — see invoice_ocr.line_tax_xmlid. Taxes are
+        the bill company's, by l10n_se template id (#7).
+
+        * Foreign vendor, no VAT on the document: reverse charge per line (EU goods/services,
+          import of goods, services from outside the EU). A 0 % line on an out-of-scope
+          account (reminder fee, bank charge …) gets no tax; never 25 %.
+        * Foreign vendor charging Swedish VAT (it shows a Swedish VAT number): Swedish input
+          VAT, as for a Swedish vendor.
+        * Foreign vendor charging foreign VAT (a hotel abroad): that VAT is not deductible in
+          Sweden, so it is added to the lines' cost and they get no tax.
+        Notes for the chatter are appended to `notes`.
+        """
+        from ..lib import invoice_ocr as lib
+
+        notes = notes if notes is not None else []
+        company = move.company_id
+        lines = self._ocr_bill_lines(data)
+        if not lines:
+            return
+        partner = move.partner_id.commercial_partner_id
+        region = lib.vat_region(self._ocr_partner_country_code(partner))
+        vat_total = lib.document_vat(data)
+        vat_charged = bool(vat_total and vat_total > 0.005)
+        se_number = self._ocr_swedish_vat_number(partner, data) if region != "domestic" else None
+        treatment = lib.bill_vat_treatment(region, vat_charged, bool(se_number))
+        for line in lines:
+            line["vat_rate"] = lib.line_vat_rate(line.get("vat_rate"))
+
+        if treatment == "foreign_vat":
+            self._ocr_add_foreign_vat_to_cost(lines, vat_total)
+            data["_foreign_vat"] = vat_total
+            notes.append(_(
+                "The supplier is abroad and charged foreign VAT (%(vat)s). Foreign VAT is not "
+                "deductible in Sweden: it is booked as part of the cost, without Swedish VAT "
+                "and without reverse charge. If the purchase should have been invoiced without "
+                "VAT (reverse charge), ask the supplier for a corrected invoice.",
+                vat=f"{vat_total:.2f}"))
+        elif treatment == "domestic" and region != "domestic":
+            notes.append(_(
+                "The supplier is abroad but charged Swedish VAT (%(number)s): booked as "
+                "Swedish input VAT, without reverse charge.", number=se_number))
+
+        line_vals_list, imports = [], False
+        for line in lines:
+            qty_price = lib.line_quantity_and_price(line)
+            if not qty_price:
+                continue
+            quantity, price_unit = qty_price
+            rate = line["vat_rate"]
+            description = str(line.get("description") or "")
+            account = self._ocr_line_account(move, line.get("account_code"), region, rate,
+                                             treatment)
+            lv = {
+                "name": description or data.get("invoice_number") or "Faktura",
+                "quantity": quantity,
+                "price_unit": price_unit,
+                "account_id": account.id,
+                "tax_ids": [(5, 0, 0)],
+            }
+            xmlid = lib.line_tax_xmlid(account.code, rate, region, treatment)
+            if xmlid:
+                tax = self._ocr_tax(company, xmlid)
+                if tax:
+                    lv["tax_ids"] = [(6, 0, tax.ids)]
+                    imports = imports or xmlid.startswith("purchase_goods_tax_") and xmlid.endswith("_NEC")
+                else:
+                    notes.append(_("No purchase tax %(tax)s in the chart of accounts – the line "
+                                   "\"%(line)s\" has no tax.", tax=xmlid, line=lv["name"]))
+            line_vals_list.append((0, 0, lv))
+
+        if imports:
+            notes.append(_(
+                "Import of goods from outside the EU: the VAT base (box 50) is the customs value "
+                "on the customs bill plus duty and freight to Sweden, not the invoice amount. "
+                "The goods lines carry the import tax on the invoice amount – check it against "
+                "the customs bill."))
         if line_vals_list:
             move.write({"invoice_line_ids": line_vals_list})
             self._ocr_apply_total_adjustments(move, data)
             self._check_ocr_totals(move, data)
+
+    @api.model
+    def _ocr_add_foreign_vat_to_cost(self, lines, vat_total):
+        """Add the document's foreign VAT to the lines that carry it, in proportion.
+
+        The lines with a VAT rate carry it; if none has one, every line that is not on an
+        out-of-scope account (fees), else every line. Quantity and unit price are kept when
+        they still come to the new amount, else the line becomes 1 × amount.
+        """
+        from ..lib import invoice_ocr as lib
+
+        bearing = [line for line in lines if line["vat_rate"]]
+        bearing = bearing or [line for line in lines
+                              if not lib.is_out_of_scope_account(line.get("account_code"))]
+        bearing = bearing or lines
+        shares = lib.spread_amount([line["amount"] for line in bearing], vat_total)
+        for line, share in zip(bearing, shares, strict=True):
+            line["amount"] = round(line["amount"] + share, 2)
+            line.pop("unit_price", None)
+
+    def _ocr_line_account(self, move, code, region, rate, treatment):
+        """The line's account in the bill's company: the BAS account for the purchase
+        (invoice_ocr.account_candidates, e.g. 4000 from an EU supplier is 4515), else the
+        code as given, else the fallback account."""
+        from ..lib import invoice_ocr as lib
+
+        company = move.company_id
+        for candidate in lib.account_candidates(code, region, rate, treatment):
+            account = self._ocr_account(company, candidate)
+            if account:
+                return account
+        for candidate in lib.account_candidates("4000", region, rate, treatment):
+            account = self._ocr_account(company, candidate)
+            if account:
+                return account
+        return self.env["account.account"]
 
     def _ocr_apply_total_adjustments(self, move, data):
         """Rätta öresavrundning och justeringar utanför moms mot fakturans tryckta belopp.
@@ -986,12 +1044,14 @@ class AccountMove(models.Model):
 
         problems = []
         net = move.amount_untaxed - (data.get("_rounding_adjust") or 0.0)
-        if printed_net is not None and abs(net - printed_net) > tol:
+        # Foreign VAT booked as cost (#22) is in the net and not in the tax.
+        foreign_vat = data.get("_foreign_vat") or 0.0
+        if printed_net is not None and abs(net - printed_net - foreign_vat) > tol:
             problems.append(
-                f"netto {net:.2f} mot fakturans {printed_net:.2f}")
-        if printed_vat is not None and abs(move.amount_tax - printed_vat) > tol:
+                f"netto {net:.2f} mot fakturans {printed_net + foreign_vat:.2f}")
+        if printed_vat is not None and abs(move.amount_tax - printed_vat + foreign_vat) > tol:
             problems.append(
-                f"moms {move.amount_tax:.2f} mot fakturans {printed_vat:.2f}")
+                f"moms {move.amount_tax:.2f} mot fakturans {printed_vat - foreign_vat:.2f}")
         if printed_total is not None and abs(move.amount_total - printed_total) > tol:
             problems.append(
                 f"totalt {move.amount_total:.2f} mot fakturans {printed_total:.2f}")

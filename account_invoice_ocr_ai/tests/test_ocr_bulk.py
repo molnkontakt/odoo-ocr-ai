@@ -40,10 +40,10 @@ class TestOcrBulk(OcrBillCase):
         Move = type(self.env["account.move"])
         orig = Move._create_lines_from_ocr
 
-        def lines(rec, move, data):
+        def lines(rec, move, data, *args):
             if move == bad:
                 raise ValueError("boom")
-            return orig(rec, move, data)
+            return orig(rec, move, data, *args)
 
         return mock.patch.object(Move, "_create_lines_from_ocr", lines)
 
