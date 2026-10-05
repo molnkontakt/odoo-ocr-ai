@@ -87,3 +87,26 @@ class TestReceiptPlaceholders(TransactionCase):
             "expense_ocr.placeholder_name_prefixes", "Other prefix, Unknown sender")
         self.assertEqual(read("Unknown sender: receipt").name,
                          "Unknown sender: receipt — Example Restaurant — Lunch")
+
+    def test_untitled_name_in_another_language(self):
+        """Upload names the expense in the uploader's language; the OCR job, which runs as
+        another user, still sees it as a placeholder."""
+        self.env["res.lang"]._activate_lang("sv_SE")
+        HrExpense = self.env.registry["hr.expense"]
+        original = HrExpense._get_untitled_expense_name
+
+        def untitled(rec, *args):
+            if rec.env.lang == "sv_SE":
+                return f"Namnlöst utlägg {args[0] if args else ''}"
+            return original(rec, *args)
+
+        exp_gen = self.env["product.product"].search([("default_code", "=", "EXP_GEN")], limit=1)
+        with mock.patch.object(HrExpense, "_get_untitled_expense_name", untitled):
+            expense = self.env["hr.expense"].create({
+                "name": "Namnlöst utlägg 2026-10-05", "employee_id": self.employee.id,
+                "product_id": exp_gen.id})
+            with self._patched():
+                expense.message_main_attachment_id = self._attachment(res_id=expense.id)
+                run_ocr_cron(self.env)
+        self.assertEqual(expense.name, "Example Restaurant — Lunch")
+        self.assertEqual(expense.product_id, self.meal)

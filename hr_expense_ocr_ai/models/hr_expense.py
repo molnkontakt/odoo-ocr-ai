@@ -247,8 +247,11 @@ class HrExpense(models.Model):
         """
         self.ensure_one()
         name = (self.name or "").strip()
+        # Upload names the expense in the uploader's language, and the OCR job does not run
+        # in it: every installed language counts.
+        langs = {code for code, _name in self.env["res.lang"].get_installed()}
         untitled = {self.with_context(lang=lang)._get_untitled_expense_name("").strip()
-                    for lang in {self.env.lang or "en_US", "en_US"}}
+                    for lang in langs | {self.env.lang or "en_US", "en_US"}}
         name_is_untitled = any(prefix and name.startswith(prefix) for prefix in untitled)
         product = self.product_id
         upload_product = False
