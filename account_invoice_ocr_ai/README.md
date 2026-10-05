@@ -336,6 +336,25 @@ All of these are read as **defaults** when the corresponding system parameter
 | `INVOICE_OCR_TESSERACT_TIMEOUT` | `20` | Seconds for one tesseract run |
 | `INVOICE_OCR_MAX_IMAGE_BYTES` | `20971520` | Largest receipt image read |
 
+## Translations
+
+Every user-facing string is English and goes through Odoo's `_()`; the Swedish
+translation is `i18n/sv.po`. The libraries under `lib/` do not import Odoo, so
+what they tell the reviewer — the notes on the document and the messages of
+their own errors — is an `invoice_ocr.Note`: a `str` with the English text (logs
+and standalone use see plain text) that also keeps its English source text, its
+parameters and the Odoo module that translates it. The source texts are marked
+with a no-op `_()` in the libraries, so Odoo's exporter puts them in the module's
+`.pot` like any other code string, and `ocr.queue.mixin._ocr_note_text` shows a
+Note in the user's language. After changing a string, regenerate the template
+with Odoo's exporter on a database with both modules installed and update
+`sv.po`:
+
+    odoo-bin i18n export -c odoo.conf -d <database> account_invoice_ocr_ai hr_expense_ocr_ai
+
+`tests/test_i18n_files.py` fails when a string of the code is missing from the
+`.pot`, or a msgid from `sv.po`.
+
 ## Requirements
 
 `pdfplumber`, `requests`; for scanned PDFs `pytesseract`, `Pillow`, `pypdfium2`

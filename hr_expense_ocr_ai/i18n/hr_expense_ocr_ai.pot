@@ -1,0 +1,578 @@
+# Translation of Odoo Server.
+# This file contains the translation of the following modules:
+# 	* hr_expense_ocr_ai
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Odoo Server 19.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-05 22:37+0000\n"
+"PO-Revision-Date: 2026-10-05 22:37+0000\n"
+"Last-Translator: \n"
+"Language-Team: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: \n"
+"Plural-Forms: \n"
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid ""
+"%(name)s is %(size)s MB, more than the %(limit)s MB a receipt image may have"
+" – it was not read"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model_terms:ir.ui.view,arch_db:hr_expense_ocr_ai.hr_expense_view_form_receipt_ocr
+msgid ". Fill in the expense by hand or read the receipt again."
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "AI"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "Card (last four digits)"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "Category"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model:ir.model.fields,help:hr_expense_ocr_ai.field_res_config_settings__expense_ocr_placeholder_name_prefixes
+msgid ""
+"Comma-separated. An expense whose description starts with one of these (e.g."
+" the subject a mail alias gives expenses from unknown senders) gets the "
+"receipt's description appended. Upload's \"Untitled Expense\" is always "
+"replaced."
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model_terms:ir.ui.view,arch_db:hr_expense_ocr_ai.res_config_settings_view_form_expense_ocr
+msgid ""
+"Comma-separated. An expense whose description starts with one of these gets "
+"the receipt's description appended, e.g. the subject a mail alias gives "
+"expenses from unknown senders."
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model:ir.model,name:hr_expense_ocr_ai.model_res_config_settings
+msgid "Config Settings"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "Currency"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "Date"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model:ir.model.fields,field_description:hr_expense_ocr_ai.field_hr_expense__display_name
+#: model:ir.model.fields,field_description:hr_expense_ocr_ai.field_res_config_settings__display_name
+msgid "Display Name"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model:ir.model,name:hr_expense_ocr_ai.model_hr_expense
+msgid "Expense"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model:ir.model.fields,field_description:hr_expense_ocr_ai.field_res_config_settings__expense_ocr_enabled
+#: model_terms:ir.ui.view,arch_db:hr_expense_ocr_ai.res_config_settings_view_form_expense_ocr
+msgid "Expense receipt OCR"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "Filled in: %s"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model:ir.model.fields,field_description:hr_expense_ocr_ai.field_hr_expense__id
+#: model:ir.model.fields,field_description:hr_expense_ocr_ai.field_res_config_settings__id
+msgid "ID"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "Items"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "Merchant"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "Notes:"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model:ir.model.fields,field_description:hr_expense_ocr_ai.field_hr_expense__ocr_state
+msgid "OCR"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model:ir.model.fields,field_description:hr_expense_ocr_ai.field_hr_expense__ocr_attempts
+msgid "OCR attempts"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model_terms:ir.ui.view,arch_db:hr_expense_ocr_ai.hr_expense_view_form_receipt_ocr
+msgid "OCR could not read this receipt:"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model:ir.model.fields,field_description:hr_expense_ocr_ai.field_hr_expense__ocr_attachment_id
+msgid "OCR document"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model:ir.model.fields,field_description:hr_expense_ocr_ai.field_hr_expense__ocr_error
+msgid "OCR error"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model_terms:ir.ui.view,arch_db:hr_expense_ocr_ai.hr_expense_view_search_receipt_ocr
+msgid "OCR failed"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "OCR is already reading it in the background"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid ""
+"OCR is already reading this receipt in the background. Wait a moment and "
+"reload the page."
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model_terms:ir.ui.view,arch_db:hr_expense_ocr_ai.hr_expense_view_search_receipt_ocr
+msgid "OCR pending"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model:ir.model.fields,field_description:hr_expense_ocr_ai.field_hr_expense__ocr_requested_at
+msgid "OCR queued at"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model_terms:ir.ui.view,arch_db:hr_expense_ocr_ai.hr_expense_view_form_receipt_ocr
+msgid ""
+"OCR reads this receipt in the background, within a minute or so. Reload the "
+"page to see what it filled in."
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model:ir.model.fields,field_description:hr_expense_ocr_ai.field_hr_expense__ocr_requested_by
+msgid "OCR requested by"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model:ir.model.fields,field_description:hr_expense_ocr_ai.field_res_config_settings__expense_ocr_placeholder_name_prefixes
+#: model_terms:ir.ui.view,arch_db:hr_expense_ocr_ai.res_config_settings_view_form_expense_ocr
+msgid "Placeholder name prefixes"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model:ir.model.fields,help:hr_expense_ocr_ai.field_hr_expense__ocr_state
+msgid ""
+"Queued: OCR reads the document in the background, within a minute or so. "
+"Reading: it is being read. Read: OCR filled it in. Failed: OCR could not "
+"read it (see the error and the chatter). Empty: never queued."
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model:ir.actions.server,name:hr_expense_ocr_ai.action_read_receipt_server
+#: model_terms:ir.ui.view,arch_db:hr_expense_ocr_ai.hr_expense_view_form_receipt_ocr
+msgid "Read receipt (OCR)"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model_terms:ir.ui.view,arch_db:hr_expense_ocr_ai.res_config_settings_view_form_expense_ocr
+msgid ""
+"Reads receipt photos and PDFs on e-mailed expenses and on drafts that get a "
+"main attachment. Same AI provider and keys as above."
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model:ir.model.fields,help:hr_expense_ocr_ai.field_res_config_settings__expense_ocr_enabled
+msgid ""
+"Reads receipt photos and PDFs on e-mailed expenses and on drafts that get a "
+"main attachment. Uses the same AI provider and keys as the invoice OCR."
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model_terms:ir.ui.view,arch_db:hr_expense_ocr_ai.hr_expense_view_form_receipt_ocr
+msgid ""
+"Reads the attachment with tesseract + AI and fills in the empty fields "
+"(amount, date, category, description)."
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "Receipt OCR"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "Receipt OCR can only read draft expenses."
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "Receipt OCR failed for %(name)s: %(error)s"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "Receipt number"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model:ir.model.fields,help:hr_expense_ocr_ai.field_hr_expense__ocr_attachment_id
+msgid ""
+"The attachment OCR reads: the uploaded file, or the one chosen when OCR was "
+"requested."
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "The expense has no image or PDF attachment."
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model:ir.model.fields,help:hr_expense_ocr_ai.field_hr_expense__ocr_requested_by
+msgid ""
+"The user who queued the document for OCR. The background job reads it as "
+"this user: with their access rights (a vendor is only created by a user who "
+"may create contacts), in their language, and their name is on the notes. A "
+"document that came in by e-mail is read as its sender when the sender is a "
+"user; otherwise this is empty and the job reads it as OdooBot."
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "Total"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "VAT"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#: model:ir.model.fields,help:hr_expense_ocr_ai.field_hr_expense__ocr_requested_at
+msgid ""
+"When the document was queued for OCR, or last taken up by it. A change to "
+"the document after this moment means someone else worked on it: OCR then "
+"leaves it alone."
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "amount %s"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "category %s"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "confidence %s"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "could not read any text from %s."
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "date %s"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "description"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid "low confidence (%(confidence)s) — amount and date are not filled"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "model %(model)s, %(tokens)s completion tokens"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid "no confidence given — amount and date are not filled"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "no image or PDF attachment"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "not a draft expense"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "nothing (the fields were already set)"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "nothing could be read from %s"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "nothing was filled: the fields were already set (see the chatter note)"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "read %(name)s (%(how)s)"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "read the text of %s, but found nothing to fill in."
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "receipt %s"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid "tesseract failed (%(error)s)"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid "tesseract is not installed on the server"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid "tesseract took longer than %(seconds)s s on the image – stopped"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "text patterns only"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid ""
+"the AI gave no usable answer; only the values read by the regex were used"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid ""
+"the AI model answered with only %(tokens)s completion tokens: it skipped its"
+" reasoning, so check what it filled in"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid ""
+"the AI step failed (%(error)s); only the values read by the regex were used"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "the AI step failed (%s)"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid ""
+"the AI step failed (%s); only the values read from the text were filled in"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid "the amount %(amount)s is not printed on the receipt — ignored"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid ""
+"the amount %(amount)s is not printed on the receipt — used the receipt's "
+"total %(printed)s"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid "the attachment"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid ""
+"the category %s has a fixed cost: the amount is quantity × cost and was not "
+"filled"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid "the date %(date)s is not printed on the receipt — ignored"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid ""
+"the date %(date)s is not printed on the receipt — used the receipt's date "
+"%(printed)s"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid "the date %s is not a valid date – not used"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid "the file is not an image that can be read"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid "the image"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid ""
+"the image (%(width)s×%(height)s) was scaled down to %(megapixels)s "
+"megapixels for OCR"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid "the merchant name \"%(merchant)s\" is not printed on the receipt — ignored"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid "the model's date %(date)r is not a valid date — ignored"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid ""
+"the receipt is in %(currency)s, but %(problem)s – the amount was not filled"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid ""
+"the receipt shows VAT %(printed)s, the category's tax gives %(computed)s – "
+"check the VAT rate"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid "the text of %(name)s could not be read: %(error)s"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid "the time for reading the image was used up – it was not read"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid ""
+"the total is in %(currency)s – a foreign amount is not read without the AI, "
+"the amount stays empty"
+msgstr ""

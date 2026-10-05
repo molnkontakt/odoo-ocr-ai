@@ -4,5 +4,6 @@ from . import (
     test_receipt_failures,
     test_receipt_placeholders,
     test_receipt_queue,
+    test_receipt_translations,
     test_receipt_vat,
 )

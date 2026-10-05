@@ -1,0 +1,1633 @@
+# Translation of Odoo Server.
+# This file contains the translation of the following modules:
+# 	* account_invoice_ocr_ai
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Odoo Server 19.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-05 22:37+0000\n"
+"PO-Revision-Date: 2026-10-05 22:37+0000\n"
+"Last-Translator: \n"
+"Language-Team: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: \n"
+"Language: sv\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"\"Debited automatically\" was set by OCR (%s), but the document no longer "
+"says it is debited – the flag was removed."
+msgstr ""
+"\"Dras automatiskt\" var satt av OCR (%s), men underlaget anger inte "
+"längre någon dragning – flaggan togs bort."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"%(field)s %(number)s belongs to several partners (%(names)s) – none was "
+"chosen."
+msgstr "%(field)s %(number)s tillhör flera partner (%(names)s) – ingen valdes."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"%(field)s %(number)s on the bill is the company's own account – not used as "
+"the recipient account."
+msgstr ""
+"%(field)s %(number)s på fakturan är bolagets eget konto – används inte "
+"som mottagarkonto."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "%(field)s %(value)s is not a valid date – not used."
+msgstr "%(field)s %(value)s är inget giltigt datum – används inte."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid "%(field)s %(values)s fails the length or check-digit test – not used"
+msgstr ""
+"%(field)s %(values)s klarar inte kontrollen av längd eller kontrollsiffra"
+" – används inte"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"%(field)s %(values)s from the document fails the length or check-digit test "
+"– used the AI's %(value)s"
+msgstr ""
+"%(field)s %(values)s i underlaget klarar inte kontrollen av längd eller "
+"kontrollsiffra – AI:ns %(value)s användes"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid "%(field)s: the AI's %(value)r is not a valid date – not used"
+msgstr "%(field)s: AI:ns %(value)r är inget giltigt datum – används inte"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"%(field)s: the printed date can be read as %(first)s or %(second)s – used "
+"%(date)s (day/month)"
+msgstr ""
+"%(field)s: det tryckta datumet kan läsas som %(first)s eller %(second)s –"
+" %(date)s användes (dag/månad)"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"%(field)s: the printed date can be read as %(first)s or %(second)s – used "
+"%(date)s, as the AI read it"
+msgstr ""
+"%(field)s: det tryckta datumet kan läsas som %(first)s eller %(second)s –"
+" %(date)s användes, så som AI:n läste det"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/res_config_settings.py:0
+msgid ""
+"%(provider)s answered in %(seconds)s s with model %(served)s (%(tokens)s "
+"completion tokens)."
+msgstr ""
+"%(provider)s svarade på %(seconds)s s med modellen %(served)s (%(tokens)s"
+" completion-tokens)."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/res_config_settings.py:0
+msgid "%(provider)s failed: %(error)s"
+msgstr "%(provider)s misslyckades: %(error)s"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/res_config_settings.py:0
+msgid ""
+"%(provider)s is reachable, but its answer was cut off at the token limit "
+"(%(tokens)s completion tokens) before it was complete. A reasoning model may"
+" need a higher limit (invoice_ocr.max_tokens)."
+msgstr ""
+"%(provider)s går att nå, men svaret klipptes vid tokengränsen (%(tokens)s"
+" completion-tokens) innan det var klart. En resonerande modell kan behöva"
+" en högre gräns (invoice_ocr.max_tokens)."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "%(reason)s (%(details)s)"
+msgstr "%(reason)s (%(details)s)"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/ocr_queue.py:0
+msgid ""
+"%(user)s, who queued it, no longer has access to the company %(company)s"
+msgstr "%(user)s, som köade det, har inte längre tillgång till bolaget %(company)s"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "%s failed"
+msgstr "%s misslyckades"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "%s filled"
+msgstr "%s ifyllda"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "%s pointed to the company itself – skipped."
+msgstr "%s pekade på det egna bolaget – hoppades över."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "%s queued for OCR, read in the background within a minute or so"
+msgstr "%s köade för OCR, läses i bakgrunden inom någon minut"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "%s skipped"
+msgstr "%s överhoppade"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/ocr_queue.py:0
+msgid "%s, who queued it, may no longer change it"
+msgstr "%s, som köade det, får inte längre ändra det"
+
+#. module: account_invoice_ocr_ai
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.view_move_form_inherit_ocr
+msgid ". Fill it in by hand or run OCR again."
+msgstr ". Fyll i den för hand eller kör OCR igen."
+
+#. module: account_invoice_ocr_ai
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "6540: IT services (consulting, managed services)"
+msgstr "6540: IT-tjänster (konsulter, driftstjänster)"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_call_timeout
+msgid "AI call timeout (s)"
+msgstr "Tidsgräns för AI-anrop (s)"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_provider
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "AI provider"
+msgstr "AI-tjänst"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid "AI provider %(provider)r: no base URL configured"
+msgstr "AI-tjänsten %(provider)r: ingen bas-URL inställd"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid "AI provider %(provider)r: no model configured"
+msgstr "AI-tjänsten %(provider)r: ingen modell inställd"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_api_key
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "API key"
+msgstr "API-nyckel"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "Account %(code)s is not in the chart of accounts – used %(account)s."
+msgstr "Konto %(code)s finns inte i kontoplanen – %(account)s användes."
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_account_list
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "Accounts for invoice lines"
+msgstr "Konton för fakturarader"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "Adjustment outside VAT (e.g. a credit)"
+msgstr "Justering utanför moms (t.ex. tillgodo)"
+
+#. module: account_invoice_ocr_ai
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid ""
+"Any endpoint speaking OpenAI's /chat/completions: Mistral, Groq, OpenRouter,"
+" Together, DeepSeek, Azure OpenAI, Anthropic's compatibility layer, vLLM, LM"
+" Studio … Give the URL up to the API version; /chat/completions is appended."
+msgstr ""
+"Vilken tjänst som helst med OpenAI:s /chat/completions: Mistral, Groq, "
+"OpenRouter, Together, DeepSeek, Azure OpenAI, Anthropics "
+"kompatibilitetslager, vLLM, LM Studio … Ange URL:en till och med API-"
+"versionen; /chat/completions läggs till."
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_text_limit
+msgid ""
+"At most this much of a document's text is sent to the AI provider; a longer "
+"text is sent as its beginning and its end (totals and payment details are "
+"usually at the end), and the chatter says so. More text costs more tokens "
+"and time, and must fit in the model's context. 0: the default (6000, or "
+"INVOICE_OCR_TEXT_LIMIT)."
+msgstr ""
+"Högst så här mycket av ett dokuments text skickas till AI-tjänsten; en "
+"längre text skickas som sin början och sitt slut (summor och "
+"betalningsuppgifter står oftast sist), och chatten säger det. Mer text "
+"kostar fler tokens och mer tid och måste rymmas i modellens kontext. 0: "
+"standardvärdet (6000, eller INVOICE_OCR_TEXT_LIMIT)."
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_cron_time_budget
+msgid "Background OCR time per run (s)"
+msgstr "OCR-tid per bakgrundskörning (s)"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "Bankgiro"
+msgstr "Bankgiro"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_base_url
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "Base URL"
+msgstr "Bas-URL"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "Checks:"
+msgstr "Kontroller:"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model,name:account_invoice_ocr_ai.model_res_config_settings
+msgid "Config Settings"
+msgstr "Inställningar"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "Currency"
+msgstr "Valuta"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_bank_statement_line__ocr_auto_debit_phrase
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_move__ocr_auto_debit_phrase
+msgid "Debit phrase found by OCR"
+msgstr "Dragning enligt OCR"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_bank_statement_line__ocr_auto_debit
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_move__ocr_auto_debit
+msgid "Debited automatically"
+msgstr "Dras automatiskt"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "Debited automatically from the account – not to be paid by hand"
+msgstr "Dras automatiskt från kontot – ska inte betalas manuellt"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_move__display_name
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_ocr_queue_mixin__display_name
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__display_name
+msgid "Display Name"
+msgstr "Visningsnamn"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "Due date"
+msgstr "Förfallodatum"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields.selection,name:account_invoice_ocr_ai.selection__account_move__ocr_state__failed
+#: model:ir.model.fields.selection,name:account_invoice_ocr_ai.selection__hr_expense__ocr_state__failed
+#: model:ir.model.fields.selection,name:account_invoice_ocr_ai.selection__ocr_queue_mixin__ocr_state__failed
+msgid "Failed"
+msgstr "Misslyckades"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid "HTTP %(status)s from the AI provider"
+msgstr "HTTP %(status)s från AI-tjänsten"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid "HTTP %(status)s from the AI provider: %(detail)s"
+msgstr "HTTP %(status)s från AI-tjänsten: %(detail)s"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_move__id
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_ocr_queue_mixin__id
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__id
+msgid "ID"
+msgstr "ID"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"Import of goods from outside the EU: the VAT base (box 50) is the customs "
+"value on the customs bill plus duty and freight to Sweden, not the invoice "
+"amount. The goods lines carry the import tax on the invoice amount – check "
+"it against the customs bill."
+msgstr ""
+"Import av varor från land utanför EU: beskattningsunderlaget (ruta 50) är"
+" tullvärdet på tullräkningen plus tull och frakt till Sverige, inte "
+"fakturabeloppet. Varuraderna har importmomsen beräknad på fakturabeloppet"
+" – stäm av mot tullräkningen."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "Invoice"
+msgstr "Faktura"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "Invoice OCR"
+msgstr "Faktura-OCR"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_enabled
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "Invoice OCR on upload"
+msgstr "Faktura-OCR vid uppladdning"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/res_config_settings.py:0
+msgid "Invoice OCR provider"
+msgstr "AI-tjänst för faktura-OCR"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "Invoice date"
+msgstr "Fakturadatum"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "Invoice number"
+msgstr "Fakturanummer"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model,name:account_invoice_ocr_ai.model_account_move
+msgid "Journal Entry"
+msgstr "Verifikat"
+
+#. module: account_invoice_ocr_ai
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "Limits"
+msgstr "Gränser"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_call_timeout
+msgid ""
+"Longest wait for one answer from the AI provider, for every provider. 0: the"
+" provider's default (120 s, or INVOICE_AI_TIMEOUT / STAIK_TIMEOUT). Every "
+"call is also cut to what is left of the time limit per document."
+msgstr ""
+"Längsta väntan på ett svar från AI-tjänsten, för alla tjänster. 0: "
+"tjänstens standard (120 s, eller INVOICE_AI_TIMEOUT / STAIK_TIMEOUT). "
+"Varje anrop kortas också till det som återstår av tidsgränsen per "
+"dokument."
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_model
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "Model"
+msgstr "Modell"
+
+#. module: account_invoice_ocr_ai
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid ""
+"Must be a reasoning variant, e.g. qwen3.6:35b-a3b-thinking. An unknown model"
+" name silently falls back to staik's default model — Verify shows which "
+"model actually answers."
+msgstr ""
+"Måste vara en resonerande variant, t.ex. qwen3.6:35b-a3b-thinking. Ett "
+"okänt modellnamn ger tyst staiks standardmodell — Kontrollera visar "
+"vilken modell som faktiskt svarar."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "Net"
+msgstr "Netto"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"No purchase tax %(tax)s in the chart of accounts – the line \"%(line)s\" has"
+" no tax."
+msgstr ""
+"Ingen inköpsmoms %(tax)s i kontoplanen – raden \"%(line)s\" har ingen "
+"moms."
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_bank_statement_line__ocr_state
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_move__ocr_state
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_ocr_queue_mixin__ocr_state
+msgid "OCR"
+msgstr "OCR"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "OCR + AI filled in this bill"
+msgstr "OCR + AI har fyllt i fakturan"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_bank_statement_line__ocr_attempts
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_move__ocr_attempts
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_ocr_queue_mixin__ocr_attempts
+msgid "OCR attempts"
+msgstr "OCR-försök"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"OCR could not fill in this bill: %(reason)s. Fill it in by hand or run OCR "
+"again."
+msgstr ""
+"OCR kunde inte fylla i fakturan: %(reason)s. Fyll i den för hand eller "
+"kör OCR igen."
+
+#. module: account_invoice_ocr_ai
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.view_move_form_inherit_ocr
+msgid "OCR could not read this bill:"
+msgstr "OCR kunde inte läsa fakturan:"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/ocr_queue.py:0
+msgid ""
+"OCR could not read this document (attempts: %(attempts)s): %(reason)s. Fill "
+"it in by hand, or use the OCR button on the form to try again."
+msgstr ""
+"OCR kunde inte läsa dokumentet (försök: %(attempts)s): %(reason)s. Fyll i"
+" det för hand eller försök igen med OCR-knappen i formuläret."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/ocr_queue.py:0
+msgid "OCR did not read this document: %s."
+msgstr "OCR läste inte dokumentet: %s."
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_bank_statement_line__ocr_attachment_id
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_move__ocr_attachment_id
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_ocr_queue_mixin__ocr_attachment_id
+msgid "OCR document"
+msgstr "OCR-dokument"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_bank_statement_line__ocr_error
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_move__ocr_error
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_ocr_queue_mixin__ocr_error
+msgid "OCR error"
+msgstr "OCR-fel"
+
+#. module: account_invoice_ocr_ai
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.view_account_invoice_filter_inherit_ocr
+msgid "OCR failed"
+msgstr "OCR misslyckades"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "OCR fill"
+msgstr "OCR-fyllning"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "OCR is already reading it in the background"
+msgstr "OCR läser det redan i bakgrunden"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "OCR is turned off in the settings"
+msgstr "OCR är avstängt i inställningarna"
+
+#. module: account_invoice_ocr_ai
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid ""
+"OCR on uploaded and e-mailed documents runs in a background job, within "
+"seconds; the OCR button on the form reads at once. Every document has a time"
+" limit, and the AI gets at most this much of its text."
+msgstr ""
+"OCR av uppladdade och inmailade dokument körs i ett bakgrundsjobb inom "
+"några sekunder; OCR-knappen i formuläret läser direkt. Varje dokument har"
+" en tidsgräns, och AI:n får högst så här mycket av dess text."
+
+#. module: account_invoice_ocr_ai
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.view_account_invoice_filter_inherit_ocr
+msgid "OCR pending"
+msgstr "OCR väntar"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_bank_statement_line__ocr_requested_at
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_move__ocr_requested_at
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_ocr_queue_mixin__ocr_requested_at
+msgid "OCR queued at"
+msgstr "OCR köad"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model,name:account_invoice_ocr_ai.model_ocr_queue_mixin
+msgid "OCR read in the background"
+msgstr "OCR läst i bakgrunden"
+
+#. module: account_invoice_ocr_ai
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.view_move_form_inherit_ocr
+msgid ""
+"OCR reads this bill in the background, within a minute or so. Reload the "
+"page to see what it filled in."
+msgstr ""
+"OCR läser fakturan i bakgrunden inom någon minut. Ladda om sidan för att "
+"se vad som fylldes i."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "OCR reference"
+msgstr "OCR-nummer"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_bank_statement_line__ocr_requested_by
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_move__ocr_requested_by
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_ocr_queue_mixin__ocr_requested_by
+msgid "OCR requested by"
+msgstr "OCR begärd av"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "OCR: adjusted to the amounts printed on the bill"
+msgstr "OCR: justerat mot fakturans tryckta belopp"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "OCR: no lines were created – the document's currency cannot be used"
+msgstr "OCR: inga rader skapades – underlagets valuta kan inte användas"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.actions.server,name:account_invoice_ocr_ai.ir_cron_ocr_queue_ir_actions_server
+msgid "OCR: read queued bills and receipts"
+msgstr "OCR: läs köade leverantörsfakturor och kvitton"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "OCR: the lines do not match the bill"
+msgstr "OCR: raderna stämmer inte med fakturan"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields.selection,name:account_invoice_ocr_ai.selection__res_config_settings__invoice_ocr_provider__ollama
+msgid "Ollama (local)"
+msgstr "Ollama (lokal)"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_ollama_url
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "Ollama URL"
+msgstr "Ollama-URL"
+
+#. module: account_invoice_ocr_ai
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "Ollama context size"
+msgstr "Ollamas kontextstorlek"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_ollama_num_ctx
+msgid "Ollama context size (tokens)"
+msgstr "Ollamas kontextstorlek (tokens)"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_ollama_model
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "Ollama model"
+msgstr "Ollama-modell"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields.selection,name:account_invoice_ocr_ai.selection__res_config_settings__invoice_ocr_provider__openai
+msgid "OpenAI"
+msgstr "OpenAI"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_openai_api_key
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "OpenAI API key"
+msgstr "API-nyckel för OpenAI"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_openai_model
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "OpenAI model"
+msgstr "OpenAI-modell"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "Org/VAT number"
+msgstr "Org.nr/momsreg.nr"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields.selection,name:account_invoice_ocr_ai.selection__res_config_settings__invoice_ocr_provider__openai_compatible
+msgid "Other OpenAI-compatible endpoint (custom URL)"
+msgstr "Annan OpenAI-kompatibel tjänst (egen URL)"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "Plusgiro"
+msgstr "Plusgiro"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"Posting this bill as well would book the cost twice. Redo the reconciliation"
+" of the statement line so that it matches this bill, or discard the draft if"
+" the document is already booked."
+msgstr ""
+"Bokförs fakturan också blir kostnaden dubbel. Gör om avstämningen av "
+"bankraden så att den matchar den här fakturan, eller släng utkastet om "
+"underlaget redan är bokfört."
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields.selection,name:account_invoice_ocr_ai.selection__account_move__ocr_state__pending
+#: model:ir.model.fields.selection,name:account_invoice_ocr_ai.selection__hr_expense__ocr_state__pending
+#: model:ir.model.fields.selection,name:account_invoice_ocr_ai.selection__ocr_queue_mixin__ocr_state__pending
+msgid "Queued"
+msgstr "I kö"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_account_bank_statement_line__ocr_state
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_account_move__ocr_state
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_ocr_queue_mixin__ocr_state
+msgid ""
+"Queued: OCR reads the document in the background, within a minute or so. "
+"Reading: it is being read. Read: OCR filled it in. Failed: OCR could not "
+"read it (see the error and the chatter). Empty: never queued."
+msgstr ""
+"I kö: OCR läser dokumentet i bakgrunden inom någon minut. Läses: det "
+"läses just nu. Läst: OCR har fyllt i det. Misslyckades: OCR kunde inte "
+"läsa det (se felet och chatten). Tomt: aldrig köat."
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields.selection,name:account_invoice_ocr_ai.selection__account_move__ocr_state__done
+#: model:ir.model.fields.selection,name:account_invoice_ocr_ai.selection__hr_expense__ocr_state__done
+#: model:ir.model.fields.selection,name:account_invoice_ocr_ai.selection__ocr_queue_mixin__ocr_state__done
+msgid "Read"
+msgstr "Läst"
+
+#. module: account_invoice_ocr_ai
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid ""
+"Read PDFs uploaded through the Upload button or received by the journal's "
+"mail alias with OCR + an LLM, in a background job within seconds."
+msgstr ""
+"Läs PDF:er som laddas upp med Ladda upp-knappen eller kommer till "
+"journalens e-postalias med OCR + en språkmodell, i ett bakgrundsjobb inom"
+" några sekunder."
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields.selection,name:account_invoice_ocr_ai.selection__account_move__ocr_state__running
+#: model:ir.model.fields.selection,name:account_invoice_ocr_ai.selection__hr_expense__ocr_state__running
+#: model:ir.model.fields.selection,name:account_invoice_ocr_ai.selection__ocr_queue_mixin__ocr_state__running
+msgid "Reading"
+msgstr "Läses"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_total_deadline
+msgid ""
+"Reading one bill or receipt — the text and every call to the AI provider, "
+"its retries included — ends within this many seconds. Never more than three "
+"quarters of Odoo's request and cron time limits (limit_time_real, "
+"limit_time_real_cron: 90 s with Odoo's default 120 s), so the OCR button on "
+"the form returns before Odoo stops the request."
+msgstr ""
+"Läsningen av en faktura eller ett kvitto — texten och varje anrop till "
+"AI-tjänsten, omförsöken inräknade — är klar inom så här många sekunder. "
+"Aldrig mer än tre fjärdedelar av Odoos tidsgränser för anrop och cron "
+"(limit_time_real, limit_time_real_cron: 90 s med Odoos standard 120 s), "
+"så att OCR-knappen i formuläret svarar innan Odoo avbryter anropet."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "Regex/AI conflicts:"
+msgstr "Konflikter regex/AI:"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "Rounding"
+msgstr "Öresavrundning"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.actions.server,name:account_invoice_ocr_ai.action_run_ocr_server
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.view_move_form_inherit_ocr
+msgid "Run OCR again"
+msgstr "Kör OCR igen"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_text_limit
+msgid "Text sent to the AI (characters)"
+msgstr "Text som skickas till AI:n (tecken)"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "The VAT number %s"
+msgstr "Momsregistreringsnumret %s"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_account_list
+msgid ""
+"The account codes the AI may choose for invoice lines, one per line as "
+"\"code: hint\", e.g. \"6540: IT services (consulting, managed services)\". "
+"Empty: the built-in Swedish BAS list. Only accounts that exist in the bill "
+"company's chart are sent; a line with another code gets the purchase "
+"journal's default account."
+msgstr ""
+"Kontona som AI:n får välja för fakturarader, ett per rad som \"konto: "
+"ledtråd\", t.ex. \"6540: IT-tjänster (konsulter, driftstjänster)\". Tomt:"
+" den inbyggda svenska BAS-listan. Bara konton som finns i fakturabolagets"
+" kontoplan skickas; en rad med ett annat konto får inköpsjournalens "
+"standardkonto."
+
+#. module: account_invoice_ocr_ai
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid ""
+"The account codes the AI may choose, one per line as 'code: hint'. Empty: "
+"the built-in Swedish BAS list. Only accounts that exist in the bill "
+"company's chart are offered."
+msgstr ""
+"Kontona som AI:n får välja, ett per rad som 'konto: ledtråd'. Tomt: den "
+"inbyggda svenska BAS-listan. Bara konton som finns i fakturabolagets "
+"kontoplan erbjuds."
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_account_bank_statement_line__ocr_attachment_id
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_account_move__ocr_attachment_id
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_ocr_queue_mixin__ocr_attachment_id
+msgid ""
+"The attachment OCR reads: the uploaded file, or the one chosen when OCR was "
+"requested."
+msgstr ""
+"Bilagan som OCR läser: den uppladdade filen, eller den som valdes när OCR"
+" begärdes."
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_account_bank_statement_line__ocr_auto_debit
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_account_move__ocr_auto_debit
+msgid ""
+"The bill is debited automatically from the company's account (direct debit, "
+"autogiro, a bank charge) and must NOT be paid by hand or included in a "
+"payment file. Set by OCR when the document says so; can be changed by hand."
+msgstr ""
+"Fakturan dras automatiskt från bolagets konto (autogiro, "
+"direktdebitering, bankavgift) och ska INTE betalas manuellt eller tas med"
+" i en betalfil. Sätts av OCR när underlaget säger det; kan ändras för "
+"hand."
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_ollama_num_ctx
+msgid ""
+"The context window Ollama runs the model with (num_ctx), sent with every "
+"request. Ollama's own default is small (4096 tokens on most hosts) and then "
+"cuts the beginning of a long prompt — the instructions — without an error. A"
+" larger value needs more RAM or VRAM. 0: the default (16384, or "
+"OLLAMA_NUM_CTX)."
+msgstr ""
+"Kontextfönstret som Ollama kör modellen med (num_ctx), skickas med varje "
+"anrop. Ollamas egen standard är liten (4096 tokens på de flesta maskiner)"
+" och klipper då bort början av en lång prompt — instruktionerna — utan "
+"felmeddelande. Ett större värde kräver mer RAM eller VRAM. 0: "
+"standardvärdet (16384, eller OLLAMA_NUM_CTX)."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "The cost may already be booked through the bank"
+msgstr "Kostnaden kan redan vara bokförd via banken"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "The document is in %(currency)s, but %(problem)s."
+msgstr "Underlaget är i %(currency)s, men %(problem)s."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"The document is in %(currency)s, but %(problem)s. The bill was left in "
+"%(bill_currency)s without lines, since its amounts would be wrong by the "
+"exchange rate. Activate the currency and add a rate (Accounting → "
+"Configuration → Currencies), then run OCR again, or enter the lines by hand "
+"in the right currency."
+msgstr ""
+"Underlaget är i %(currency)s, men %(problem)s. Fakturan lämnades i "
+"%(bill_currency)s utan rader, eftersom beloppen annars skulle bli fel med"
+" växelkursen. Aktivera valutan och lägg in en kurs (Bokföring → "
+"Konfiguration → Valutor) och kör sedan OCR igen, eller lägg in raderna "
+"för hand i rätt valuta."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"The document is in %(document)s, the bill in %(bill)s: it already has lines,"
+" so its currency was not changed."
+msgstr ""
+"Underlaget är i %(document)s, fakturan i %(bill)s: den har redan rader, "
+"så valutan ändrades inte."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"The document says the amount is debited from the company's account (\"%s\")."
+" The recipient account was left empty, so the bill does not end up in a "
+"payment file. Reconcile the bill with the bank statement line once the debit"
+" shows, instead of paying it."
+msgstr ""
+"Underlaget anger att beloppet dras från bolagets konto (\"%s\"). "
+"Mottagarkontot har lämnats tomt så att fakturan inte hamnar i en "
+"betalfil. Stäm av fakturan mot bankraden när dragningen syns i stället "
+"för att betala den."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"The invoice date %(date)s is in a locked period (%(locks)s): the accounting "
+"date was left as Odoo set it."
+msgstr ""
+"Fakturadatumet %(date)s ligger i en låst period (%(locks)s): "
+"bokföringsdatumet lämnades som Odoo satte det."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"The lines come from the AI's reading and do not add up to the amounts "
+"printed on the document — probably a line was dropped or has the wrong VAT "
+"rate. Check them against the PDF before you post the bill."
+msgstr ""
+"Raderna kommer från AI-tolkningen och summerar inte till beloppen som "
+"står tryckta på underlaget — troligen har en rad fallit bort eller fått "
+"fel momssats. Kontrollera dem mot PDF:en innan fakturan bokförs."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"The name \"%(name)s\" matches several vendors (%(names)s) – none was chosen."
+msgstr "Namnet \"%(name)s\" passar flera leverantörer (%(names)s) – ingen valdes."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "The name \"%s\""
+msgstr "Namnet \"%s\""
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "The org number %s"
+msgstr "Organisationsnumret %s"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "The org number %s is the company's own – not used."
+msgstr "Organisationsnumret %s är bolagets eget – användes inte."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"The org number %s on the bill is the company's own (the buyer's) – not used "
+"as the vendor's."
+msgstr ""
+"Organisationsnumret %s på fakturan är bolagets eget (köparens) – användes"
+" inte som leverantörens."
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_account_bank_statement_line__ocr_auto_debit_phrase
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_account_move__ocr_auto_debit_phrase
+msgid ""
+"The phrase in the document that made OCR set 'Debited automatically'. Empty "
+"when the flag was set or changed by hand – then running OCR again leaves it "
+"alone."
+msgstr ""
+"Frasen i underlaget som fick OCR att sätta 'Dras automatiskt'. Tom när "
+"flaggan satts eller ändrats för hand – då rör en ny OCR-körning den inte."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "The recipient account %s belongs to the company itself – removed."
+msgstr "Mottagarkontot %s tillhör det egna bolaget – togs bort."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"The supplier is abroad and charged foreign VAT (%(vat)s). Foreign VAT is not"
+" deductible in Sweden: it is booked as part of the cost, without Swedish VAT"
+" and without reverse charge. If the purchase should have been invoiced "
+"without VAT (reverse charge), ask the supplier for a corrected invoice."
+msgstr ""
+"Leverantören finns utomlands och har debiterat utländsk moms (%(vat)s). "
+"Utländsk moms är inte avdragsgill i Sverige: den bokförs som en del av "
+"kostnaden, utan svensk moms och utan omvänd skattskyldighet. Borde köpet "
+"ha fakturerats utan moms (omvänd skattskyldighet), be leverantören om en "
+"rättad faktura."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"The supplier is abroad but charged Swedish VAT (%(number)s): booked as "
+"Swedish input VAT, without reverse charge."
+msgstr ""
+"Leverantören finns utomlands men har debiterat svensk moms (%(number)s): "
+"bokförs som svensk ingående moms, utan omvänd skattskyldighet."
+
+#. module: account_invoice_ocr_ai
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid ""
+"The text of the document (never the file) is sent to this provider. staik "
+"keeps data in Sweden; Venice and OpenAI are in the USA; Ollama and a custom "
+"endpoint can be on your own hardware."
+msgstr ""
+"Dokumentets text (aldrig filen) skickas till den här tjänsten. staik "
+"behåller data i Sverige; Venice och OpenAI finns i USA; Ollama och en "
+"egen tjänst kan köras på egen hårdvara."
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_account_bank_statement_line__ocr_requested_by
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_account_move__ocr_requested_by
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_ocr_queue_mixin__ocr_requested_by
+msgid ""
+"The user who queued the document for OCR. The background job reads it as "
+"this user: with their access rights (a vendor is only created by a user who "
+"may create contacts), in their language, and their name is on the notes. A "
+"document that came in by e-mail is read as its sender when the sender is a "
+"user; otherwise this is empty and the job reads it as OdooBot."
+msgstr ""
+"Användaren som köade dokumentet för OCR. Bakgrundsjobbet läser det som "
+"den användaren: med användarens behörigheter (en leverantör skapas bara "
+"av en användare som får skapa kontakter), på användarens språk och med "
+"användarens namn på anteckningarna. Ett inmailat dokument läses som "
+"avsändaren när avsändaren är en användare; annars är fältet tomt och "
+"jobbet läser det som OdooBot."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"The vendor is the company itself (%s) and no other vendor could be found – "
+"choose the vendor by hand."
+msgstr ""
+"Leverantören är det egna bolaget (%s) och ingen annan leverantör kunde "
+"hittas – välj leverantör för hand."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "The vendor name \"%s\" is the company itself – not used."
+msgstr "Leverantörsnamnet \"%s\" är det egna bolaget – användes inte."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"The vendor was set to the company itself (%s) – replaced by the vendor from "
+"the document."
+msgstr ""
+"Leverantören var satt till det egna bolaget (%s) – ersattes med "
+"leverantören från underlaget."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"The vendor's bank accounts (%s) were not created: you may not create bank "
+"accounts."
+msgstr "Leverantörens bankkonton (%s) skapades inte: du får inte skapa bankkonton."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"These bank statement lines are already reconciled directly with an expense "
+"or another account, not with the vendor payable:"
+msgstr ""
+"De här bankraderna är redan avstämda direkt mot ett kostnadskonto eller "
+"annat konto, inte mot leverantörsskulden:"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/ocr_queue.py:0
+msgid ""
+"This document was changed after it was queued for OCR, so OCR did not read "
+"it and nothing entered by hand was overwritten. Use the OCR button on the "
+"form to read it anyway."
+msgstr ""
+"Dokumentet ändrades efter att det köats för OCR, så OCR läste det inte "
+"och inget som fyllts i för hand skrevs över. Använd OCR-knappen i "
+"formuläret för att läsa det ändå."
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_total_deadline
+msgid "Time limit per document (s)"
+msgstr "Tidsgräns per dokument (s)"
+
+#. module: account_invoice_ocr_ai
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid ""
+"Tokens of context Ollama runs the model with (num_ctx). Ollama's own default"
+" is small and cuts the instructions off a long prompt without an error; a "
+"larger value needs more RAM or VRAM."
+msgstr ""
+"Antal tokens kontext som Ollama kör modellen med (num_ctx). Ollamas egen "
+"standard är liten och klipper bort instruktionerna i en lång prompt utan "
+"felmeddelande; ett större värde kräver mer RAM eller VRAM."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "Total"
+msgstr "Totalt"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_base_url
+msgid ""
+"Up to and including the API version, e.g. https://api.mistral.ai/v1 or "
+"http://vllm.local:8000/v1. /chat/completions is appended."
+msgstr ""
+"Till och med API-versionen, t.ex. https://api.mistral.ai/v1 eller "
+"http://vllm.local:8000/v1. /chat/completions läggs till."
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_cron_time_budget
+msgid ""
+"Uploaded and e-mailed documents are read by a background job within seconds."
+" One run of it reads documents for at most this many seconds (a document is "
+"only started when its time limit still fits), then leaves the rest to the "
+"next run, which starts at once. 0: three quarters of Odoo's cron time limit "
+"(limit_time_real_cron, else limit_time_real: 90 s with Odoo's defaults). "
+"Keep it well under that limit: Odoo stops a worker that exceeds it."
+msgstr ""
+"Uppladdade och inmailade dokument läses av ett bakgrundsjobb inom några "
+"sekunder. En körning läser dokument i högst så här många sekunder (ett "
+"dokument påbörjas bara när dess tidsgräns fortfarande ryms) och lämnar "
+"resten till nästa körning, som startar direkt. 0: tre fjärdedelar av "
+"Odoos tidsgräns för cron (limit_time_real_cron, annars limit_time_real: "
+"90 s med Odoos standard). Håll den väl under gränsen: Odoo stoppar en "
+"process som överskrider den."
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_staik_model
+msgid ""
+"Use a reasoning model; the base model answers without working out multi-rate"
+" sums. An unknown model name silently falls back to staik's default model — "
+"use Verify."
+msgstr ""
+"Använd en resonerande modell; basmodellen svarar utan att räkna ut summor"
+" med flera momssatser. Ett okänt modellnamn ger tyst staiks "
+"standardmodell — använd Kontrollera."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "VAT"
+msgstr "Moms"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "VAT %(lines)s against the bill's %(printed)s"
+msgstr "moms %(lines)s mot fakturans %(printed)s"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"VAT base %(delta)s to match the bill's VAT of %(vat)s, and %(opposite)s "
+"outside VAT on account %(account)s"
+msgstr ""
+"momsunderlaget %(delta)s enligt fakturans moms %(vat)s, och %(opposite)s "
+"utanför moms på konto %(account)s"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "VAT base adjustment"
+msgstr "Justering av momsunderlag"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "Vendor"
+msgstr "Leverantör"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "Vendor %(vendor)s: matched on %(how)s."
+msgstr "Leverantör %(vendor)s: matchad på %(how)s."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"Vendor %(vendor)s: matched on the name \"%(name)s\" only, no VAT, org or "
+"giro number matched – check that it is the right vendor."
+msgstr ""
+"Leverantör %(vendor)s: matchad bara på namnet \"%(name)s\", inget "
+"momsreg.nr, org.nr eller gironummer matchade – kontrollera att det är "
+"rätt leverantör."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"Vendor %s: not found, and you may not create contacts – choose the vendor by"
+" hand."
+msgstr ""
+"Leverantör %s: hittades inte, och du får inte skapa kontakter – välj "
+"leverantör för hand."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "Vendor %s: not found, created from the document."
+msgstr "Leverantör %s: hittades inte, skapades från underlaget."
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields.selection,name:account_invoice_ocr_ai.selection__res_config_settings__invoice_ocr_provider__venice
+msgid "Venice.ai"
+msgstr "Venice.ai"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_venice_api_key
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "Venice.ai API key"
+msgstr "API-nyckel för Venice.ai"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_venice_model
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "Venice.ai model"
+msgstr "Venice.ai-modell"
+
+#. module: account_invoice_ocr_ai
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "Verify provider"
+msgstr "Kontrollera AI-tjänsten"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_account_bank_statement_line__ocr_requested_at
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_account_move__ocr_requested_at
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_ocr_queue_mixin__ocr_requested_at
+msgid ""
+"When the document was queued for OCR, or last taken up by it. A change to "
+"the document after this moment means someone else worked on it: OCR then "
+"leaves it alone."
+msgstr ""
+"När dokumentet köades för OCR, eller senast togs upp av den. En ändring "
+"av dokumentet efter den tidpunkten betyder att någon annan arbetat med "
+"det: då lämnar OCR det i fred."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/res_config_settings.py:0
+msgid "You asked for %(requested)s; the provider answered with another model."
+msgstr "Du bad om %(requested)s; tjänsten svarade med en annan modell."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/res_config_settings.py:0
+msgid ""
+"You asked for the reasoning model %(requested)s, but the answer shows no "
+"reasoning: the provider probably did not recognise the name and answered "
+"with its default model."
+msgstr ""
+"Du bad om den resonerande modellen %(requested)s, men svaret visar inget "
+"resonemang: tjänsten kände troligen inte igen namnet och svarade med sin "
+"standardmodell."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "counterpart account:"
+msgstr "motkonto:"
+
+#. module: account_invoice_ocr_ai
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "https://api.mistral.ai/v1"
+msgstr "https://api.mistral.ai/v1"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"line '%(line)s': account %(code)s is not in the account list – the default "
+"account is used"
+msgstr ""
+"raden '%(line)s': konto %(code)s finns inte i kontolistan – "
+"standardkontot används"
+
+#. module: account_invoice_ocr_ai
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "mistral-large-latest"
+msgstr "mistral-large-latest"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "neither a vendor name nor an invoice number was found in the PDF"
+msgstr "varken leverantörsnamn eller fakturanummer hittades i PDF:en"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "net %(lines)s against the bill's %(printed)s"
+msgstr "netto %(lines)s mot fakturans %(printed)s"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "no PDF attachment"
+msgstr "ingen PDF-bilaga"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"no time left for a call to the AI provider (time limit per document "
+"%(seconds)s s)"
+msgstr ""
+"ingen tid kvar för ett anrop till AI-tjänsten (tidsgräns per dokument "
+"%(seconds)s s)"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/res_config_settings.py:0
+msgid "no valid answer"
+msgstr "inget giltigt svar"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "not a draft vendor bill"
+msgstr "inget utkast till leverantörsfaktura"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "nothing selected"
+msgstr "inget valt"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"page %(page)s is very large: it was scaled down to %(megapixels)s megapixels"
+" for OCR"
+msgstr ""
+"sidan %(page)s är mycket stor: den skalades ned till %(megapixels)s "
+"megapixel för OCR"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"reading the document text stopped after %(done)s of %(total)s pages: the "
+"time for reading it (%(seconds)s s) was used up – the rest was not read"
+msgstr ""
+"läsningen av dokumentets text avbröts efter %(done)s av %(total)s sidor: "
+"tiden för att läsa den (%(seconds)s s) tog slut – resten lästes inte"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"rounding %(amount)s on account %(account)s, so that the total is the bill's "
+"%(total)s"
+msgstr ""
+"öresavrundning %(amount)s på konto %(account)s, så att totalen blir "
+"fakturans %(total)s"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields.selection,name:account_invoice_ocr_ai.selection__res_config_settings__invoice_ocr_provider__staik
+msgid "staik (Swedish data residency)"
+msgstr "staik (data stannar i Sverige)"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_staik_api_key
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "staik API key"
+msgstr "API-nyckel för staik"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_staik_model
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "staik model"
+msgstr "staik-modell"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"tesseract took longer than %(seconds)s s on page %(page)s – that page was "
+"not read"
+msgstr ""
+"tesseract tog längre tid än %(seconds)s s på sidan %(page)s – den sidan "
+"lästes inte"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "the %(field)s %(number)s"
+msgstr "%(field)s %(number)s"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"the AI model answered with only %(tokens)s completion tokens: it skipped its"
+" reasoning, so its lines may be wrong"
+msgstr ""
+"AI-modellen svarade med bara %(tokens)s completion-tokens: den hoppade "
+"över resonemanget, så raderna kan vara fel"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"the AI provider cut the prompt (%(reason)s) – the model may not have seen "
+"all instructions"
+msgstr ""
+"AI-tjänsten kortade prompten (%(reason)s) – modellen kan ha missat "
+"instruktioner"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"the AI provider is rate limiting (HTTP 429) and asks to wait %(wait)s s; the"
+" time limit per document (%(seconds)s s) leaves no time to wait and retry"
+msgstr ""
+"AI-tjänsten begränsar antalet anrop (HTTP 429) och ber om %(wait)s s "
+"väntan; tidsgränsen per dokument (%(seconds)s s) ger ingen tid att vänta "
+"och försöka igen"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"the AI provider's answer was still arriving when the time limit per document"
+" ran out"
+msgstr ""
+"svaret från AI-tjänsten höll fortfarande på att komma när tidsgränsen per"
+" dokument tog slut"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"the AI step failed (%(error)s) – only the values read by the regex were used"
+msgstr ""
+"AI-steget misslyckades (%(error)s) – bara de värden som regex läste ut "
+"användes"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "the AI step failed (%s)"
+msgstr "AI-steget misslyckades (%s)"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"the AI step failed (%s) and the text alone gives neither a vendor name nor "
+"an invoice number"
+msgstr ""
+"AI-steget misslyckades (%s) och texten ensam ger varken leverantörsnamn "
+"eller fakturanummer"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"the AI step failed (%s); only the values read from the text were filled in"
+msgstr "AI-steget misslyckades (%s); bara värdena som lästes ur texten fylldes i"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"the AI's answer was cut off at its token limit (%(tokens)s tokens) and is "
+"incomplete – raise the token limit (invoice_ocr.max_tokens)"
+msgstr ""
+"AI:ns svar klipptes vid tokengränsen (%(tokens)s tokens) och är "
+"ofullständigt – höj tokengränsen (invoice_ocr.max_tokens)"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"the AI's answer was cut off: it reached its token limit (%(tokens)s) or "
+"filled the model's context (%(num_ctx)s tokens) – raise the limit or the "
+"Ollama context size"
+msgstr ""
+"AI:ns svar klipptes: det nådde tokengränsen (%(tokens)s) eller fyllde "
+"modellens kontext (%(num_ctx)s tokens) – höj gränsen eller Ollamas "
+"kontextstorlek"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "the PDF could not be read (%s)"
+msgstr "PDF:en kunde inte läsas (%s)"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"the PDF has %(total)s pages; OCR read only page %(last)s (page limit "
+"%(limit)s)"
+msgstr ""
+"PDF:en har %(total)s sidor; OCR läste bara sidan %(last)s (sidgräns "
+"%(limit)s)"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"the PDF has %(total)s pages; OCR read only pages 1–%(first)s and %(last)s "
+"(page limit %(limit)s)"
+msgstr ""
+"PDF:en har %(total)s sidor; OCR läste bara sidorna 1–%(first)s och "
+"%(last)s (sidgräns %(limit)s)"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"the PDF has %(total)s pages; the text was read from only page %(last)s (page"
+" limit %(limit)s)"
+msgstr ""
+"PDF:en har %(total)s sidor; texten lästes bara från sidan %(last)s "
+"(sidgräns %(limit)s)"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"the PDF has %(total)s pages; the text was read from only pages 1–%(first)s "
+"and %(last)s (page limit %(limit)s)"
+msgstr ""
+"PDF:en har %(total)s sidor; texten lästes bara från sidorna 1–%(first)s "
+"och %(last)s (sidgräns %(limit)s)"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "the VAT number %s"
+msgstr "momsregistreringsnumret %s"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/ocr_queue.py:0
+msgid ""
+"the background job stopped while reading it (Odoo's time or memory limit?)"
+msgstr ""
+"bakgrundsjobbet avbröts medan det läste dokumentet (Odoos tids- eller "
+"minnesgräns?)"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "the bill is in %(bill)s, the document in %(document)s"
+msgstr "fakturan är i %(bill)s, underlaget i %(document)s"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "the currency %(currency)s has no exchange rate on or before %(date)s"
+msgstr "valutan %(currency)s har ingen växelkurs den %(date)s eller tidigare"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "the currency %s is not active in Odoo"
+msgstr "valutan %s är inte aktiv i Odoo"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "the currency %s is not known in Odoo"
+msgstr "valutan %s finns inte i Odoo"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"the document text has %(length)s characters; the AI saw only the first "
+"%(head)s and the last %(tail)s (text limit %(limit)s) – its lines may be "
+"incomplete"
+msgstr ""
+"dokumentets text har %(length)s tecken; AI:n såg bara de första %(head)s "
+"och de sista %(tail)s (textgräns %(limit)s) – raderna kan vara "
+"ofullständiga"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "the org number %s"
+msgstr "organisationsnumret %s"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"the prompt filled the model's context (%(tokens)s of %(num_ctx)s tokens): "
+"Ollama may have cut it, so the model may not have seen the instructions – "
+"raise the Ollama context size"
+msgstr ""
+"prompten fyllde modellens kontext (%(tokens)s av %(num_ctx)s tokens): "
+"Ollama kan ha kortat den, så modellen kan ha missat instruktionerna – höj"
+" Ollamas kontextstorlek"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/ocr_queue.py:0
+msgid "the user who queued it, %s, is archived"
+msgstr "användaren som köade det, %s, är arkiverad"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "total %(lines)s against the bill's %(printed)s"
+msgstr "totalt %(lines)s mot fakturans %(printed)s"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid "unknown AI provider %(provider)r"
+msgstr "okänd AI-tjänst %(provider)r"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid "vendor_name: marketplace VAT-declarer override → %(vendor)s"
+msgstr "vendor_name: marknadsplatsens momsdeklarant används i stället → %(vendor)s"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "… and %s more"
+msgstr "… och %s till"
