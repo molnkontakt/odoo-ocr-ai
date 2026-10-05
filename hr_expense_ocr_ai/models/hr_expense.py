@@ -161,6 +161,9 @@ class HrExpense(models.Model):
             filled.append(_("beskrivning"))
         if vals:
             self.write(vals)
+        vat_note = self._expense_ocr_vat_note(f, result.get("text") or "")
+        if vat_note:
+            notes.append(vat_note)
 
         # chatter
         if result.get("source") == "none":
@@ -178,6 +181,30 @@ class HrExpense(models.Model):
                 body += Markup("<p><b>Anmärkningar:</b> %s</p>") % escape("; ".join(notes))
         self.message_post(body=body, message_type="comment", subtype_xmlid="mail.mt_note")
         return filled
+
+    def _expense_ocr_vat_note(self, f, text):
+        """A note when the receipt's printed VAT and the category's tax differ by more than 1
+        (#33), else None. The tax is never changed: a receipt can mix rates, and choosing the
+        tax is the reviewer's call.
+
+        Only compared when the VAT amount is printed on the receipt (not a model guess), the
+        expense has a tax, and its amount is the receipt's total (else the bases differ). Also
+        when the category or the amount was set by hand.
+        """
+        from ..lib import receipt_ocr
+
+        self.ensure_one()
+        vat, total = receipt_ocr.inv._num(f.get("vat_amount")), receipt_ocr.inv._num(f.get("total"))
+        if vat is None or total is None or not self.tax_ids:
+            return None
+        if not receipt_ocr.inv.amount_in_text(vat, text):
+            return None
+        if abs(self.total_amount_currency - total) >= 0.005:
+            return None
+        if abs(self.tax_amount_currency - vat) <= 1.0:
+            return None
+        return _("the receipt shows VAT %(printed).2f, the category's tax gives %(computed).2f – "
+                 "check the VAT rate", printed=vat, computed=self.tax_amount_currency)
 
     def _expense_ocr_amount_vals(self, f, vals, filled, notes):
         """Add the receipt's total, in the receipt's currency, to `vals` (#28).

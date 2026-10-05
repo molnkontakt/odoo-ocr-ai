@@ -48,6 +48,11 @@ Measured on real receipts before release:
   (typically a downscaled, unreadable photo that was read as 339 instead of
   389). Merchant, description and category may still be filled; the note says
   what was left out.
+- The VAT printed on the receipt is compared with what the expense's tax gives
+  (when the VAT amount is printed, the expense has a tax and its amount is the
+  receipt's total, also for a category set by hand): a difference of more than 1
+  is noted, e.g. a 12 % restaurant receipt in a 25 % category. The tax itself is
+  never changed.
 - The category must be one of the company's expensable products. Their
   *purchase description*, or else the category's *Guideline* as plain text (at
   most 200 characters), is sent as a hint, so describe your categories in Odoo
