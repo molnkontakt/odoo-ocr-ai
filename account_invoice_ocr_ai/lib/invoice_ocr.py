@@ -43,6 +43,66 @@ MAX_OCR_PAGES = int(os.environ.get("INVOICE_OCR_MAX_PAGES", "10"))
 # Render scale for tesseract OCR (2 ≈ 144 dpi — good compromise).
 OCR_SCALE = float(os.environ.get("INVOICE_OCR_SCALE", "2"))
 
+# ── Time and size budgets (#9, #26) ─────────────────────────────────────────
+# One document — the text extraction and every provider call for it (retries, the 429
+# wait, the schema fallback, the reliability re-run) — must be done within this many
+# seconds. 90 s keeps the synchronous "Run OCR" button under Odoo's default 120 s
+# request limit (limit_time_real), with room for the writes to the record.
+TOTAL_DEADLINE = float(os.environ.get("INVOICE_OCR_DEADLINE", "90"))
+# A provider call is not started with less time than this left.
+MIN_CALL_SECONDS = 5.0
+# The wait before the one retry after an HTTP 429 (rate limited).
+RATE_LIMIT_WAIT = 15.0
+
+
+def _clock():
+    """Monotonic seconds; the one clock of the budgets (a seam for tests)."""
+    return time.monotonic()
+
+
+class DeadlineExceeded(TimeoutError):
+    """The document's time budget is spent: no further provider call is started."""
+
+
+class DocumentRun:
+    """One document's time budget (#9) and the notes about what a budget cut (#26).
+
+    Created by the entry points (extract_invoice_data, receipt_ocr.extract_receipt_data)
+    and carried in the per-run config under "run", so the text extraction and every
+    provider call for the document share one deadline.
+    """
+
+    def __init__(self, total_seconds=None):
+        self.total = float(total_seconds or 0) or TOTAL_DEADLINE
+        self.deadline = _clock() + self.total
+        self.notes = []
+
+    def remaining(self):
+        return self.deadline - _clock()
+
+    def note(self, text):
+        if text not in self.notes:
+            self.notes.append(text)
+
+
+def document_run(cfg):
+    """The DocumentRun of the per-run config `cfg`, created (and stored in it) on first use."""
+    run = cfg.get("run")
+    if not isinstance(run, DocumentRun):
+        run = cfg["run"] = DocumentRun(cfg.get("total_deadline"))
+    return run
+
+
+def call_timeout(run, timeout):
+    """The timeout for the next provider call: the per-call cap, cut to what the document
+    has left; DeadlineExceeded when that is less than MIN_CALL_SECONDS."""
+    left = run.remaining()
+    if left < MIN_CALL_SECONDS:
+        raise DeadlineExceeded(
+            f"no time left for a call to the AI provider (time limit per document "
+            f"{run.total:.0f} s)")
+    return min(float(timeout), left)
+
 
 # ── Date formats ────────────────────────────────────────────────────────────
 
@@ -1117,6 +1177,13 @@ def default_config():
         "accounts": None,
         "max_ocr_pages": MAX_OCR_PAGES,
         "ocr_scale": OCR_SCALE,
+        # Time budgets (#9). call_timeout: one provider call, for every provider (None =
+        # timeout / staik_timeout above); total_deadline: one document, extraction and
+        # provider calls together.
+        "call_timeout": None,
+        "total_deadline": TOTAL_DEADLINE,
+        # The document's DocumentRun (deadline and notes), set by the entry points.
+        "run": None,
     }
 
 
@@ -1140,18 +1207,42 @@ PROVIDER_SETTINGS = (
 )
 
 
+# Numeric limits the Odoo module reads from the system parameters "invoice_ocr.<key>" (#9);
+# the settings page has fields for them.
+LIMIT_SETTINGS = ("call_timeout", "total_deadline")
+
+
+def _positive_number(value):
+    """`value` as a positive number (int when integral), else None: '', 0, 'abc' keep the default."""
+    if isinstance(value, bool) or value in (None, ""):
+        return None
+    try:
+        number = float(str(value).strip())
+    except ValueError:
+        return None
+    if not math.isfinite(number) or number <= 0:
+        return None
+    return int(number) if number == int(number) else number
+
+
 def config_from_settings(get, base=None):
-    """Per-run config from settings: `get(key)` returns the value for a PROVIDER_SETTINGS key.
+    """Per-run config from settings: `get(key)` returns the value for a PROVIDER_SETTINGS or
+    LIMIT_SETTINGS key.
 
     Empty values keep the default (env-derived global or `base`), so a run with the
     settings saved behaves exactly like the Verify button with the same values on the
-    form. Nothing is written to the module globals.
+    form; a limit that is not a positive number keeps it too. Nothing is written to the
+    module globals.
     """
     cfg = _cfg(base)
     for key in PROVIDER_SETTINGS:
         value = get(key)
         if value:
             cfg[key] = value.strip() if isinstance(value, str) else value
+    for key in LIMIT_SETTINGS:
+        value = _positive_number(get(key))
+        if value is not None:
+            cfg[key] = value
     return cfg
 
 
@@ -1399,7 +1490,11 @@ def resolve_endpoint(config=None):
 
 
 def _default_timeout(cfg):
-    """Per-call cap: STAIK_TIMEOUT for staik (1.8.1), INVOICE_AI_TIMEOUT for the rest."""
+    """Per-call cap: the call_timeout setting for every provider; else STAIK_TIMEOUT for
+    staik (1.8.1), INVOICE_AI_TIMEOUT for the rest. Each call is also cut to the time the
+    document has left (call_timeout)."""
+    if cfg.get("call_timeout"):
+        return cfg["call_timeout"]
     if (cfg["provider"] or "").strip().lower() == "staik":
         return cfg["staik_timeout"]
     return cfg["timeout"]
@@ -1445,10 +1540,15 @@ def chat_json(prompt, text, schema, schema_name, max_tokens=8000, max_chars=None
     Provider, keys, URLs and limits are read from `config` (merged over default_config()),
     never from module globals set at run time — those are shared by every run in an Odoo
     worker. `max_chars` defaults to the config's text_limit, `timeout` to the provider's
-    per-call cap (the upload path is synchronous, so every call is bounded). A longer text
-    is sent as head + tail (clip_text).
+    per-call cap. A longer text is sent as head + tail (clip_text).
+
+    Every POST, the 429 wait included, fits in the document's deadline (the config's
+    DocumentRun, or a new one of total_deadline seconds): each request gets at most the
+    time that is left, and none is started — nor the 429 wait — when too little is left
+    (DeadlineExceeded). So one call can no longer take 3 × the per-call cap plus 15 s (#9).
     """
     cfg = _cfg(config)
+    run = document_run(cfg)
     if max_chars is None:
         max_chars = cfg["text_limit"]
     timeout = timeout or _default_timeout(cfg)
@@ -1466,14 +1566,18 @@ def chat_json(prompt, text, schema, schema_name, max_tokens=8000, max_chars=None
         "response_format": {"type": "json_schema", "json_schema": {"name": schema_name, "schema": schema}},
     }
     url = f"{base}/chat/completions"
-    r = _post(url, headers=headers, json=body, timeout=timeout)
+    r = _post(url, headers=headers, json=body, timeout=call_timeout(run, timeout))
     if r.status_code == 429:
-        time.sleep(15)
-        r = _post(url, headers=headers, json=body, timeout=timeout)
+        if run.remaining() - RATE_LIMIT_WAIT < MIN_CALL_SECONDS:
+            raise DeadlineExceeded(
+                f"the AI provider is rate limiting (HTTP 429) and the time limit per "
+                f"document ({run.total:.0f} s) leaves no time to wait and retry")
+        time.sleep(RATE_LIMIT_WAIT)
+        r = _post(url, headers=headers, json=body, timeout=call_timeout(run, timeout))
     if r.status_code == 400 and "response_format" in body:
         logger.info("%s rejected response_format — retrying without JSON schema", base)
         body = {k: v for k, v in body.items() if k != "response_format"}
-        r = _post(url, headers=headers, json=body, timeout=timeout)
+        r = _post(url, headers=headers, json=body, timeout=call_timeout(run, timeout))
     r.raise_for_status()
     j = r.json()
     choice = j["choices"][0]
@@ -1502,7 +1606,7 @@ def _ollama_chat_json(prompt, text, schema, max_chars, timeout, cfg):
             "options": {"temperature": 0},
             "messages": [{"role": "user", "content": prompt + clip_text(text, max_chars)}],
         },
-        timeout=timeout,
+        timeout=call_timeout(document_run(cfg), timeout),
     )
     r.raise_for_status()
     j = r.json()
@@ -1999,19 +2103,24 @@ def _extract_fields_ai(text, reference=None, config=None):
     Det ar sporadiskt, sa en omkorning racker — men vi behaller det basta av de tva
     svaren i stallet for att blint ta det sista.
 
-    Omkörningen hoppas over om första anropet redan tog retry_skip_seconds —
-    anropet körs synkront inne i Odoo-transaktionen, och två stycken
-    STAIK_TIMEOUT-långa anrop skulle blockera upload-vägen i minuter.
+    Omkörningen hoppas over om första anropet redan tog retry_skip_seconds, or when
+    the document's deadline (#9) leaves less time than the first call took: the re-run
+    would most likely not finish.
+
+    A failing first call is raised (the caller keeps the regex fields, notes the failure
+    and, in Odoo's background job, tries the document again later); a failing re-run
+    keeps the first answer.
     """
     cfg = _cfg(config)
+    run = document_run(cfg)
     provider = cfg["provider"]
-    t0 = time.monotonic()
+    t0 = _clock()
     try:
         data = _call_provider(text, cfg)
     except Exception as e:
         logger.warning("AI extraction failed (%s): %s", provider, e)
-        return {}
-    elapsed = time.monotonic() - t0
+        raise
+    elapsed = _clock() - t0
 
     problems = _ai_answer_problems(data, reference, cfg)
     if not problems:
@@ -2031,6 +2140,13 @@ def _extract_fields_ai(text, reference=None, config=None):
             "hoppar over omkorningen for att inte blockera behandlingen. "
             "Fakturan behover granskas manuellt.",
             "; ".join(problems), elapsed)
+        return _strip_meta(data)
+
+    if run.remaining() < elapsed + MIN_CALL_SECONDS:
+        logger.warning(
+            "AI answer looks unreliable (%s) but only %.0f s of the document's time limit are "
+            "left and the first call took %.0f s — no retry, the bill needs a manual check.",
+            "; ".join(problems), run.remaining(), elapsed)
         return _strip_meta(data)
 
     logger.warning("AI-svaret ser opalitligt ut (%s) — kor om en gang",
@@ -2068,7 +2184,12 @@ def extract_invoice_data(pdf_b64_or_bytes, config=None, *, own_ids=None, own_nam
     Returns:
         dict with extracted fields + 'raw_text' key. 'auto_debit' is set to the
         matching phrase when the invoice is debited automatically from the buyer's
-        account; '_own_ids_skipped' lists own org/VAT numbers that were ignored.
+        account; '_own_ids_skipped' lists own org/VAT numbers that were ignored;
+        '_notes' are remarks for the reviewer (a budget that cut the reading among
+        them); '_ai_error' says why the AI step failed, when it did.
+
+    The whole document — text extraction and every provider call — runs within the
+    config's total_deadline (a DocumentRun, see chat_json).
     """
     if isinstance(pdf_b64_or_bytes, str):
         pdf_bytes = base64.b64decode(pdf_b64_or_bytes)
@@ -2076,6 +2197,7 @@ def extract_invoice_data(pdf_b64_or_bytes, config=None, *, own_ids=None, own_nam
         pdf_bytes = pdf_b64_or_bytes
 
     cfg = _cfg(config)
+    document_run(cfg)
     text = extract_text(pdf_bytes, cfg)
     return extract_invoice_data_from_text(text, config=cfg, own_ids=own_ids, own_names=own_names)
 
@@ -2083,6 +2205,7 @@ def extract_invoice_data(pdf_b64_or_bytes, config=None, *, own_ids=None, own_nam
 def extract_invoice_data_from_text(text, own_ids=None, own_names=None, config=None):
     """Like extract_invoice_data, on already extracted PDF text (testable without a PDF)."""
     cfg = _cfg(config)
+    run = document_run(cfg)
     if own_ids is not None:
         cfg["own_ids"] = own_ids
     if own_names is not None:
@@ -2093,13 +2216,16 @@ def extract_invoice_data_from_text(text, own_ids=None, own_names=None, config=No
     try:
         ai_fields = _sanitize_ai(_extract_fields_ai(text, reference=regex_fields, config=cfg))
     except Exception as e:  # noqa: BLE001 — the regex fields must survive any AI failure (#10)
-        logger.warning("AI step failed (%s) — keeping the regex fields", e, exc_info=True)
+        logger.warning("AI step failed (%s) — keeping the regex fields", e,
+                       exc_info=not isinstance(e, (TimeoutError, OSError)))
         ai_fields, ai_error = {}, f"{type(e).__name__}: {e}"[:300]
     ai_fields, account_notes = check_account_codes(ai_fields, _accounts(cfg))
     final = _merge_fields(text, regex_fields, ai_fields, own_keys)
-    if account_notes:
-        final.setdefault("_notes", []).extend(account_notes)
+    notes = [*run.notes, *account_notes]
+    if notes:
+        final.setdefault("_notes", []).extend(notes)
     if ai_error:
+        final["_ai_error"] = ai_error
         final.setdefault("_notes", []).append(
             f"the AI step failed ({ai_error}) – only the values read by the regex were used")
     head, tail = clip_bounds(len(text or ""), cfg["text_limit"])

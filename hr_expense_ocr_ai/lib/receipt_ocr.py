@@ -236,10 +236,12 @@ def build_prompt(categories):
 def _chat_json(prompt, text, config=None):
     """Structured call through the invoice library: same provider, keys, retries and fallbacks.
 
-    `config` is the per-run config (provider, keys, URLs); None = the library's env defaults.
+    `config` is the per-run config (provider, keys, URLs, the per-call timeout and the
+    receipt's DocumentRun); None = the library's env defaults. The call is cut to the time
+    the receipt has left (#29: no more fixed 180 s, above Odoo's 120 s worker limit).
     """
     data, meta = inv.chat_json(prompt, text, RECEIPT_SCHEMA, "receipt", max_tokens=4000, max_chars=4000,
-                               timeout=180, config=config)
+                               config=config)
     if isinstance(data, dict):
         data["_served_model"] = meta.get("served_model")
         data["_completion_tokens"] = meta.get("completion_tokens")
@@ -356,14 +358,17 @@ def _apply_guards(fields, text, regex=None):
 
 
 def extract_receipt_data(raw, mimetype=None, filename=None, categories=None, config=None):
-    """Huvudingång. Returnerar {"text": ..., "fields": {...}, "source": "ai"|"regex"|"none"}.
+    """Huvudingång. Returnerar {"text": ..., "fields": {...}, "source": "ai"|"regex"|"none",
+    "notes": [...]}, plus "ai_error" (why the AI call failed) when it did.
 
     config: per-run config för fakturabiblioteket (se invoice_ocr.default_config); None =
-    miljövariabel-defaults.
+    miljövariabel-defaults. Reading the text and the AI call share one deadline, the
+    config's total_deadline (#9).
     """
     cfg = inv._cfg(config)
+    run = inv.document_run(cfg)
     text = read_text(raw, mimetype, filename, cfg)
-    result = {"text": text, "fields": {}, "source": "none", "notes": []}
+    result = {"text": text, "fields": {}, "source": "none", "notes": list(run.notes)}
     if len(text.strip()) < 15:
         return result
     regex = _regex_fields(text)
@@ -373,6 +378,7 @@ def extract_receipt_data(raw, mimetype=None, filename=None, categories=None, con
     except Exception as e:  # noqa: BLE001 — AI:n får aldrig fälla mailhämtningen
         logger.warning("receipt AI extraction failed (%s): %s", cfg["provider"], e)
         ai = {}
+        result["ai_error"] = f"{type(e).__name__}: {e}"[:300]
     bad_date = ai.pop("_bad_date", None)
     if ai or bad_date:
         # AI ser hela sammanhanget; regex fyller bara luckor
@@ -381,9 +387,12 @@ def extract_receipt_data(raw, mimetype=None, filename=None, categories=None, con
         fields, notes = _apply_guards(fields, text, regex)
         if bad_date:
             notes.insert(0, f"the model's date {bad_date!r} is not a valid date — ignored")
-        result.update(fields=fields, source="ai", notes=notes)
+        result.update(fields=fields, source="ai", notes=[*result["notes"], *notes])
     elif regex:
-        result.update(fields=regex, source="regex", notes=["AI-tolkningen misslyckades; bara regex"])
+        failed = "AI-tolkningen misslyckades; bara regex"
+        if result.get("ai_error"):
+            failed += f" ({result['ai_error']})"
+        result.update(fields=regex, source="regex", notes=[*result["notes"], failed])
     if skipped and "total" not in result["fields"]:
         result["notes"].append(f"the total is in {skipped} – a foreign amount is not read "
                                "without the AI, the amount stays empty")

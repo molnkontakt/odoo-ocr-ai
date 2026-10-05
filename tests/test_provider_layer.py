@@ -146,7 +146,9 @@ def env_defaults(monkeypatch):
     monkeypatch.setattr(inv, "AI_MODEL", "")
 
 
-def test_per_run_config_is_used_without_touching_globals(calls, env_defaults):
+def test_per_run_config_is_used_without_touching_globals(calls, env_defaults, monkeypatch):
+    # A document deadline far above the per-call caps, so the caps themselves show.
+    monkeypatch.setattr(inv, "TOTAL_DEADLINE", 1000.0)
     before = _globals_snapshot()
     cfg = {"provider": "openai_compatible", "base_url": "https://llm.example/v1/",
            "api_key": "K-company-a", "model": "model-x"}
@@ -265,6 +267,8 @@ def test_receipt_chat_uses_per_run_config(calls, env_defaults, monkeypatch):
         "api_key": "K-receipt", "model": "m"})
     url, kw = calls[0]
     assert url == "https://receipts.example/v1/chat/completions"
-    assert kw["headers"]["Authorization"] == "Bearer K-receipt" and kw["timeout"] == 180
+    assert kw["headers"]["Authorization"] == "Bearer K-receipt"
+    # the per-call cap of the config (no fixed 180 s), cut to the receipt's deadline (#29)
+    assert inv.TOTAL_DEADLINE - 5 < kw["timeout"] <= inv.TOTAL_DEADLINE
     assert res["source"] == "ai" and res["fields"]["total"] == 418.0
     assert _globals_snapshot() == before
