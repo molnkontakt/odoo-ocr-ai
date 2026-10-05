@@ -68,6 +68,29 @@ def extract_text(raw, mimetype=None, filename=None, config=None):
     return text
 
 
+class ReceiptReadError(Exception):
+    """The attachment's text could not be read; the message says why, for the user."""
+
+
+def _describe_read_error(e):
+    if HAS_TESSERACT and isinstance(e, getattr(pytesseract, "TesseractNotFoundError", ())):
+        return "tesseract is not installed on the server"
+    if HAS_TESSERACT and isinstance(e, getattr(pytesseract, "TesseractError", ())):
+        return f"tesseract failed ({e})"
+    if isinstance(e, getattr(Image, "UnidentifiedImageError", ()) if HAS_TESSERACT else ()):
+        return "the file is not an image that can be read"
+    return f"{type(e).__name__}: {e}"
+
+
+def read_text(raw, mimetype=None, filename=None, config=None):
+    """extract_text, with every failure turned into a ReceiptReadError with a readable message."""
+    try:
+        return extract_text(raw, mimetype, filename, config) or ""
+    except Exception as e:  # noqa: BLE001 — re-raised with a readable message
+        raise ReceiptReadError(
+            f"the text of {filename or 'the attachment'} could not be read: {_describe_read_error(e)}") from e
+
+
 # ── Regex-fallback ────────────────────────────────────────────────────────────
 
 TOTAL_RE = re.compile(r"(?im)^\s*(?:totalt?|summa|att betala|belopp|k[oö]p|kort)\b[^\d\n]*?(\d{1,3}(?:[ .]\d{3})*[,.]\d{2})\s*(?:kr|sek)?\s*$")
@@ -220,7 +243,7 @@ def extract_receipt_data(raw, mimetype=None, filename=None, categories=None, con
     miljövariabel-defaults.
     """
     cfg = inv._cfg(config)
-    text = extract_text(raw, mimetype, filename, cfg) or ""
+    text = read_text(raw, mimetype, filename, cfg)
     result = {"text": text, "fields": {}, "source": "none", "notes": []}
     if len(text.strip()) < 15:
         return result

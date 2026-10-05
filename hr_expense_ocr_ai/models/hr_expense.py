@@ -1,5 +1,6 @@
 import logging
 
+import psycopg2
 from markupsafe import Markup, escape
 
 from odoo import _, api, fields, models
@@ -51,19 +52,36 @@ class HrExpense(models.Model):
 
     # ------------------------------------------------------------------ core
     def action_read_receipt(self, force=False):
-        """Läs kvittot och fyll tomma fält. `force` skriver över belopp/datum/kategori/namn."""
-        from ..lib import receipt_ocr
+        """Läs kvittot och fyll tomma fält. `force` skriver över belopp/datum/kategori/namn.
+
+        Every failure reaches the user as a UserError with a readable message (unreadable
+        image or PDF, tesseract missing, a value the write rejects), not as a server error.
+        """
         for expense in self:
             if expense.state != "draft":
                 raise UserError(_("Kvitto-OCR kan bara köras på utkast."))
             att = expense._expense_ocr_attachment()
             if not att:
                 raise UserError(_("Ingen bild- eller PDF-bilaga på utlägget."))
-            cfg = expense._expense_ocr_config()
-            cats, by_code = expense._expense_ocr_categories()
-            result = receipt_ocr.extract_receipt_data(att.raw, att.mimetype, att.name, categories=cats, config=cfg)
-            expense._expense_ocr_apply(result, by_code, att, force=force)
+            try:
+                expense._expense_ocr_read(att, force=force)
+            except (UserError, psycopg2.Error):
+                raise  # database errors stay as they are (Odoo's retry loop needs them)
+            except Exception as e:  # noqa: BLE001 — shown to the user, see the docstring
+                logger.warning("Receipt OCR failed for expense %s", expense.id, exc_info=True)
+                raise UserError(_("Receipt OCR failed for %(name)s: %(error)s",
+                                  name=att.name, error=str(e)[:300] or type(e).__name__)) from e
         return True
+
+    def _expense_ocr_read(self, att, force=False):
+        """Read `att` and fill the expense; returns the list of what was filled."""
+        from ..lib import receipt_ocr
+
+        self.ensure_one()
+        cfg = self._expense_ocr_config()
+        cats, by_code = self._expense_ocr_categories()
+        result = receipt_ocr.extract_receipt_data(att.raw, att.mimetype, att.name, categories=cats, config=cfg)
+        return self._expense_ocr_apply(result, by_code, att, force=force)
 
     def _expense_ocr_apply(self, result, by_code, att, force=False):
         self.ensure_one()
@@ -111,14 +129,33 @@ class HrExpense(models.Model):
             if notes:
                 body += Markup("<p><b>Anmärkningar:</b> %s</p>") % escape("; ".join(notes))
         self.message_post(body=body, message_type="comment", subtype_xmlid="mail.mt_note")
+        return filled
 
     def _expense_ocr_try(self, reason):
-        """OCR får aldrig fälla det som utlöste den (mailhämtning, uppladdning)."""
+        """OCR får aldrig fälla det som utlöste den (mailhämtning, uppladdning).
+
+        Each expense is read in its own savepoint: a failure (an SQL error included) rolls
+        back only that read, in the database and in the ORM cache, leaves the caller's
+        transaction usable and is noted in the expense's chatter. The caller's pending
+        writes are flushed first, outside the try, so a concurrency error on them still
+        reaches Odoo's retry loop instead of being swallowed here.
+        """
+        self.env.flush_all()
         for expense in self:
             try:
-                expense.action_read_receipt()
+                with self.env.cr.savepoint():
+                    expense.action_read_receipt()
             except Exception as e:  # noqa: BLE001
                 logger.warning("Kvitto-OCR (%s) misslyckades för utlägg %s: %s", reason, expense.id, e)
+                expense.message_post(body=expense._expense_ocr_error_message(e),
+                                     message_type="comment", subtype_xmlid="mail.mt_note")
+
+    @api.model
+    def _expense_ocr_error_message(self, error):
+        """The user-facing text of a failed read (UserError text as is)."""
+        if isinstance(error, UserError) and error.args:
+            return error.args[0]
+        return _("Receipt OCR failed: %s", str(error)[:300] or type(error).__name__)
 
     # ------------------------------------------------------------------ trigger
     # En enda utlösare räcker för både mail och MCP: när utkastet får en (ny) huvudbilaga. Vid

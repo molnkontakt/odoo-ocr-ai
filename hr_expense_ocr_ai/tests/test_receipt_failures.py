@@ -1,0 +1,77 @@
+"""Receipt OCR failures: a readable UserError on the button (#36.1), and a savepoint on the
+automatic path so a failure never breaks what triggered it (#36.13)."""
+from unittest import mock
+
+from odoo.addons.hr_expense_ocr_ai.lib import receipt_ocr
+from odoo.exceptions import UserError
+from odoo.tests import TransactionCase, tagged
+from odoo.tools import mute_logger
+
+
+@tagged("post_install", "-at_install", "expense_ocr")
+class TestReceiptFailures(TransactionCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.env["ir.config_parameter"].sudo().set_param("expense_ocr.enabled", "False")
+        cls.employee = cls.env["hr.employee"].create({"name": "Example Employee"})
+
+    def _expense(self):
+        expense = self.env["hr.expense"].create({"name": "x", "employee_id": self.employee.id})
+        self.env["ir.attachment"].create({
+            "name": "receipt.jpg", "res_model": "hr.expense", "res_id": expense.id,
+            "raw": b"not really a jpeg", "mimetype": "image/jpeg",
+        })
+        return expense
+
+    def _bodies(self, expense):
+        return " ".join(str(m.body) for m in expense.message_ids)
+
+    def test_unreadable_image_is_a_readable_user_error(self):
+        expense = self._expense()
+        err = receipt_ocr.ReceiptReadError(
+            "the text of receipt.jpg could not be read: the file is not an image that can be read")
+        with mock.patch.object(receipt_ocr, "extract_text", side_effect=OSError("truncated")), \
+                self.assertRaises(UserError) as cm:
+            expense.action_read_receipt()
+        self.assertIn("Receipt OCR failed for receipt.jpg", str(cm.exception))
+        self.assertIn("could not be read", str(cm.exception))
+        with mock.patch.object(receipt_ocr, "extract_receipt_data", side_effect=err), \
+                self.assertRaises(UserError) as cm:
+            expense.action_read_receipt()
+        self.assertIn("not an image that can be read", str(cm.exception))
+
+    def test_bad_value_on_write_is_a_user_error(self):
+        expense = self._expense()
+        result = {"text": "x", "source": "ai", "notes": [], "fields": {"date": "2026-02-30"}}
+        with mock.patch.object(receipt_ocr, "extract_receipt_data", return_value=result), \
+                self.assertRaises(UserError):
+            expense.action_read_receipt()
+
+    def test_automatic_path_rolls_back_and_notes_the_failure(self):
+        expense = self._expense()
+        HrExpense = type(self.env["hr.expense"])
+
+        def apply_then_fail(rec, result, by_code, att, force=False):
+            rec.write({"name": "written before the failure"})
+            raise ValueError("boom")
+
+        result = {"text": "x", "source": "ai", "notes": [], "fields": {}}
+        with mock.patch.object(receipt_ocr, "extract_receipt_data", return_value=result), \
+                mock.patch.object(HrExpense, "_expense_ocr_apply", apply_then_fail):
+            expense._expense_ocr_try("test")  # does not raise
+        self.assertEqual(expense.name, "x", "the partial write was rolled back")
+        self.assertIn("Receipt OCR failed for receipt.jpg: boom", self._bodies(expense))
+
+    def test_sql_error_leaves_the_transaction_usable(self):
+        expense = self._expense()
+
+        def bad_sql(*args, **kwargs):
+            self.env.cr.execute("SELECT 1 / 0")
+
+        with mock.patch.object(receipt_ocr, "extract_receipt_data", side_effect=bad_sql), \
+                mute_logger("odoo.sql_db"):
+            expense._expense_ocr_try("test")
+        expense.name = "still usable"
+        self.env.flush_all()
+        self.assertIn("Receipt OCR failed", self._bodies(expense))

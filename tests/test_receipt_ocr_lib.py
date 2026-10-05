@@ -48,3 +48,16 @@ def test_clean_keeps_only_known_categories():
 def test_prompt_lists_categories_with_hints():
     p = r.build_prompt([("MASKIN", "Machinery", "fuel, oil, tools"), ("FOOD", "Meals")])
     assert "MASKIN — Machinery: fuel, oil, tools" in p and "FOOD — Meals" in p
+
+
+def test_text_extraction_errors_are_readable(monkeypatch):
+    def broken(*args, **kwargs):
+        raise OSError("truncated file")
+
+    monkeypatch.setattr(r, "extract_text", broken)
+    try:
+        r.extract_receipt_data(b"x", "image/jpeg", "receipt.jpg")
+    except r.ReceiptReadError as e:
+        assert "receipt.jpg" in str(e) and "truncated file" in str(e)
+    else:
+        raise AssertionError("ReceiptReadError expected")
