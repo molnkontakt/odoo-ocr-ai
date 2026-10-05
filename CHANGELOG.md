@@ -2,6 +2,75 @@
 
 ## Unreleased
 
+- `account_invoice_ocr_ai` 19.0.1.15.0, `hr_expense_ocr_ai` 19.0.1.5.0: the provider layer,
+  English source strings with a Swedish translation, and the background job reads as the
+  user who queued the document. **Behaviour changes** — see the points marked so.
+  `hr_expense_ocr_ai` 19.0.1.5.0 needs `account_invoice_ocr_ai` 19.0.1.15.0 or later
+  (#36.7); install both from the same release.
+  - **OpenAI reasoning models work (#19).** o-series and `gpt-5…` models get
+    `max_completion_tokens` and the default temperature, on any endpoint; the `openai`
+    preset always sends `max_completion_tokens` (**behaviour change** for that preset). A
+    `400` that names a parameter the endpoint does not accept is sent once more without it
+    (`max_tokens` ↔ `max_completion_tokens`, `temperature`), so other OpenAI-compatible
+    endpoints benefit too. Only a `400` about the JSON schema still falls back to a plain
+    completion; any other error is shown with the first 300 characters of what the
+    provider said (`HTTP 400 from the AI provider: …`), in the chatter and on *Verify
+    provider*, instead of "400 Bad Request".
+  - **Rate limits and slow answers (#9).** A `429` waits as long as `Retry-After`
+    (or `retry-after-ms`) asks, within the document's time limit, else 15 s. The whole
+    answer must have arrived by the document's deadline: a provider that trickles bytes is
+    cut off then, not only one that stays silent.
+  - **Ollama (#20) — behaviour change.** Every request sends the context size (`num_ctx`,
+    new setting *Ollama context size*, `invoice_ocr.ollama_num_ctx`, default 16384 tokens —
+    more than Ollama's own default of 4096 on most hosts, so it needs more RAM/VRAM), the
+    answer's limit (`num_predict`) and `truncate: false`. An answer cut off at its limit, or
+    a prompt that filled the context, is noted.
+  - **Verify provider (#23).** The requested and the answering model must have the same
+    name, apart from a dated snapshot (`gpt-4o-mini-2024-07-18`) and a reasoning variant
+    reported under its base name — the latter only when the answer shows reasoning, so a
+    typo in `…-thinking` that the provider silently serves with its default model is now a
+    warning. The notification shows the completion tokens and the latency, and a cut-off
+    answer is reported as such. The reasoning-token check decides "reasoning model" from
+    the requested name too.
+  - **Receipts (#36.9) — behaviour change.** The AI diagnostics are kept; the answer's
+    token limit is the shared `invoice_ocr.max_tokens` (default 8000, was a fixed 4000);
+    an answer cut off at its limit, or one from a reasoning model that skipped its
+    reasoning (fewer than 300 completion tokens, `RECEIPT_MIN_COMPLETION_TOKENS`), is read
+    once more when there is time, and noted when it stays so. The chatter note names the
+    model that answered.
+  - **New settings and parameters.** *Text sent to the AI* (`invoice_ocr.text_limit`,
+    6000 characters, #21) is shown with the other limits; *Ollama context size*
+    (`invoice_ocr.ollama_num_ctx`, 16384); system parameter `invoice_ocr.max_tokens`
+    (8000). Environment defaults `INVOICE_AI_MAX_TOKENS`, `OLLAMA_NUM_CTX`,
+    `RECEIPT_MIN_COMPLETION_TOKENS`.
+  - **The background job reads as the user who queued the document — behaviour change.** In
+    19.0.1.14.0 the job read everything as OdooBot, past the uploader's access rights. Now a
+    queued bill or receipt stores who queued it (*OCR requested by*, `ocr_requested_by`) and
+    is read as that user, in their language and with the document's company: a user who may
+    not create contacts gets a note instead of a new vendor (as with the form button), and
+    the notes are theirs. Documents from the mail alias are read as the sender when the
+    sender is a user (an expense: as its employee's user), else as OdooBot as before. A user
+    who was archived or lost the company is not replaced by OdooBot: the document fails with
+    that reason.
+  - **English source strings and a Swedish translation (#35.3, #36.12) — behaviour
+    change.** Every label, button, list action, setting, notification and chatter note is
+    English in the code and goes through `_()` with its arguments; `i18n/sv.po` of both
+    modules translates all of it ("Kör OCR igen", "Dras automatiskt", "Läs kvitto (OCR)",
+    "omvänd skattskyldighet" …), so a Swedish user sees Swedish and an English user
+    English. Amounts in notes are formatted for the user's language and currency. The
+    notes of the plain-Python libraries are translatable too: they are `invoice_ocr.Note`
+    objects (English text plus msgid, parameters and module), marked with `_()` so Odoo's
+    exporter finds them, and shown through the module's translations.
+  - **Docs (#35.2, #36.7, #36.10) — behaviour change for receipts.** A PDF attached later
+    to an existing bill is not read automatically (the form button reads it); both
+    manifests list every provider. The receipt prompt no longer sends fuel, oil and tools
+    to a machinery category: put such rules in the category's description (an example is
+    in the module README). **If you relied on that rule, add it to your category.**
+  - Tests: OpenAI-style and other 400s, parameter adaptation, Retry-After, a trickling
+    local server, Ollama options and notes, model matching, receipt re-reads, translated
+    notes, the .pot/.po against the code, reading as the user who queued, the Swedish
+    translation in Odoo, and the totals check (#25).
+
 - `account_invoice_ocr_ai` 19.0.1.14.0, `hr_expense_ocr_ai` 19.0.1.4.0: OCR runs in the
   background, and every document has a time limit. **Behaviour change** — uploads are no
   longer read inside the request.

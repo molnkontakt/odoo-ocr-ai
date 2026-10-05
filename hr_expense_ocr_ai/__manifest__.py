@@ -1,6 +1,6 @@
 {
     "name": "Expense receipt OCR + AI",
-    "version": "19.0.1.4.0",
+    "version": "19.0.1.5.0",
     "category": "Human Resources/Expenses",
     "summary": "Read receipt photos on expense claims with tesseract + an LLM and fill amount, date, merchant and category",
     "description": """
@@ -23,7 +23,8 @@ not give. Guards against model guesses: the merchant, the
 amount and the date must appear in the OCR text, a confidence below 0.6 (or none) leaves amount and
 date empty (merchant, description and category may still be filled), the category must be one of
 the company's expensable products (their description is sent to the model as a hint, so
-category-specific rules belong in the category's description, not in the module).
+category-specific rules belong in the category's description, not in the module). English
+source strings, with a Swedish translation.
     """,
     "author": "Molnkontakt AB",
     "license": "LGPL-3",
