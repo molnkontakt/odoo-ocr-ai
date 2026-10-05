@@ -473,7 +473,73 @@ class AccountMove(models.Model):
 
         if line_vals_list:
             move.write({"invoice_line_ids": line_vals_list})
+            self._ocr_apply_total_adjustments(move, data)
             self._check_ocr_totals(move, data)
+
+    def _ocr_apply_total_adjustments(self, move, data):
+        """Rätta öresavrundning och justeringar utanför moms mot fakturans tryckta belopp.
+
+        Se invoice_ocr.plan_total_adjustments (ex: tillgodo −0,25 utanför moms och
+        öresavrundning −1,00 – AI:n gav en momsrad på nettot och totalen blev 2 575,94 i
+        stället för 2 575,00). Bara svenska leverantörer och vanliga procentsatser;
+        omvänd skattskyldighet och blandade momskoder lämnas orörda.
+        """
+        from ..lib import invoice_ocr
+
+        printed = data.get("_printed") or {}
+        if not printed or move.move_type != "in_invoice":
+            return
+        country = move.partner_id.commercial_partner_id.country_id.code
+        if country and country != "SE":
+            return
+        move.invalidate_recordset()
+        lines = move.invoice_line_ids.filtered(lambda ln: ln.display_type == "product")
+        taxed, untaxed = {}, 0.0
+        for line in lines:
+            if not line.tax_ids:
+                untaxed += line.price_subtotal
+            elif len(line.tax_ids) == 1 and line.tax_ids.amount_type == "percent" and line.tax_ids.amount:
+                rate = int(round(line.tax_ids.amount))
+                taxed[rate] = taxed.get(rate, 0.0) + line.price_subtotal
+            else:
+                return
+        plan = invoice_ocr.plan_total_adjustments(
+            taxed, untaxed, move.amount_tax, printed.get("vat_amount"), printed.get("total_amount"))
+        if not plan["base_shift"] and not plan["rounding"]:
+            return
+        account = self.env["account.account"].search(
+            [*self.env["account.account"]._check_company_domain(move.company_id), ("code_store", "=", "3740")], limit=1)
+        if not account:
+            logger.warning("OCR: konto 3740 saknas – öresavrundning läggs inte till på move %s", move.id)
+            return
+        commands, notes = [], []
+        if plan["base_shift"]:
+            rate, delta = plan["base_shift"]
+            target = lines.filtered(lambda ln: ln.tax_ids and int(round(ln.tax_ids.amount)) == rate
+                                    and ln.quantity == 1).sorted("price_subtotal", reverse=True)[:1]
+            if target:
+                commands.append((1, target.id, {"price_unit": round(target.price_unit + delta, 2)}))
+            else:
+                commands.append((0, 0, {"name": "Justering av momsunderlag", "quantity": 1, "price_unit": delta,
+                                        "account_id": lines.filtered("tax_ids")[:1].account_id.id,
+                                        "tax_ids": [(6, 0, lines.filtered("tax_ids")[:1].tax_ids.ids)]}))
+            commands.append((0, 0, {"name": "Justering utanför moms (t.ex. tillgodo)", "quantity": 1,
+                                    "price_unit": -delta, "account_id": account.id, "tax_ids": [(5, 0, 0)]}))
+            notes.append(f"momsunderlaget {delta:+.2f} enligt fakturans moms {printed.get('vat_amount'):.2f}, "
+                         f"motsvarande {-delta:+.2f} utanför moms på 3740")
+        if plan["rounding"]:
+            commands.append((0, 0, {"name": "Öresavrundning", "quantity": 1, "price_unit": plan["rounding"],
+                                    "account_id": account.id, "tax_ids": [(5, 0, 0)]}))
+            notes.append(f"öresavrundning {plan['rounding']:+.2f} på 3740 så att totalen blir "
+                         f"fakturans {printed.get('total_amount'):.2f}")
+            # Kontrollen nedan jämför nettot med fakturans "exkl. moms", som är före avrundningen.
+            data["_rounding_adjust"] = plan["rounding"]
+        move.write({"invoice_line_ids": commands})
+        move.message_post(
+            body=Markup("<p><b>OCR: justerat mot fakturans tryckta belopp</b></p><p>%s</p>")
+            % Markup("<br/>").join(notes),
+            message_type="comment",
+        )
 
     def _check_ocr_totals(self, move, data):
         """Varna om de skapade raderna inte summerar till fakturans tryckta belopp.
@@ -498,9 +564,10 @@ class AccountMove(models.Model):
             return
 
         problems = []
-        if printed_net is not None and abs(move.amount_untaxed - printed_net) > tol:
+        net = move.amount_untaxed - (data.get("_rounding_adjust") or 0.0)
+        if printed_net is not None and abs(net - printed_net) > tol:
             problems.append(
-                f"netto {move.amount_untaxed:.2f} mot fakturans {printed_net:.2f}")
+                f"netto {net:.2f} mot fakturans {printed_net:.2f}")
         if printed_vat is not None and abs(move.amount_tax - printed_vat) > tol:
             problems.append(
                 f"moms {move.amount_tax:.2f} mot fakturans {printed_vat:.2f}")

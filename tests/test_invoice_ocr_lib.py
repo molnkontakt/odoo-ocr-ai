@@ -33,3 +33,25 @@ def test_own_company_is_never_the_vendor(monkeypatch):
     fields = inv.extract_fields(text)
     assert fields.get("org_number") == "GB123456789"
     assert "receiver" not in (fields.get("vendor_name") or "").lower()
+
+
+def test_plan_total_adjustments_credit_outside_vat_and_rounding():
+    # services 2 061,00 (25 %), credit -0,25 outside VAT, rounding -1,00:
+    # printed net 2 060,75, VAT 515,25, amount due 2 575
+    plan = inv.plan_total_adjustments({25: 2060.75}, 0.0, 515.19, 515.25, 2575.0)
+    assert plan == {"base_shift": (25, 0.25), "rounding": -1.0}
+
+
+def test_plan_total_adjustments_leaves_correct_and_large_alone():
+    assert inv.plan_total_adjustments({25: 2061.0}, -0.25, 515.25, 515.25, 2576.0) == {
+        "base_shift": None, "rounding": None}
+    # 50 kr is not rounding: flagged by the total check, not "fixed"
+    assert inv.plan_total_adjustments({25: 1000.0}, 0.0, 250.0, 300.0, 1300.0) == {
+        "base_shift": None, "rounding": None}
+    # two rates: unclear which base is wrong
+    assert inv.plan_total_adjustments({25: 100.0, 12: 50.0}, 0.0, 31.0, 32.0, 182.0)["base_shift"] is None
+
+
+def test_plan_total_adjustments_rounding_only():
+    assert inv.plan_total_adjustments({25: 100.4}, 0.0, 25.10, 25.10, 125.0) == {
+        "base_shift": None, "rounding": -0.5}

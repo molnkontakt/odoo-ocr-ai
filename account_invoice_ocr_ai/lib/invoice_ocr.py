@@ -80,6 +80,49 @@ def _parse_date(text):
     return text
 
 
+# ── Öresavrundning och justeringar utanför moms ─────────────────────────────
+# Vissa fakturor (t.ex. från teleoperatörer) trycker "Belopp exkl. moms" EFTER
+# tillgodo/justeringar utan moms, men momsen på underlaget FÖRE dem, och "Att betala"
+# efter öresavrundning:
+#   tjänster 2 061,00 · tillgodo −0,25 · exkl. moms 2 060,75 · moms 515,25 (25 % av
+#   2 061,00) · öresavrundning −1,00 · att betala 2 575,00
+# AI:n lägger då 2 060,75 som en momsbelagd rad → moms 515,19, totalt 2 575,94.
+MAX_VAT_BASE_SHIFT = 2.0   # största del av netto som får flyttas utanför moms
+MAX_ROUNDING = 2.0         # största öresavrundning som läggs till automatiskt
+
+
+def plan_total_adjustments(taxed_net, untaxed_net, current_vat, printed_vat, printed_total):
+    """Justeringar som får raderna att stämma med fakturans tryckta moms och totalbelopp.
+
+    taxed_net: {momssats (int): netto på rader med den satsen}; untaxed_net: netto utan moms;
+    current_vat: momsen Odoo räknat fram. Returnerar {"base_shift": (sats, belopp) | None,
+    "rounding": belopp | None}:
+
+    * base_shift: momsunderlaget enligt den tryckta momsen skiljer sig från radernas –
+      flytta beloppet till momsraden och lägg MOTSATT belopp utanför moms (nettot oförändrat).
+      Bara när alla momsrader har samma sats och skillnaden är större än momsens egen
+      avrundning (2 öre på underlaget) men högst MAX_VAT_BASE_SHIFT.
+    * rounding: det som skiljer totalen (efter base_shift) från "Att betala", högst MAX_ROUNDING.
+    Större avvikelser lämnas orörda – de är inte avrundning och ska granskas av en människa.
+    """
+    plan = {"base_shift": None, "rounding": None}
+    vat_after = current_vat
+    rates = [r for r, net in taxed_net.items() if net]
+    if printed_vat is not None and len(rates) == 1 and rates[0]:
+        rate = rates[0]
+        implied = round(printed_vat * 100.0 / rate, 2)
+        delta = round(implied - taxed_net[rate], 2)
+        if 0.02 < abs(delta) <= MAX_VAT_BASE_SHIFT:
+            plan["base_shift"] = (rate, delta)
+            vat_after = printed_vat
+    if printed_total is not None:
+        total_after = round(sum(taxed_net.values()) + untaxed_net + vat_after, 2)
+        diff = round(printed_total - total_after, 2)
+        if 0.005 < abs(diff) <= MAX_ROUNDING:
+            plan["rounding"] = diff
+    return plan
+
+
 def _parse_amount(text):
     """Parse amount: '1 234,56' / '1234.56' / '€539.00' / '$1,234.56' → float."""
     text = text.strip()
