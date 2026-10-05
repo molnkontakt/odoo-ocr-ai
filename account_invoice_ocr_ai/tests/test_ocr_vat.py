@@ -173,3 +173,57 @@ class TestOcrVat(OcrBillCase):
         self.assertEqual(line.account_id.code, "4000")
         self._assert_tax(line, "purchase_tax_25_goods")
         self.assertIn("account 6231 is not in the account list", self._bodies(move))
+
+    # -- currency (#5) -----------------------------------------------------------------
+
+    def _currency(self, name, active=True, rate_date=None, rate=0.1):
+        currency = self.env["res.currency"].with_context(active_test=False).search(
+            [("name", "=", name)], limit=1)
+        currency.active = active
+        self.env["res.currency.rate"].search([("currency_id", "=", currency.id)]).unlink()
+        if rate_date:
+            self.env["res.currency.rate"].create({
+                "currency_id": currency.id, "name": rate_date, "rate": rate,
+                "company_id": self.company.id})
+        return currency
+
+    LINE = {"description": "Hosting", "amount": 100.0, "vat_rate": 0, "account_code": "6540"}
+
+    def test_bill_in_the_documents_currency(self):
+        eur = self._currency("EUR", rate_date="2026-01-01", rate=0.1)  # 1 EUR = 10 SEK
+        move = self._bill(self.de_vendor, [self.LINE], currency="EUR", vat_amount=0.0)
+        self.assertEqual(move.currency_id, eur)
+        line = move.invoice_line_ids
+        self.assertEqual(line.price_subtotal, 100.0)
+        self.assertAlmostEqual(line.balance, 1000.0)
+        self.assertNotIn("no lines were created", self._bodies(move))
+
+    def test_inactive_currency_gives_a_warning_and_no_lines(self):
+        self._currency("NOK", active=False, rate_date="2026-01-01")
+        move = self._bill(self.se_vendor, [self.LINE], currency="NOK")
+        self.assertFalse(move.invoice_line_ids)
+        self.assertEqual(move.currency_id, self.company.currency_id)
+        bodies = self._bodies(move)
+        self.assertIn("no lines were created", bodies)
+        self.assertIn("NOK is not active", bodies)
+        self.assertEqual(move.ref, "4711", "the rest of the fill is kept")
+
+    def test_currency_without_a_rate_gives_a_warning_and_no_lines(self):
+        self._currency("DKK", rate_date="2026-12-01")  # only a rate after the invoice date
+        move = self._bill(self.se_vendor, [self.LINE], currency="DKK")
+        self.assertFalse(move.invoice_line_ids)
+        self.assertEqual(move.currency_id, self.company.currency_id)
+        self.assertIn("DKK has no exchange rate on or before 2026-06-01", self._bodies(move))
+
+    def test_unknown_or_local_currency(self):
+        move = self._bill(self.se_vendor, [self.LINE], currency="XYZ")
+        self.assertFalse(move.invoice_line_ids)
+        self.assertIn("XYZ is not known", self._bodies(move))
+        move = self._bill(self.se_vendor, [self.LINE], currency="kr")
+        self.assertTrue(move.invoice_line_ids)
+        self.assertEqual(move.currency_id, self.company.currency_id)
+
+    def test_totals_check_warns_on_another_currency(self):
+        move = self._bill(self.se_vendor, [self.LINE])
+        self.env["account.move"]._check_ocr_totals(move, {"currency": "EUR"})
+        self.assertIn("the bill is in SEK, the document in EUR", self._bodies(move))

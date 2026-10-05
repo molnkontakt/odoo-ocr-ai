@@ -198,3 +198,23 @@ def test_merchant_guard_needs_the_distinctive_words():
     assert m("Sverige AB", "Kvitto Sverige AB")       # generic words only: compared whole
     assert not m("Sverige AB", "Kvitto Sverige")
     assert not m("", TEXT) and not m(None, TEXT) and not m("&", TEXT)
+
+
+def test_regex_skips_foreign_currency_totals():
+    """A total in EUR is not read as SEK when the AI is not there to read the currency (#28)."""
+    f = r._regex_fields("CAFE\nTOTAL EUR 12,50\n")
+    assert "total" not in f
+    assert f["_skipped_currency"] == "EUR"
+    assert r._regex_fields("CAFE\nTotal € 12,50\n")["_skipped_currency"] == "EUR"
+    assert r._regex_fields("Köp 1049,00 SEK\n")["total"] == 1049.0
+    # a SEK total line wins over a foreign one
+    assert r._regex_fields("Totalt 418,00\nTotal EUR 37,00\n")["total"] == 418.0
+
+
+def test_regex_only_foreign_total_is_noted(monkeypatch):
+    monkeypatch.setattr(r, "read_text", lambda *a, **k: "CAFE EXEMPEL\n2026-09-17\nTOTAL EUR 12,50\n")
+    monkeypatch.setattr(r, "_chat_json", lambda *a, **k: {})
+    out = r.extract_receipt_data(b"x", "image/jpeg", "receipt.jpg")
+    assert out["source"] == "regex"
+    assert "total" not in out["fields"]
+    assert any("the total is in EUR" in n for n in out["notes"])

@@ -23,6 +23,16 @@ OCR + LLM pre-fill of vendor bills in Odoo 19 Community.
 6. Posts a chatter note with everything it read, any regex/AI conflicts and the
    checks below.
 
+### Currency
+
+The bill gets the document's currency before any line is created, when that
+currency is active and has an exchange rate on or before the invoice date (rates
+of the company or shared ones, as Odoo converts with). Otherwise a warning is
+posted and **no lines are created**: the bill stays in the company's currency,
+since amounts in EUR booked as SEK would be wrong by the exchange rate. Activate
+the currency, add a rate and run OCR again, or enter the lines by hand. The
+totals check also warns when the bill's and the document's currencies differ.
+
 ### VAT treatment
 
 Every line gets its own tax, chosen once its final account is known. Accounts,

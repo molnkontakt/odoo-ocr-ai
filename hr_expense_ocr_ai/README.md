@@ -23,6 +23,13 @@ Off switch: *Expense receipt OCR* in the same settings block as the invoice OCR
 
 Only empty fields: amount (`total_amount_currency` = 0), date (when still today's
 default), category (no product) and the description (empty or very short).
+
+The amount is written in the receipt's currency: the expense's currency is set
+in the same write and the amount is rounded like that currency. A currency that
+is unknown, inactive or has no exchange rate on or before the receipt date
+leaves the amount empty with a note, and so does a category with a fixed cost
+(its amount is quantity × cost, in the company's currency). Without the AI, a
+total printed in a foreign currency (`EUR 12,50`, `€ 12,50`) is not read.
 Everything read, what was filled and which guards fired is posted as a chatter
 note, so the reviewer sees the model's reading next to the receipt.
 

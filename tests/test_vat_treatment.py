@@ -183,3 +183,13 @@ def test_the_runs_account_list_reaches_the_model_and_the_check(monkeypatch):
     assert enum == ["6540", "5010"]
     assert "account_code" not in data["lines"][0]
     assert any("account 6231 is not in the account list" in n for n in data["_notes"])
+
+
+# ── Currency (#5, #28) ───────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(("value", "iso"), [
+    ("EUR", "EUR"), ("eur", "EUR"), ("€", "EUR"), (" usd ", "USD"), ("US$", "USD"),
+    ("£", "GBP"), ("SEK", "SEK"), ("kr", None), ("kronor", None), ("", None), (None, None),
+])
+def test_normalize_currency(value, iso):
+    assert inv.normalize_currency(value) == iso

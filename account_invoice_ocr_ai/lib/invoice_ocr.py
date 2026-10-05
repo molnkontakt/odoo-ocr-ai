@@ -401,6 +401,20 @@ _LEGAL_SUFFIXES = re.compile(
     re.IGNORECASE)
 
 
+# Currencies written as symbols or words; "kr" is left out (SEK, NOK and DKK all use it).
+CURRENCY_ALIASES = {"€": "EUR", "EURO": "EUR", "EUROS": "EUR", "$": "USD", "US$": "USD",
+                    "£": "GBP"}
+
+
+def normalize_currency(value):
+    """The ISO 4217 code of an extracted currency ('eur', '€', 'US$' → EUR/USD), or None
+    when there is none or it cannot be told ('kr', 'kronor')."""
+    text = str(value or "").strip().upper()
+    if text in CURRENCY_ALIASES:
+        return CURRENCY_ALIASES[text]
+    return text if re.fullmatch(r"[A-Z]{3}", text) else None
+
+
 def _id_keys(value):
     """Jämförelsenycklar för ett org.nr eller momsreg.nr.
 

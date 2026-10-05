@@ -132,9 +132,6 @@ class HrExpense(models.Model):
         notes = list(result.get("notes") or [])
         vals, filled = {}, []
         today = fields.Date.context_today(self)
-        if f.get("total") is not None and (force or not self.total_amount_currency):
-            vals["total_amount_currency"] = round(float(f["total"]), 2)
-            filled.append(_("belopp %s", vals["total_amount_currency"]))
         if f.get("date") and (force or not self.date or self.date == today):
             # Only a real calendar date is written: anything else would make the write
             # raise and lose every other value read from the receipt.
@@ -149,6 +146,8 @@ class HrExpense(models.Model):
             if product:
                 vals["product_id"] = product.id
                 filled.append(_("kategori %s", product.name))
+        if f.get("total") is not None and (force or not self.total_amount_currency):
+            self._expense_ocr_amount_vals(f, vals, filled, notes)
         merchant, items, number = f.get("merchant"), f.get("items"), f.get("receipt_number")
         label = " ".join(x for x in (merchant, _("kvitto %s", number) if number else None) if x)
         if items:
@@ -179,6 +178,36 @@ class HrExpense(models.Model):
                 body += Markup("<p><b>Anmärkningar:</b> %s</p>") % escape("; ".join(notes))
         self.message_post(body=body, message_type="comment", subtype_xmlid="mail.mt_note")
         return filled
+
+    def _expense_ocr_amount_vals(self, f, vals, filled, notes):
+        """Add the receipt's total, in the receipt's currency, to `vals` (#28).
+
+        The currency is set in the same write as the amount (the expense's rate then follows
+        the receipt date), and the amount is rounded with that currency's rounding. A
+        currency that cannot be used (unknown, inactive, no rate) leaves the amount empty with
+        a note. A category with a fixed cost is left alone: its amount is quantity × cost,
+        in the company's currency.
+        """
+        product = self.env["product.product"].browse(vals["product_id"]) if "product_id" in vals \
+            else self.product_id
+        cost = product.with_company(self.company_id).standard_price if product else 0.0
+        if product and not self.company_currency_id.is_zero(cost):
+            notes.append(_("the category %s has a fixed cost: the amount is quantity × cost and "
+                           "was not filled", product.name))
+            return
+        date = vals.get("date") or self.date
+        currency, problem = self.env["account.move"]._ocr_currency(
+            f.get("currency"), self.company_id, date)
+        if problem:
+            notes.append(_("the receipt is in %(currency)s, but %(problem)s – the amount was not "
+                           "filled", currency=f.get("currency"), problem=problem))
+            return
+        currency = currency or self.currency_id
+        vals["total_amount_currency"] = currency.round(float(f["total"]))
+        if currency != self.currency_id:
+            vals["currency_id"] = currency.id
+        filled.append(_("belopp %s", f"{vals['total_amount_currency']} {currency.name}"
+                        if currency != self.company_currency_id else vals["total_amount_currency"]))
 
     def _expense_ocr_try(self, reason, commit=False):
         """OCR får aldrig fälla det som utlöste den (mailhämtning, uppladdning).

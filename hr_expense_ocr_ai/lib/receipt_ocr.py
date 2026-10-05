@@ -103,6 +103,10 @@ TOTAL_LINE_RE = re.compile(
 # purchase line, then sums ("Summa" is often before a discount, "Belopp" on a card slip
 # can include a cash withdrawal). Within the best label the last line wins.
 TOTAL_LABEL_RANK = (("att betala", "total", "slutsumma"), ("kort", "kop", "köp"), ("summa", "belopp"))
+# A foreign currency on a total line: the regex reads no currency, so such an amount is
+# not used (it would be filled in as SEK, #28). The model reads the currency instead.
+FOREIGN_CURRENCY_RE = re.compile(
+    r"[€$£]|\b(?:EUR|USD|GBP|NOK|DKK|CHF|PLN|ISK|CZK|HUF|JPY|CNY|CAD|AUD|EURO)\b", re.I)
 DATE_RE = re.compile(r"(?<!\d)(20\d{2})[-./](\d{1,2})[-./](\d{1,2})(?!\d)")
 # 17/09/2026, 17.09.2026, 17-09-2026: day first, as on Swedish receipts
 DMY_DATE_RE = re.compile(r"(?<!\d)(\d{1,2})[-./](\d{1,2})[-./](20\d{2})(?!\d)")
@@ -117,23 +121,33 @@ def _total_label_rank(label):
 
 
 def _regex_total(text):
-    """The amount paid according to the labelled total lines, or None."""
+    """(the amount paid according to the labelled total lines, or None; the foreign currency
+    of a total line that was skipped, or None)."""
     best = None  # (rank, amount)
+    skipped = None
     for m in TOTAL_LINE_RE.finditer(text):
         amounts = [a for a in inv.amounts_in_text(m.group(2)) if a > 0]
         if not amounts:
             continue
+        foreign = FOREIGN_CURRENCY_RE.search(m.group(0))
+        if foreign:
+            skipped = skipped or inv.normalize_currency(foreign.group(0)) or foreign.group(0)
+            continue
         rank = _total_label_rank(m.group(1))
         if best is None or rank <= best[0]:
             best = (rank, amounts[-1])
-    return best[1] if best else None
+    return (best[1] if best else None), skipped
 
 
 def _regex_fields(text):
+    """Total and date read by the regexes. `_skipped_currency`: a total line in a foreign
+    currency that was not used."""
     out = {}
-    total = _regex_total(text)
+    total, skipped = _regex_total(text)
     if total is not None:
         out["total"] = total
+    elif skipped:
+        out["_skipped_currency"] = skipped
     for regex, order in ((DATE_RE, (1, 2, 3)), (DMY_DATE_RE, (3, 2, 1))):
         for m in regex.finditer(text):
             y, mo, d = (int(m.group(i)) for i in order)
@@ -353,6 +367,7 @@ def extract_receipt_data(raw, mimetype=None, filename=None, categories=None, con
     if len(text.strip()) < 15:
         return result
     regex = _regex_fields(text)
+    skipped = regex.pop("_skipped_currency", None)
     try:
         ai = _clean(_chat_json(build_prompt(categories), text, cfg), categories)
     except Exception as e:  # noqa: BLE001 — AI:n får aldrig fälla mailhämtningen
@@ -369,4 +384,7 @@ def extract_receipt_data(raw, mimetype=None, filename=None, categories=None, con
         result.update(fields=fields, source="ai", notes=notes)
     elif regex:
         result.update(fields=regex, source="regex", notes=["AI-tolkningen misslyckades; bara regex"])
+    if skipped and "total" not in result["fields"]:
+        result["notes"].append(f"the total is in {skipped} – a foreign amount is not read "
+                               "without the AI, the amount stays empty")
     return result

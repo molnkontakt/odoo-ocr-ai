@@ -186,6 +186,38 @@ class AccountMove(models.Model):
             "account_keys": cfg.get("own_account_keys") or set(),
         }
 
+    @api.model
+    def _ocr_currency(self, code, company, date=None):
+        """The currency to use for an extracted currency code: (currency, problem).
+
+        Shared with hr_expense_ocr_ai (#5, #28). `currency` is the res.currency when it can be
+        used — the company's currency, or another active currency with an exchange rate on
+        or before `date` (rates of the company's root or shared ones, as Odoo converts with)
+        — else an empty recordset; `problem` says why not, or is None. No code at all ('kr',
+        nothing read) gives (empty, None): nothing to change. Inactive currencies are found
+        too, so the message can say what to do.
+        """
+        from ..lib import invoice_ocr
+
+        Currency = self.env["res.currency"].with_context(active_test=False)
+        iso = invoice_ocr.normalize_currency(code)
+        if not iso:
+            return Currency, None
+        if iso == company.currency_id.name:
+            return company.currency_id, None
+        currency = Currency.search([("name", "=", iso)], limit=1)
+        if not currency:
+            return Currency, _("the currency %s is not known in Odoo", iso)
+        if not currency.active:
+            return Currency, _("the currency %s is not active in Odoo", iso)
+        date = fields.Date.to_date(date) or fields.Date.context_today(self)
+        if not self.env["res.currency.rate"].sudo().search_count([
+                ("currency_id", "=", currency.id), ("name", "<=", date),
+                ("company_id", "in", [False, company.root_id.id])], limit=1):
+            return Currency, _("the currency %(currency)s has no exchange rate on or before "
+                               "%(date)s", currency=iso, date=date)
+        return currency, None
+
     @staticmethod
     def _ocr_result(status, reason=None):
         """Outcome of one OCR run: status "filled", "skipped" or "failed", and why."""
@@ -342,11 +374,22 @@ class AccountMove(models.Model):
                 logger.info("OCR: betalreferensen %r är inget giltigt OCR-nummer, sparas inte",
                             data["ocr_number"])
 
+        # Currency (#5): the bill is in the document's currency, before any line is created.
+        # One that cannot be used (unknown, inactive, no rate) gets a warning and no lines:
+        # amounts in EUR booked as SEK would be wrong by the exchange rate.
+        currency, currency_problem = self._ocr_currency(
+            data.get("currency"), company,
+            vals.get("invoice_date") or move.invoice_date or fields.Date.context_today(self))
+        if currency and currency != move.currency_id:
+            vals["currency_id"] = currency.id
+
         if vals:
             move.write(vals)
 
         # Create lines from AI lines if move has none
-        if not move.invoice_line_ids:
+        if currency_problem:
+            self._ocr_post_currency_warning(move, data, currency_problem)
+        elif not move.invoice_line_ids:
             self._create_lines_from_ocr(move, data, notes)
 
         # Extraherat bankgiro/plusgiro/konto som är bolagets eget
@@ -1048,6 +1091,22 @@ class AccountMove(models.Model):
             message_type="comment",
         )
 
+    def _ocr_post_currency_warning(self, move, data, problem):
+        logger.warning("OCR: move %s is in %s, which cannot be used: %s", move.id,
+                       data.get("currency"), problem)
+        move.message_post(
+            body=Markup("<p><b>⚠ %s</b></p><p>%s</p>") % (
+                _("OCR: no lines were created – the document's currency cannot be used"),
+                _("The document is in %(currency)s, but %(problem)s. The bill was left in "
+                  "%(bill_currency)s without lines, since its amounts would be wrong by the "
+                  "exchange rate. Activate the currency and add a rate (Accounting → "
+                  "Configuration → Currencies), then run OCR again, or enter the lines by hand "
+                  "in the right currency.",
+                  currency=data.get("currency"), problem=problem,
+                  bill_currency=move.currency_id.name)),
+            message_type="comment",
+        )
+
     def _check_ocr_totals(self, move, data):
         """Varna om de skapade raderna inte summerar till fakturans tryckta belopp.
 
@@ -1061,16 +1120,23 @@ class AccountMove(models.Model):
         # Fakturans TRYCKTA belopp, inte de mergade. Efter sammanslagningen vinner
         # regex pa siffrorna, sa de sammanfaller oftast — men saknar regex ett falt
         # star AI:ns varde kvar i data, och da vore kontrollen sjalvbekraftande.
+        from ..lib import invoice_ocr
+
         printed = data.get("_printed") or {}
         printed_net = printed.get("subtotal")
         printed_total = printed.get("total_amount")
         printed_vat = printed.get("vat_amount")
-        if not printed:
+        problems = []
+        # The amounts are compared digit for digit, so they must be in the same currency (#5)
+        document_currency = invoice_ocr.normalize_currency(data.get("currency"))
+        if document_currency and document_currency != move.currency_id.name:
+            problems.append(_("the bill is in %(bill)s, the document in %(document)s",
+                              bill=move.currency_id.name, document=document_currency))
+        if not printed and not problems:
             logger.info("OCR: inga tryckta belopp lasta ur PDF:en — "
                         "radsumman kan inte kontrolleras mot fakturan")
             return
 
-        problems = []
         net = move.amount_untaxed - (data.get("_rounding_adjust") or 0.0)
         # Foreign VAT booked as cost (#22) is in the net and not in the tax.
         foreign_vat = data.get("_foreign_vat") or 0.0

@@ -44,6 +44,12 @@ class OcrBillCase(TransactionCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
+        # The test documents are Swedish and in SEK: so are the test company's books, or a
+        # bill in SEK would be a foreign-currency bill (#5).
+        sek = cls.env.ref("base.SEK")
+        sek.active = True
+        if cls.env.company.currency_id != sek:
+            cls.env.company.currency_id = sek
         cls.company_data = cls._accounting(cls.env.company)
 
     def _new_bill(self, **vals):
