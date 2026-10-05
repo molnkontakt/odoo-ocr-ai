@@ -7,7 +7,8 @@ OCR + LLM pre-fill of vendor bills in Odoo 19 Community.
 1. A vendor bill created from a PDF — the journal's **Upload** button or its
    e-mail alias — is queued in `account.move._extend_with_attachments`, and a
    background job reads it within seconds (see *When OCR runs*). The form
-   button reads a draft bill at once.
+   button reads a draft bill at once. A PDF attached later to an existing bill
+   is not read automatically.
 2. Extracts text with **pdfplumber**; image-only PDFs fall back to **tesseract**
    (`swe+eng`) via pypdfium2, within page, pixel and time limits.
 3. Regex extraction of the common Swedish fields (dates, amounts, OCR number,
@@ -36,6 +37,7 @@ whole upload or hold up the mail fetch:
 | **Upload** in a purchase journal, a PDF to the journal's mail alias | The new draft bill is queued (*OCR: Queued*); the background job reads it within seconds |
 | List action **Kör OCR igen** | The selected draft bills are queued; a notification says how many were queued or skipped, and why |
 | Header button **Kör OCR igen** on a draft | Reads the bill at once (within the time limit per document) and reports the result |
+| A PDF attached to an existing bill (the chatter's attachment box, a reply to the bill) | **Not read automatically**, so a supporting document never overwrites a bill someone filled in; use the header button, which reads the bill's newest PDF |
 
 A bill Odoo already imported electronically (UBL/Peppol, embedded
 Factur-X/ZUGFeRD) is left alone, as is everything when *Invoice OCR on upload*

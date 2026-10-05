@@ -303,3 +303,12 @@ def test_no_re_read_when_the_first_call_was_slow(monkeypatch):
     out = r.extract_receipt_data(b"x", "image/jpeg", "r.jpg", config={"total_deadline": 200})
     assert len(seen) == 1, "70 s is more than retry_skip_seconds (60 s): no second call"
     assert any("only 120 completion tokens" in n for n in out["notes"])
+
+
+def test_prompt_has_no_category_rules_of_its_own():
+    """Category rules belong in the company's category descriptions, not the prompt (#36.10)."""
+    for word in ("Fuel", "fuel", "chain lubricant", "spare parts", "machinery"):
+        assert word not in r.PROMPT, word
+    prompt = r.build_prompt([("MASKIN", "Machinery", "fuel, oil, tools"), ("FOOD", "Meals")])
+    assert "  MASKIN — Machinery: fuel, oil, tools\n  FOOD — Meals\n" in prompt
+    assert "Follow each category's description" in prompt

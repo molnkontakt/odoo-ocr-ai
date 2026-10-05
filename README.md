@@ -16,8 +16,10 @@ Sister repositories: [odoo-l10n-se](https://github.com/molnkontakt/odoo-l10n-se)
 | [`account_invoice_ocr_ai`](account_invoice_ocr_ai/) | Vendor bill PDFs uploaded through *Upload* or received by a purchase journal's mail alias, read by a background job within seconds: text via pdfplumber (tesseract fallback for scans), regex field extraction, then an LLM fills partner, dates, references, bank details and invoice lines with BAS account and VAT rate. Auto-creates the vendor, handles EU reverse charge and marketplace VAT declarers |
 | [`hr_expense_ocr_ai`](hr_expense_ocr_ai/) | Receipt photos and PDFs on expense claims: EXIF-rotated, scaled and OCR'd with tesseract, then the LLM fills amount, date, merchant and expense category. Read by the same background job when a claim arrives by e-mail or gets its main attachment, and at once from the form. Guards against model guesses: merchant, amount and date must appear in the OCR text, low confidence leaves amount and date empty |
 
-`hr_expense_ocr_ai` depends on `account_invoice_ocr_ai` (shared OCR/LLM library
-and settings).
+`hr_expense_ocr_ai` depends on `account_invoice_ocr_ai` (shared OCR/LLM library,
+settings and background queue). Install both from the same release:
+`hr_expense_ocr_ai` 19.0.1.5.0 needs `account_invoice_ocr_ai` 19.0.1.15.0 or
+later, which Odoo's `depends` cannot enforce.
 
 ## AI providers
 
@@ -39,7 +41,8 @@ strongly recommended; the defaults were tuned with `qwen3.6:35b-a3b-thinking`.
 
 OCR and the LLM call no longer run inside the request that brought the document
 in. An upload, a mail to the alias or the list action only **queues** the bill
-or receipt; a background job (one `ir.cron`, no extra dependency) reads it
+or receipt (a PDF attached later to an existing bill is not read automatically;
+the form button reads it); a background job (one `ir.cron`, no extra dependency) reads it
 **within seconds**, one document at a time, with its own time budget per run,
 three attempts and a state on the document (*Queued*, *Reading*, *Read*,
 *Failed*) with filters and a banner on the form. The **form buttons read at

@@ -276,9 +276,9 @@ Fields:
 - currency: "SEK" unless clearly another currency.
 - items: one short line in Swedish summarising what was bought (e.g. "Sågkedjeolja 4L", "Alkylatbensin 2 st"). Skip prices.
 - card_last4: last four digits of the card if printed (e.g. "9688"), else null.
-- category_code: the best expense category for what was bought, chosen ONLY from this list (code — description):
+- category_code: the best expense category for what was bought, chosen ONLY from this list (code — name: the company's own description of what belongs there):
 {categories}
-  Prefer a specific category over a general one (EXP_GEN / "Expenses" is the last resort). Fuel, oil, chain lubricant, spare parts and tools belong to the machinery/equipment category if one exists. Use null if nothing fits.
+  Follow each category's description where one is given. Prefer a specific category over a general one (EXP_GEN / "Expenses" is the last resort). Use null if nothing fits.
 - confidence: 0.0–1.0, how sure you are about total and date together.
 
 OCR text follows (it may contain OCR errors like 0/O, 1/l, misplaced spaces):

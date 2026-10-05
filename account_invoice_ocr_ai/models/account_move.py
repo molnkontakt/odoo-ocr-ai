@@ -4,7 +4,8 @@ amounts, lines).
 A bill created from a PDF — the journal's Upload button, the mail alias — is queued in
 account.move._extend_with_attachments and read by the OCR cron within seconds (see
 ocr_queue.py, #9); so is a bill the list action "Kör OCR igen" is run on. The form button
-reads the bill at once.
+reads the bill at once. A PDF attached later to an existing bill (the chatter, a reply to
+it) is not read automatically (#35.2): the form button reads it on request.
 """
 
 import base64
@@ -193,7 +194,9 @@ class AccountMove(models.Model):
         """Queue a new draft vendor bill created from a PDF for OCR (#9).
 
         Called at creation (new=True) by the journal's Upload button and the mail alias.
-        Nothing is read here: the request (or the mail fetch) returns at once and the OCR
+        A file attached to an existing bill (the chatter's attachment box, a message posted
+        on it: new=False) is not read, so a supporting document never overwrites a bill
+        someone filled in; the form button reads it on request (#35.2). Nothing is read here: the request (or the mail fetch) returns at once and the OCR
         cron reads the bill within seconds. A bill Odoo already imported electronically
         (UBL/Peppol, embedded Factur-X/ZUGFeRD: super() returns a truthy value) is left
         alone (#18), as is a bill when OCR is off.

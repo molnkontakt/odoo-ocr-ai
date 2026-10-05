@@ -3,7 +3,16 @@
 Receipt OCR + LLM for expense claims in Odoo 19 Community, where
 `hr_expense_extract` (Enterprise) is not available. Depends on
 [`account_invoice_ocr_ai`](../account_invoice_ocr_ai/) for the OCR/LLM library
-and the provider settings.
+and the provider settings: every provider it supports (staik, Venice, OpenAI, any
+OpenAI-compatible endpoint, a local Ollama) reads receipts too, with the same keys.
+
+**Version requirement:** `hr_expense_ocr_ai` 19.0.1.5.0 needs
+`account_invoice_ocr_ai` **19.0.1.15.0 or later**. It uses that module's
+background queue (`ocr.queue.mixin`, its form banner and states), its per-run
+settings (`account.move._invoice_ocr_config`, `_ocr_currency`,
+`_ocr_notification`) and its library's provider layer (`chat_json` with the
+answer's diagnostics, the reasoning check, translatable notes). Odoo's `depends`
+cannot pin a version, so install both from the same release of this repository.
 
 ## When it runs
 
@@ -67,8 +76,23 @@ Measured on real receipts before release:
   never changed.
 - The category must be one of the company's expensable products. Their
   *purchase description*, or else the category's *Guideline* as plain text (at
-  most 200 characters), is sent as a hint, so describe your categories in Odoo
-  ("fuel, oil, tools for chainsaw and mower …") for better matches.
+  most 200 characters), is sent as a hint, and the model is told to follow it.
+
+### Steering the categories
+
+The prompt has no rules of its own about which purchase belongs to which
+category: it only asks for a specific category before the generic `EXP_GEN`
+("Expenses"). Rules that depend on your organisation belong in the description
+of the category (the expensable product's *purchase description*). For example,
+if fuel, oil and spare parts for your machines should go to a *Machinery*
+category rather than to *Travel*, describe it so:
+
+| Category (product) | Purchase description |
+|---|---|
+| Machinery | Fuel, oil, chain lubricant, spare parts and tools for our chainsaws, mowers and other machines |
+| Travel | Train and bus tickets, taxi, fuel for cars on business trips |
+
+Each description goes to the model next to the category's code and name.
 
 Photos are EXIF-rotated, converted to greyscale, upscaled to 2000 px and OCR'd
 with `--psm 4`. A 250 kB phone photo takes about 5 s of tesseract and 30 s of

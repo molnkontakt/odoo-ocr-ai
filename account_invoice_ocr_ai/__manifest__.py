@@ -5,11 +5,12 @@
     "summary": "Read uploaded vendor bill PDFs with OCR + an LLM and pre-fill partner, dates, references and lines",
     "depends": ["account"],
     "description": """
-A PDF uploaded through the journal's *Upload* button or received by its mail alias is read by
-a background job within seconds (the form button reads at once, every document has a time
-limit): text via pdfplumber (tesseract fallback for scans), regex extraction, then an LLM
-(staik by default, Swedish data residency; Venice, OpenAI or a local Ollama also supported)
-fills partner (auto-created if unknown), invoice/due dates, invoice number, OCR/Bankgiro/Plusgiro
+A bill created from a PDF — uploaded through the journal's *Upload* button or received by its
+mail alias — is read by a background job within seconds; the form button reads a draft bill at
+once, also one whose PDF was attached later in the chatter (that is not read automatically).
+Every document has a time limit. Text via pdfplumber (tesseract fallback for scans), regex
+extraction, then an LLM (staik by default, Swedish data residency; Venice, OpenAI, any
+OpenAI-compatible endpoint or a local Ollama also supported) fills partner (auto-created if unknown), invoice/due dates, invoice number, OCR/Bankgiro/Plusgiro
 references, the currency and invoice lines with a BAS account from the company's chart and a
 purchase tax per line: Swedish VAT, EU and non-EU reverse charge for goods and services, import
 of goods, foreign VAT as cost. Handles marketplace VAT declarers (Amazon, eBay). Everything is

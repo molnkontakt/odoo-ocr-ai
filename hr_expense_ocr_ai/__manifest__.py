@@ -5,8 +5,11 @@
     "summary": "Read receipt photos on expense claims with tesseract + an LLM and fill amount, date, merchant and category",
     "description": """
 Odoo Community has no receipt scanning (hr_expense_extract is Enterprise). This module reuses the
-OCR/LLM pipeline of account_invoice_ocr_ai (tesseract, staik/Venice/OpenAI/Ollama, same keys and
-settings) on hr.expense:
+OCR/LLM pipeline of account_invoice_ocr_ai on hr.expense: tesseract, and every AI provider that
+module supports (staik, Venice, OpenAI, any OpenAI-compatible endpoint, a local Ollama), with the
+same keys and settings. **Requires account_invoice_ocr_ai 19.0.1.15.0 or later** (Odoo's
+depends cannot say so): it uses that module's background OCR queue, its per-run settings and its
+library's provider layer and notes.
 
 - a draft expense that gets its main attachment (Upload, e-mailed expenses, the API) is read by
   a background job within seconds, only when amount or category is still missing;
@@ -19,7 +22,8 @@ guard that fired is written to the chatter, including a printed VAT that the cat
 not give. Guards against model guesses: the merchant, the
 amount and the date must appear in the OCR text, a confidence below 0.6 (or none) leaves amount and
 date empty (merchant, description and category may still be filled), the category must be one of
-the company's expensable products (their description is sent to the model as a hint).
+the company's expensable products (their description is sent to the model as a hint, so
+category-specific rules belong in the category's description, not in the module).
     """,
     "author": "Molnkontakt AB",
     "license": "LGPL-3",
