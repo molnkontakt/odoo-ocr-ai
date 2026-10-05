@@ -66,7 +66,8 @@ jobs:
           if [ -d tests ]; then pytest -q; else echo "no tests yet"; fi
 
   # The modules' own Odoo tests (account_invoice_ocr_ai/tests, hr_expense_ocr_ai/tests):
-  # install both modules in a fresh database on Odoo 19 and run their tests.
+  # install both modules (and l10n_se, for the Swedish chart the line tests load) in a
+  # fresh database on Odoo 19 and run their tests.
   odoo:
     runs-on: ubuntu-latest
     services:
@@ -102,7 +103,7 @@ jobs:
           python "$RUNNER_TEMP/odoo/odoo-bin" \
             --addons-path="$RUNNER_TEMP/odoo/addons,$RUNNER_TEMP/odoo/odoo/addons,$GITHUB_WORKSPACE" \
             --db_host=localhost --db_port=5432 --db_user=odoo --db_password=odoo \
-            -d ocrtest -i account_invoice_ocr_ai,hr_expense_ocr_ai \
+            -d ocrtest -i l10n_se,account_invoice_ocr_ai,hr_expense_ocr_ai \
             --test-enable --test-tags /account_invoice_ocr_ai,/hr_expense_ocr_ai \
             --stop-after-init --log-level=test 2>&1 | tee "$RUNNER_TEMP/odoo.log" || true
           result=$(grep -E "odoo\.tests\.result: .* tests when loading database" "$RUNNER_TEMP/odoo.log" | tail -1)

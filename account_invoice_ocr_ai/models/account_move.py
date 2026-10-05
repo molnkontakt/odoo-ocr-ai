@@ -231,7 +231,15 @@ class AccountMove(models.Model):
 
         Returns the outcome (see _ocr_result): "filled", or "skipped"/"failed" with the
         reason. Exceptions are left to the caller (_invoice_ocr_extend_safe).
+
+        Runs in the bill's company (#7): the upload path and the list action run in the
+        user's active company, and with several companies ticked every company's taxes are
+        visible, so accounts, taxes, partners and bank accounts are looked up for
+        move.company_id explicitly.
         """
+        company = move.company_id
+        if self.env.company != company or move.env.company != company:
+            return self.with_company(company)._invoice_ocr_extend(move.with_company(company), files_data)
         ICP = self.env["ir.config_parameter"].sudo()
         if ICP.get_param("invoice_ocr.enabled", "True").lower() in ("false", "0", ""):
             return self._ocr_result("skipped", _("OCR is turned off in the settings"))
@@ -289,7 +297,7 @@ class AccountMove(models.Model):
                     notes.append(_("%(field)s %(value)s is not a valid date – not used.",
                                    field=key, value=data.pop(key)))
         auto_debit = data.get("auto_debit")
-        partner_id = self._resolve_partner_from_ocr(data, own=own, notes=notes)
+        partner_id = self._resolve_partner_from_ocr(data, own=own, notes=notes, company=company)
         # ---- Build write vals ----------------------------------------
         vals = {}
         current_is_own = bool(move.partner_id) and self._ocr_is_own_partner(move.partner_id, own)
@@ -532,12 +540,14 @@ class AccountMove(models.Model):
                          % bank.display_name)
             move.partner_bank_id = False
 
-    def _ocr_partner_search(self, domain, own, notes, how, limit=1):
+    def _ocr_partner_search(self, domain, own, notes, how, limit=1, company=None):
         """res.partner.search that never returns the buyer's own company.
 
-        If the search would only have hit the own company, that is noted in the chatter.
+        Only partners the bill's company may use (shared ones and its own, #7). If the
+        search would only have hit the own company, that is noted in the chatter.
         """
         Partner = self.env["res.partner"]
+        domain = [*Partner._check_company_domain(company or self.env.company), *domain]
         excl = [("id", "not in", own["partner_ids"]),
                 ("commercial_partner_id", "not in", own["partner_ids"])]
         found = Partner.search(domain + excl, limit=limit)
@@ -545,6 +555,73 @@ class AccountMove(models.Model):
                 domain + [("commercial_partner_id", "in", own["partner_ids"])], limit=1):
             notes.append(_("%s pekade på det egna bolaget – hoppades över.") % how)
         return found
+
+    # ------------------------------------------------------------------
+    # Accounts and taxes of the bill's company (#7)
+    # ------------------------------------------------------------------
+
+    @api.model
+    def _ocr_account(self, company, code):
+        """The account with `code` in `company`'s chart, else its first sub-account, else empty.
+
+        Searches `code`, not `code_store`: code_store is company-dependent and resolves
+        through the active company, while `code` resolves through company.root_id (so it
+        also works for branches).
+        """
+        Account = self.env["account.account"].with_company(company)
+        code = str(code or "").strip()
+        if not code:
+            return Account
+        domain = list(Account._check_company_domain(company))
+        return (Account.search([*domain, ("code", "=", code)], limit=1)
+                or Account.search([*domain, ("code", "=like", f"{code}%")], limit=1))
+
+    @api.model
+    def _ocr_tax(self, company, xmlid):
+        """The purchase tax `xmlid` (l10n_se template id, e.g. purchase_tax_25_goods) of
+        `company`, or an empty recordset.
+
+        Resolved through the chart template, so it is the tax created for this company (or
+        its root company, for a branch). Charts not loaded from l10n_se fall back to a
+        domain search, see _ocr_tax_search.
+        """
+        Tax = self.env["account.tax"].with_company(company)
+        tax = self.env["account.chart.template"].with_company(company).ref(
+            xmlid, raise_if_not_found=False)
+        if (tax and tax._name == "account.tax" and tax.active
+                and tax.type_tax_use == "purchase" and tax.company_id in company.parent_ids):
+            return Tax.browse(tax.id)
+        return self._ocr_tax_search(company, xmlid)
+
+    @api.model
+    def _ocr_tax_search(self, company, xmlid):
+        """A purchase tax of `company` like the l10n_se tax `xmlid`, for other charts.
+
+        Domestic (purchase_tax_<rate>_<kind>): the first percent tax with that rate that is
+        not a reverse-charge tax (no negative repartition line), preferring the company's
+        fiscal country. Reverse charge (purchase_<kind>_tax_<rate>_EC/NEC): only a tax named
+        like l10n_se's ("25% EU G", "25% EX S"); nothing is guessed from rates alone.
+        """
+        Tax = self.env["account.tax"].with_company(company)
+        domain = [*Tax._check_company_domain(company), ("type_tax_use", "=", "purchase"),
+                  ("amount_type", "=", "percent")]
+        m = re.fullmatch(r"purchase_tax_(\d+)_(goods|services)", xmlid)
+        if m:
+            candidates = Tax.search([*domain, ("amount", "=", int(m.group(1))),
+                                     ("price_include", "=", False)])
+            candidates = candidates.filtered(lambda t: not any(
+                line.factor_percent < 0 for line in t.invoice_repartition_line_ids))
+            country = company.account_fiscal_country_id
+            return (candidates.filtered(lambda t: t.country_id == country)[:1]
+                    or candidates[:1])
+        m = re.fullmatch(r"purchase_(goods|services)_tax_(\d+)_(EC|NEC)", xmlid)
+        if m:
+            region = "EU" if m.group(3) == "EC" else "EX"
+            kind = "G" if m.group(1) == "goods" else "S"
+            name = f"{m.group(2)}% {region} {kind}"
+            return Tax.search([*domain, ("amount", "=", int(m.group(2))),
+                               ("name", "=ilike", name)], limit=1)
+        return Tax
 
     # ------------------------------------------------------------------
     # Payment reference
@@ -568,16 +645,18 @@ class AccountMove(models.Model):
     # Helpers (partner, lines, bank)
     # ------------------------------------------------------------------
 
-    def _resolve_partner_from_ocr(self, data, own=None, notes=None):
+    def _resolve_partner_from_ocr(self, data, own=None, notes=None, company=None):
         """Match OCR-extracted vendor data to res.partner. Auto-create if needed.
 
         Never returns the receiving company's partner (or a contact under it): on a vendor
-        bill the own company is the buyer, not the seller.
+        bill the own company is the buyer, not the seller. Only partners and bank accounts
+        the bill's `company` may use are considered (#7).
         """
         from ..lib import invoice_ocr
 
         Partner = self.env["res.partner"]
-        own = own if own is not None else self._ocr_own_context()
+        company = company or self.env.company
+        own = own if own is not None else self._ocr_own_context(company)
         notes = notes if notes is not None else []
         own_keys = invoice_ocr.build_own_ids(own["ids"])
         own_names = invoice_ocr.build_own_names(own["names"])
@@ -591,7 +670,7 @@ class AccountMove(models.Model):
         # If looks like a VAT number with letter prefix (e.g. LU20260743, SE556...)
         if org_raw and re.match(r"^[A-Z]{2}\d", org_raw):
             p = self._ocr_partner_search([("vat", "=", org_raw)], own, notes,
-                                         _("Momsreg.nr %s") % org_raw)
+                                         _("Momsreg.nr %s") % org_raw, company=company)
             if p:
                 return p.id
 
@@ -600,10 +679,11 @@ class AccountMove(models.Model):
         if org_clean:
             how = _("Org.nr %s") % org_raw
             for v in [f"SE{org_clean}01", f"SE{org_clean}", org_clean]:
-                p = self._ocr_partner_search([("vat", "=", v)], own, [], how)
+                p = self._ocr_partner_search([("vat", "=", v)], own, [], how, company=company)
                 if p:
                     return p.id
-            p = self._ocr_partner_search([("vat", "ilike", org_clean)], own, notes, how)
+            p = self._ocr_partner_search([("vat", "ilike", org_clean)], own, notes, how,
+                                         company=company)
             if p:
                 return p.id
 
@@ -615,8 +695,10 @@ class AccountMove(models.Model):
             bg_clean = re.sub(r"[^0-9]", "", bg)
             if not bg_clean or self._ocr_is_own_bank_number(bg_clean, own):
                 continue  # det egna kontot säger inget om leverantören
-            bank = self.env["res.partner.bank"].search(
-                [("sanitized_acc_number", "ilike", bg_clean),
+            Bank = self.env["res.partner.bank"]
+            bank = Bank.search(
+                [*Bank._check_company_domain(company),
+                 ("sanitized_acc_number", "ilike", bg_clean),
                  ("partner_id", "not in", own["partner_ids"]),
                  ("partner_id.commercial_partner_id", "not in", own["partner_ids"])],
                 limit=1)
@@ -637,14 +719,15 @@ class AccountMove(models.Model):
             # Exact match first
             p = self._ocr_partner_search(
                 [("name", "=ilike", name), ("is_company", "=", True)], own, notes,
-                _("Namnet \"%s\"") % name)
+                _("Namnet \"%s\"") % name, company=company)
             if p:
                 return p.id
             # Substring match — only if exactly one
             tokens = [t for t in re.split(r"\s+", name) if len(t) >= 4]
             for t in tokens:
                 p = self._ocr_partner_search(
-                    [("name", "ilike", t), ("is_company", "=", True)], own, [], "", limit=2)
+                    [("name", "ilike", t), ("is_company", "=", True)], own, [], "", limit=2,
+                    company=company)
                 if len(p) == 1:
                     return p.id
 
@@ -685,18 +768,10 @@ class AccountMove(models.Model):
         """Create invoice_line_ids from AI-extracted data."""
         ai_lines = data.get("lines")
 
-        # Build BAS-code → account.id cache
-        Account = self.env["account.account"]
+        company = move.company_id
 
         def acct(code):
-            if not code:
-                return None
-            a = Account.search([("code_store", "=", str(code))], limit=1)
-            if a:
-                return a.id
-            # Fallback: prefix match on first 4 digits
-            a = Account.search([("code_store", "=like", f"{str(code)[:4]}%")], limit=1)
-            return a.id if a else None
+            return self._ocr_account(company, code).id or None
 
         # Determine VAT context based on partner country
         EU_NON_SE = {
@@ -708,29 +783,18 @@ class AccountMove(models.Model):
         is_eu_foreign = partner_cc in EU_NON_SE
         is_outside_eu = bool(partner_cc) and partner_cc != "SE" and not is_eu_foreign
 
-        def find_tax(name_substr, rate):
-            """Find SE purchase tax by name substring + rate."""
-            return self.env["account.tax"].search([
-                ("type_tax_use", "=", "purchase"),
-                ("amount", "=", rate),
-                ("country_id.code", "=", "SE"),
-                ("name", "ilike", name_substr),
-            ], limit=1)
-
         # Alla svenska momssatser, inte bara 25 och 12. 6 % gäller bl.a. persontransport
         # (SJ, taxi, kollektivtrafik), böcker och tidningar — utan den raden hamnade
         # tågbiljetter helt utan moms och totalen stämde inte.
+        # The bill company's own taxes, by l10n_se template id (#7).
         RATES = (25, 12, 6)
         if is_eu_foreign:
-            # EU reverse charge — services (S) by default; goods (G) used if doc indicates
-            taxes = {r: find_tax(f"{r}% EU S", r) or find_tax("EU S", r) for r in RATES}
+            xmlid = "purchase_services_tax_%s_EC"
         elif is_outside_eu:
-            # Export/import outside EU
-            taxes = {r: find_tax(f"{r}% EX S", r) or find_tax("EX", r) for r in RATES}
+            xmlid = "purchase_services_tax_%s_NEC"
         else:
-            taxes = {r: self.env["account.tax"].search(
-                [("type_tax_use", "=", "purchase"), ("amount", "=", r),
-                 ("country_id.code", "=", "SE")], limit=1) for r in RATES}
+            xmlid = "purchase_tax_%s_goods"
+        taxes = {r: self._ocr_tax(company, xmlid % r) for r in RATES}
         taxes = {r: t for r, t in taxes.items() if t}
 
         # For EU/EX: also remap account_code so domestic 4xxx → corresponding foreign account
@@ -865,8 +929,7 @@ class AccountMove(models.Model):
             taxed, untaxed, move.amount_tax, printed.get("vat_amount"), printed.get("total_amount"))
         if not plan["base_shift"] and not plan["rounding"]:
             return
-        account = self.env["account.account"].search(
-            [*self.env["account.account"]._check_company_domain(move.company_id), ("code_store", "=", "3740")], limit=1)
+        account = self._ocr_account(move.company_id, "3740")
         if not account:
             logger.warning("OCR: konto 3740 saknas – öresavrundning läggs inte till på move %s", move.id)
             return
@@ -1068,7 +1131,9 @@ class AccountMove(models.Model):
             bg_clean = re.sub(r"[^0-9]", "", bg)
             if not bg_clean:
                 continue
-            bank = self.env["res.partner.bank"].search([
+            Bank = self.env["res.partner.bank"]
+            bank = Bank.search([
+                *Bank._check_company_domain(move.company_id),
                 ("partner_id", "=", partner_id),
                 ("sanitized_acc_number", "ilike", bg_clean),
                 ("active", "=", True),

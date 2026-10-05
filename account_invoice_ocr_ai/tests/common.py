@@ -32,12 +32,26 @@ class OcrBillCase(TransactionCase):
         }
 
     @classmethod
+    def _se_company(cls, name, **vals):
+        """A new company on l10n_se's Swedish chart ("se"), in SEK."""
+        sek = cls.env.ref("base.SEK")
+        sek.active = True
+        company = cls.env["res.company"].create({
+            "name": name, "country_id": cls.env.ref("base.se").id, "currency_id": sek.id, **vals})
+        cls.env["account.chart.template"].try_loading("se", company=company, install_demo=False)
+        return company
+
+    @classmethod
     def setUpClass(cls):
         super().setUpClass()
         cls.company_data = cls._accounting(cls.env.company)
 
     def _new_bill(self, **vals):
         return self.env["account.move"].create({"move_type": "in_invoice", **vals})
+
+    def _tax(self, company, xmlid):
+        """l10n_se's tax `xmlid` as created for `company`."""
+        return self.env["account.chart.template"].with_company(company).ref(xmlid)
 
     @contextlib.contextmanager
     def _patch_ocr(self, text=fx.AUTODEBIT_TEXT, ai=None):
