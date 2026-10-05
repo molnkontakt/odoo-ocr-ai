@@ -772,16 +772,22 @@ class AccountMove(models.Model):
 
         if ai_lines and isinstance(ai_lines, list) and len(ai_lines) > 0:
             for al in ai_lines:
-                amount = al.get("amount") or al.get("unit_price") or 0
-                if not amount:
+                if not isinstance(al, dict):
                     continue
-                code = remap_account_code(al.get("account_code"), al.get("description", ""))
+                # The line's amount is what the answer was checked against: quantity and
+                # unit price only when they agree with it (#11).
+                qty_price = _ocr.line_quantity_and_price(al)
+                if not qty_price:
+                    continue
+                quantity, price_unit = qty_price
+                description = str(al.get("description") or "")
+                code = remap_account_code(al.get("account_code"), description)
                 fallback = "4515" if is_eu_foreign else ("4545" if is_outside_eu else "4000")
                 acc_id = acct(code) or acct(fallback)
                 lv = {
-                    "name": al.get("description", data.get("invoice_number") or "Faktura"),
-                    "quantity": al.get("quantity", 1),
-                    "price_unit": al.get("unit_price", amount),
+                    "name": description or data.get("invoice_number") or "Faktura",
+                    "quantity": quantity,
+                    "price_unit": price_unit,
                     "account_id": acc_id,
                 }
                 vat_rate = al.get("vat_rate")
@@ -798,7 +804,7 @@ class AccountMove(models.Model):
                 elif vat_rate not in (None, 0):
                     logger.warning(
                         "OCR: ingen inköpsmoms hittad för %s%% (%s) — raden får ingen moms",
-                        vat_rate, al.get("description", "")[:60])
+                        vat_rate, description[:60])
                 line_vals_list.append((0, 0, lv))
         else:
             # Single-line fallback from totals

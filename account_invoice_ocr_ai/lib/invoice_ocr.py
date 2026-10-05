@@ -1426,6 +1426,91 @@ def _to_number(value):
     return number if number is not None and math.isfinite(number) else None
 
 
+# Text fields of the invoice answer; numbers given for identifiers become text ("1033").
+_AI_TEXT_FIELDS = ("vendor_name", "invoice_number", "invoice_date", "due_date", "currency",
+                   "ocr_number", "bankgiro", "plusgiro", "org_number")
+_AI_AMOUNT_FIELDS = ("total_amount", "subtotal", "vat_amount")
+_AI_LINE_NUMBERS = ("quantity", "unit_price", "amount", "vat_rate")
+_AI_PLACEHOLDERS = ("", "null", "none", "n/a", "unknown")
+
+
+def _ai_text(value):
+    """A text field from the AI: stripped text, integral numbers as digits, else None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float) and math.isfinite(value) and value == int(value):
+        value = int(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str) and value.strip().lower() not in _AI_PLACEHOLDERS:
+        return value.strip()
+    return None
+
+
+def _sanitize_ai_line(line):
+    """One invoice line from the AI as a clean dict, or None when it has no usable amount."""
+    if not isinstance(line, dict):
+        return None
+    out = {}
+    for key in _AI_LINE_NUMBERS:
+        number = _to_number(line.get(key))
+        if number is not None:
+            out[key] = number
+    for key in ("description", "account_code"):
+        text = _ai_text(line.get(key))
+        if text:
+            out[key] = text
+    if "amount" not in out and "unit_price" in out:
+        out["amount"] = round(out["unit_price"] * out.get("quantity", 1.0), 2)
+    return out if "amount" in out else None
+
+
+def _sanitize_ai(data):
+    """The AI's invoice answer in the shape the rest of the code expects (#10).
+
+    The schema is not enforced by every provider (and not at all on the plain-completion
+    fallback), so the answer can have `lines` that is not a list, lines that are not
+    objects, locale-formatted numbers ('1 234,00') and nulls anywhere. Keeps only: the
+    known text fields as text, the amounts as numbers (via _parse_amount), `lines` as a
+    list of dicts with numeric quantity/unit_price/amount/vat_rate and no null values, and
+    the internal diagnostics (keys starting with "_"). Anything else is dropped.
+    """
+    if not isinstance(data, dict):
+        return {}
+    out = {k: v for k, v in data.items() if k.startswith("_") and v is not None}
+    for key in _AI_TEXT_FIELDS:
+        text = _ai_text(data.get(key))
+        if text:
+            out[key] = text
+    for key in _AI_AMOUNT_FIELDS:
+        number = _to_number(data.get(key))
+        if number is not None:
+            out[key] = number
+    lines = data.get("lines")
+    if isinstance(lines, list):
+        out["lines"] = [ln for ln in (_sanitize_ai_line(x) for x in lines) if ln]
+    return out
+
+
+def line_quantity_and_price(line):
+    """(quantity, unit price) for a sanitized AI line; the line's `amount` is the truth (#11).
+
+    `amount` is what the answer was checked against (the lines must sum to the net), so
+    the created line must come to exactly that. Quantity and unit price are used only
+    when they agree with it; otherwise the line becomes 1 × amount. None: no amount.
+    """
+    amount = _to_number(line.get("amount"))
+    if not amount:
+        return None
+    qty = _to_number(line.get("quantity")) or 1.0
+    unit = _to_number(line.get("unit_price"))
+    if unit is not None and abs(qty * unit - amount) <= 0.01 * max(abs(qty), 1):
+        return qty, unit
+    if qty != 1 and abs(round(amount / qty, 2) * qty - amount) <= 0.005:
+        return qty, round(amount / qty, 2)
+    return 1.0, amount
+
+
 def _ai_answer_problems(data, reference=None, config=None):
     """Tecken pa att svaret inte gar att lita pa. Tom lista = svaret ser rimligt ut.
 
@@ -1441,17 +1526,23 @@ def _ai_answer_problems(data, reference=None, config=None):
     """
     if not isinstance(data, dict) or not data:
         return ["tomt svar"]
-    cfg = _cfg(config)
+    try:
+        return _ai_answer_problems_unsafe(data, reference if isinstance(reference, dict) else {},
+                                          _cfg(config))
+    except Exception as e:  # noqa: BLE001 — a check must never lose the answer (#10)
+        return [f"the answer could not be checked ({type(e).__name__}: {e})"]
+
+
+def _ai_answer_problems_unsafe(data, reference, cfg):
     problems = []
-    reference = reference or {}
 
     # Only a reasoning model is expected to spend tokens before answering; a plain model
     # answering in 500 tokens is normal, a "-thinking" model doing so skipped its reasoning.
-    ctok = data.get("_completion_tokens")
+    ctok = _num(data.get("_completion_tokens"))
     model_name = str(data.get("_served_model") or data.get("_model") or "").lower()
     if (ctok is not None and ctok < cfg["staik_min_completion_tokens"]
             and ("think" in model_name or "reason" in model_name)):
-        problems.append(f"bara {ctok} completion-tokens (resonemanget hoppades over)")
+        problems.append(f"bara {ctok:.0f} completion-tokens (resonemanget hoppades over)")
 
     # 1. Mot fakturans tryckta belopp
     for key, label in (("total_amount", "total"), ("subtotal", "netto"),
@@ -1471,13 +1562,17 @@ def _ai_answer_problems(data, reference=None, config=None):
 
     # 3. Raderna ska summera till nettot — fakturans om det finns, annars AI:ns
     lines = data.get("lines") or []
+    if not isinstance(lines, list):
+        problems.append("lines is not a list")
+        lines = []
+    lines = [ln for ln in lines if isinstance(ln, dict)]
     net = _num(reference.get("subtotal"))
     if net is None:
         net = sub
     if not lines:
         problems.append("inga rader")
     elif net is not None:
-        linesum = sum(float(ln.get("amount") or 0) for ln in lines)
+        linesum = sum(_to_number(ln.get("amount")) or 0.0 for ln in lines)
         if abs(linesum - net) > 1:
             problems.append(f"radsumma {linesum:.2f} mot netto {net:.2f}")
     return problems
@@ -1487,7 +1582,8 @@ def _call_provider(text, config=None):
     cfg = _cfg(config)
     data, meta = chat_json(EXTRACTION_PROMPT, text, INVOICE_JSON_SCHEMA, "invoice",
                            max_tokens=8000, max_chars=cfg["text_limit"], config=cfg)
-    if isinstance(data, dict) and data:
+    data = _sanitize_ai(data)
+    if data:
         # Diagnostics for _ai_answer_problems; stripped before the data reaches the invoice.
         data["_completion_tokens"] = meta.get("completion_tokens")
         data["_served_model"] = meta.get("served_model")
@@ -1585,8 +1681,17 @@ def extract_invoice_data_from_text(text, own_ids=None, own_names=None, config=No
         cfg["own_names"] = own_names
     own_keys = build_own_ids(cfg["own_ids"])
     regex_fields = extract_fields(text, config=cfg)
-    ai_fields = _extract_fields_ai(text, reference=regex_fields, config=cfg)
-    return _merge_fields(text, regex_fields, ai_fields, own_keys)
+    ai_error = None
+    try:
+        ai_fields = _sanitize_ai(_extract_fields_ai(text, reference=regex_fields, config=cfg))
+    except Exception as e:  # noqa: BLE001 — the regex fields must survive any AI failure (#10)
+        logger.warning("AI step failed (%s) — keeping the regex fields", e, exc_info=True)
+        ai_fields, ai_error = {}, f"{type(e).__name__}: {e}"[:300]
+    final = _merge_fields(text, regex_fields, ai_fields, own_keys)
+    if ai_error:
+        final.setdefault("_notes", []).append(
+            f"the AI step failed ({ai_error}) – only the values read by the regex were used")
+    return final
 
 
 def _merge_fields(text, regex_fields, ai_fields, own_keys):

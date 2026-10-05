@@ -504,3 +504,73 @@ def test_invalid_ai_date_is_dropped_with_a_note():
     # a valid AI due date still wins over the regex one (unchanged)
     out = _merge_dates("Förfallodatum: 2026-04-04\n", {"due_date": "2026-04-05"})
     assert out["due_date"] == "2026-04-05"
+
+
+# ── Malformed AI answers (#10) and line amounts (#11) ─────────────────────────
+
+MALFORMED_LINES = (["a"], [None], {"x": 1}, "abc", 5, [{"amount": "1 234,00"}],
+                   [{"amount": None, "unit_price": None}], [[1, 2]])
+
+
+def test_ai_answer_problems_never_raises():
+    for lines in MALFORMED_LINES:
+        data = {"subtotal": 100, "vat_amount": 25, "total_amount": 125, "lines": lines}
+        problems = inv._ai_answer_problems(data, reference={"subtotal": 100})
+        assert isinstance(problems, list) and problems, lines
+    # odd diagnostics and references do not raise either
+    assert isinstance(inv._ai_answer_problems(
+        {"lines": [{"amount": 1}], "_completion_tokens": "many"}, reference="x"), list)
+
+
+def test_sanitize_ai_keeps_lists_of_dicts_and_numbers():
+    out = inv._sanitize_ai({
+        "vendor_name": " Example AB ", "invoice_number": 1033, "ocr_number": 1234567897.0,
+        "total_amount": "1 250,00", "subtotal": None, "vat_amount": "n/a",
+        "currency": "null", "org_number": {"x": 1},
+        "lines": ["a", None, {"description": None, "quantity": None, "unit_price": None,
+                               "amount": "1 000,00", "vat_rate": "25", "account_code": 6540},
+                  {"description": "no amount"}, {"unit_price": 50, "quantity": 2}],
+        "_completion_tokens": 3400, "_served_model": None,
+    })
+    assert out == {
+        "vendor_name": "Example AB", "invoice_number": "1033", "ocr_number": "1234567897",
+        "total_amount": 1250.0,
+        "lines": [{"amount": 1000.0, "vat_rate": 25.0, "account_code": "6540"},
+                  {"unit_price": 50.0, "quantity": 2.0, "amount": 100.0}],
+        "_completion_tokens": 3400,
+    }
+    for lines in MALFORMED_LINES[:5]:
+        assert inv._sanitize_ai({"lines": lines}).get("lines", []) == [], lines
+    assert inv._sanitize_ai("not a dict") == {}
+    assert inv._sanitize_ai(None) == {}
+
+
+def test_malformed_answer_keeps_the_regex_fields(monkeypatch):
+    text = "Fakturanummer: 4711\nFakturadatum: 2026-03-01\nAtt betala: 125,00\nOCR: 1234567897\n"
+    for lines in MALFORMED_LINES:
+        monkeypatch.setattr(inv, "_call_provider", lambda t, cfg=None, lines=lines: inv._sanitize_ai({
+            "subtotal": 100, "vat_amount": 25, "total_amount": 125, "lines": lines}))
+        out = inv.extract_invoice_data_from_text(text, config={"retry_skip_seconds": 0})
+        assert out["invoice_number"] == "4711" and out["invoice_date"] == "2026-03-01", lines
+        assert out["total_amount"] == 125.0 and out["ocr_number"] == "1234567897"
+
+
+def test_ai_step_failure_keeps_the_regex_fields(monkeypatch):
+    def broken(*args, **kwargs):
+        raise TypeError("unexpected")
+
+    monkeypatch.setattr(inv, "_extract_fields_ai", broken)
+    out = inv.extract_invoice_data_from_text("Fakturanummer: 4711\nAtt betala: 125,00\n")
+    assert out["invoice_number"] == "4711" and out["total_amount"] == 125.0
+    assert any("the AI step failed" in n for n in out["_notes"])
+
+
+def test_line_amount_is_the_source_of_truth():
+    q = inv.line_quantity_and_price
+    assert q({"quantity": 3, "unit_price": 100, "amount": 300}) == (3, 100)
+    assert q({"quantity": 3, "amount": 300}) == (3, 100.0)       # unit price missing
+    assert q({"amount": 250}) == (1.0, 250)                       # null quantity/unit price
+    assert q({"quantity": 1, "unit_price": 500, "amount": 400}) == (1.0, 400)  # discount in amount
+    assert q({"quantity": 3, "unit_price": 50, "amount": 100}) == (1.0, 100)   # 3 × 33.33 ≠ 100
+    assert q({"quantity": -1, "unit_price": 100, "amount": -100}) == (-1, 100)
+    assert q({"amount": 0}) is None and q({}) is None
