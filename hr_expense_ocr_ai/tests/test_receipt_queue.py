@@ -130,3 +130,15 @@ class TestReceiptQueue(TransactionCase):
                 self.assertRaises(UserError):
             expense.action_read_receipt()
         read.assert_not_called()
+
+    def test_budget_cut_is_noted_when_nothing_was_read(self):
+        expense = self._expense()
+        expense.message_main_attachment_id = self._attachment(expense.id)
+        nothing = {"text": "", "source": "none", "fields": {},
+                   "notes": ["the time for reading the image was used up – it was not read"]}
+        with mock.patch.object(receipt_ocr, "extract_receipt_data", return_value=nothing):
+            run_ocr_cron(self.env)
+        self.assertEqual(expense.ocr_state, "failed")
+        bodies = self._bodies(expense)
+        self.assertIn("the time for reading the image was used up", bodies)
+        self.assertNotIn("OCR could not read this document", bodies, "one note is enough")

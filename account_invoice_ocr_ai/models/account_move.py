@@ -390,11 +390,16 @@ class AccountMove(models.Model):
         # If no useful data extracted, abort
         if not data or not (data.get("vendor_name") or data.get("invoice_number")):
             if ai_error:
-                return self._ocr_result("failed", _(
-                    "the AI step failed (%s) and the text alone gives neither a vendor name nor "
-                    "an invoice number", ai_error))
-            return self._ocr_result(
-                "failed", _("neither a vendor name nor an invoice number was found in the PDF"))
+                reason = _("the AI step failed (%s) and the text alone gives neither a vendor "
+                           "name nor an invoice number", ai_error)
+            else:
+                reason = _("neither a vendor name nor an invoice number was found in the PDF")
+            # A budget that cut the reading (#26) is part of the reason.
+            cuts = [note for note in (data or {}).get("_notes") or []
+                    if not str(note).startswith("the AI step failed")]
+            if cuts:
+                reason = f"{reason} ({'; '.join(cuts)})"
+            return self._ocr_result("failed", reason)
 
         # The marketplace VAT-declarer override ("Moms deklarerat av X" is the vendor, not
         # the "Sold by" merchant) runs in the library, on the full text.

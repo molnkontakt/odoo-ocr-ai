@@ -163,7 +163,9 @@ class HrExpense(models.Model):
             return self._ocr_result("failed", _("the AI step failed (%s)", ai_error), retry=True)
         filled = self._expense_ocr_apply(result, by_code, att, force=force)
         if result.get("source") == "none":
-            return self._ocr_result("failed", _("nothing could be read from %s", att.name))
+            # the read note already says so (and why, when a budget cut the reading)
+            return self._ocr_result("failed", _("nothing could be read from %s", att.name),
+                                    noted=True)
         if ai_error:
             return self._ocr_result("failed", _("the AI step failed (%s); only the values read "
                                                 "from the text were filled in", ai_error),
@@ -226,8 +228,9 @@ class HrExpense(models.Model):
             body = Markup("<p><b>Kvitto-OCR</b> läste %s (%s%s)</p><ul>%s</ul>") % (
                 att.name, result.get("source"), Markup(", konfidens %.2f") % conf if conf is not None else "", rows)
             body += Markup("<p>Ifyllt: %s</p>") % (", ".join(filled) if filled else _("inget (fälten var redan satta)"))
-            if notes:
-                body += Markup("<p><b>Anmärkningar:</b> %s</p>") % escape("; ".join(notes))
+        # Also when nothing was read: a budget that cut the reading (#26) says why.
+        if notes:
+            body += Markup("<p><b>Anmärkningar:</b> %s</p>") % escape("; ".join(notes))
         self.message_post(body=body, message_type="comment", subtype_xmlid="mail.mt_note")
         return filled
 

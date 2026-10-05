@@ -356,3 +356,16 @@ class TestOcrQueue(OcrBillCase):
         self.assertEqual(params["type"], "warning")
         self.assertEqual(move.ocr_state, "failed")
         self.assertIn("neither a vendor name nor an invoice number", move.ocr_error)
+
+    def test_budget_cut_is_named_in_the_failure(self):
+        """Nothing found because a budget cut the reading (#26): the reason says so."""
+        move = self._new_bill()
+        self._attach_pdf(move)
+        cut = ("reading the document text stopped after 0 of 3 pages: the time for reading "
+               "it (30 s) was used up – the rest was not read")
+        with mock.patch.object(invoice_ocr, "extract_invoice_data", return_value={"_notes": [cut]}):
+            move.action_run_ocr()
+        self.assertEqual(move.ocr_state, "failed")
+        self.assertIn("neither a vendor name nor an invoice number", move.ocr_error)
+        self.assertIn("stopped after 0 of 3 pages", move.ocr_error)
+        self.assertIn("stopped after 0 of 3 pages", self._bodies(move))
