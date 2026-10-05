@@ -402,3 +402,31 @@ def test_own_identities_flow_through_the_pipeline_config(monkeypatch):
     out = inv.extract_invoice_data(b"%PDF-fake", config=cfg, own_ids=[])
     assert out["org_number"] == "556000-0001"
     assert inv.OWN_COMPANY == "" and not inv.OWN_VAT_NUMBERS
+
+
+# ── _parse_amount: a lone comma or dot followed by three digits groups thousands (#15) ──
+
+def test_parse_amount_comma_as_thousands_separator():
+    assert inv._parse_amount("1,234") == 1234.0
+    assert inv._parse_amount("$1,234") == 1234.0
+    assert inv._parse_amount("1,234,567") == 1234567.0
+    assert inv._parse_amount("1.234.567") == 1234567.0
+    assert inv._parse_amount("12.500") == 12500.0
+    assert inv._parse_amount("1.234,5") == 1234.5
+    # decimals stay decimals
+    assert inv._parse_amount("12,50") == 12.5
+    assert inv._parse_amount("12.50") == 12.5
+    assert inv._parse_amount("1234,56") == 1234.56
+    assert inv._parse_amount("0,500") == 0.5
+    assert inv._parse_amount("-32,00") == -32.0
+    assert inv._parse_amount("1 234,56") == 1234.56
+    # whole-krona marks and odd spaces
+    assert inv._parse_amount("418:-") == 418.0
+    assert inv._parse_amount("418,-") == 418.0
+    assert inv._parse_amount("1 000") == 1000.0
+    assert inv._parse_amount("abc") is None
+    assert inv._parse_amount("1.23.45") is None
+
+
+def test_grand_total_with_comma_thousands_separator():
+    assert inv.extract_fields("Grand total $1,234\n")["total_amount"] == 1234.0

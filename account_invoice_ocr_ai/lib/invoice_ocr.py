@@ -134,18 +134,37 @@ def plan_total_adjustments(taxed_net, untaxed_net, current_vat, printed_vat, pri
     return plan
 
 
+def _group_or_decimal(text, sep):
+    """A number with one kind of separator: thousands groups ('1,234,567', '1.234') or decimals.
+
+    The separator is a thousands separator when every group after it has exactly three
+    digits and the first group one to three (not starting with 0): '1,234' and '12.500'
+    are 1234 and 12500, as printed on invoices without decimals. Otherwise it is the
+    decimal mark: '12,50', '104.64', '0,500'.
+    """
+    if re.fullmatch(r"-?[1-9]\d{0,2}(?:" + re.escape(sep) + r"\d{3})+", text):
+        return text.replace(sep, "")
+    return text.replace(sep, ".")
+
+
 def _parse_amount(text):
-    """Parse amount: '1 234,56' / '1234.56' / '€539.00' / '$1,234.56' → float."""
-    text = text.strip()
+    """Parse amount: '1 234,56' / '1234.56' / '€539.00' / '$1,234.56' / '1,234' → float.
+
+    Returns None when the text is not an amount.
+    """
+    text = str(text).strip().replace("\u2212", "-")
     # Remove currency symbols, letters, and common prefixes
     text = re.sub(r"[€$£¥A-Za-z]", "", text)
     # Remove spaces (thousand separators)
-    text = text.replace(" ", "").replace("\u00a0", "")
+    text = text.replace(" ", "").replace("\u00a0", "").replace("\u202f", "")
+    # Whole-krona marks on receipts: '418:-', '418,-'
+    text = re.sub(r"[:,.]-$", "", text)
     # Determine decimal separator:
     # "1.234,56" → comma is decimal (Swedish/EU)
     # "1,234.56" → dot is decimal (English)
     # "1234,56"  → comma is decimal
     # "1234.56"  → dot is decimal
+    # "1,234" / "1.234" → thousands separator (see _group_or_decimal)
     if "," in text and "." in text:
         if text.rindex(",") > text.rindex("."):
             # Comma after dot: "1.234,56" → EU format
@@ -154,14 +173,9 @@ def _parse_amount(text):
             # Dot after comma: "1,234.56" → English format
             text = text.replace(",", "")
     elif "," in text:
-        text = text.replace(",", ".")
+        text = _group_or_decimal(text, ",")
     elif "." in text:
-        # "1.234" — dot with NO comma and exactly three digits after the last
-        # dot is a thousands separator (German/Swedish style), not decimals.
-        # "539.00" (two digits) and "104.64" stay decimal.
-        head, _, tail = text.rpartition(".")
-        if head and tail.isdigit() and len(tail) == 3:
-            text = text.replace(".", "")
+        text = _group_or_decimal(text, ".")
     try:
         return float(text)
     except ValueError:
