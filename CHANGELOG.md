@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+- `account_invoice_ocr_ai` 19.0.1.12.0, `hr_expense_ocr_ai` 19.0.1.2.0: failures are
+  contained and visible, and the parsing is stricter.
+  - **Failures.** OCR on upload runs in a savepoint: a failure rolls back only its own
+    writes (no half-created partner, no aborted transaction) and leaves a chatter note;
+    core's "There was an error while importing the bill" no longer appears on a bill OCR
+    did fill (#17). *Run OCR again* (button and list action) and the receipt list action
+    read each record in its own savepoint and show a notification with how many records
+    were filled, failed or skipped, and why; the list actions no longer write an
+    `ir.logging` row their own rollback discarded (#35, #36). *Read receipt* shows a
+    readable error instead of a server error, and the automatic receipt read on a new
+    attachment runs in a savepoint and notes a failure (#36).
+  - **Amounts.** `1,234` and `1,234,567` are thousands, not decimals (#15). The receipt
+    amount check compares whole amounts, so 18 no longer passes on `418,00`, 25 on
+    `Moms 25%` or 17 on a date, and `1 234,50` / `1 000 kr` are accepted; when the
+    model's total is not printed, the printed total is used. The regex total fallback
+    reads `1234,50` and `Totalt (2 Artiklar) 418,00` and picks the labelled amount to
+    pay instead of the largest amount (#32, #36).
+  - **Dates.** Only real calendar dates are read, merged and written; English month
+    names are understood; `Datum` no longer matches Leveransdatum/Förfallodatum/
+    Orderdatum; `NN/NN/YYYY` with both parts ≤ 12 is day/month unless the LLM's date is
+    the other reading (#16). A receipt date the model gives in another format, or that
+    is not printed on the receipt, is not used; the printed date is used instead (#30,
+    #31).
+  - **LLM answers.** Malformed `lines` and locale-formatted numbers no longer lose the
+    whole pre-fill; the regex fields survive any malformed answer (#10). Invoice lines
+    come to the line amount the answer was checked against (#11).
+  - **Bankgiro, plusgiro, OCR.** Values stay on their line, labels are whole words, a
+    label row with the values on the next row is read (the OCR number too), and every
+    value must pass the length and mod-10 check digit, with the LLM's value as the
+    fallback (#14).
+  - **Receipts.** The merchant check needs the name's distinctive words printed
+    together (#36); the category hint is plain text, not the Guideline's HTML (#36). A
+    missing confidence counts as low; the docs now say what low confidence does: amount
+    and date stay empty, merchant, description and category may be filled (#36).
+  - **Long invoices.** A text over the limit is sent as head and tail with a marker, the
+    chatter says the model saw only part of it, and the re-run is skipped. The
+    marketplace VAT declarer is found in the full text (#21).
+  - CI runs the modules' Odoo tests on Odoo 19 with PostgreSQL (#25, #36).
+
 - `account_invoice_ocr_ai` 19.0.1.11.1, `hr_expense_ocr_ai` 19.0.1.1.1: the *Invoice OCR on
   upload* and *Expense receipt OCR* switches can be turned off. An unticked Boolean
   `config_parameter` deletes the parameter and a missing parameter read as on, so the

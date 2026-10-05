@@ -36,8 +36,14 @@ never used as the supplier:
   (archived ones too) carrying its org/VAT number. A pre-set own company is
   replaced by the vendor from the document.
 - The recipient bank account is never one of the own company's accounts,
-  including the own clearing+account number truncated to bankgiro length. A
-  "bankgiro" that is not 7–8 digits is dropped.
+  including the own clearing+account number truncated to bankgiro length.
+- Bankgiro (7–8 digits), plusgiro (2–8) and OCR reference (2–25) must pass the
+  length and mod-10 check-digit test. When the value read from the document
+  fails, the LLM's value is used if it passes; otherwise the field stays empty.
+  Either way the chatter note says so.
+- Dates must be real calendar dates. `NN/NN/YYYY` with both parts 12 or less is
+  read as day/month unless the LLM read it the other way; the note shows both
+  readings.
 - **Auto debit**: when the document says the amount is debited automatically
   (autogiro, direct debit, "Dras automatiskt" …) the bill gets **Dras
   automatiskt** (`ocr_auto_debit`), the recipient account is left empty so the
