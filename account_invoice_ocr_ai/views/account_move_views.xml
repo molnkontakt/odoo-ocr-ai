@@ -12,6 +12,14 @@
                         class="btn-secondary"
                         invisible="state != 'draft' or move_type != 'in_invoice'"/>
             </xpath>
+            <!-- The vendor bill's recipient account (not the customer invoice's) -->
+            <xpath expr="//field[@name='partner_bank_id'][contains(@invisible, 'in_invoice')]"
+                   position="after">
+                <field name="ocr_auto_debit"
+                       invisible="move_type not in ('in_invoice', 'in_receipt')"/>
+                <field name="ocr_auto_debit_phrase"
+                       invisible="move_type not in ('in_invoice', 'in_receipt') or not ocr_auto_debit_phrase"/>
+            </xpath>
         </field>
     </record>
 </odoo>

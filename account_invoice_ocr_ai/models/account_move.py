@@ -9,6 +9,7 @@ Hooks into account.move._extend_with_attachments which is called both when:
 import base64
 import logging
 import re
+from datetime import timedelta
 
 from markupsafe import Markup
 
@@ -29,8 +30,39 @@ ACCOUNT_FALLBACKS = {
 }
 
 
+# Ord i leverantörsnamn som inte säger något om vem bankraden gäller
+_NAME_STOPWORDS = {
+    "ab", "aktiebolag", "publ", "bank", "banken", "sverige", "sweden", "svenska",
+    "the", "och", "and", "ltd", "limited", "inc", "llc", "gmbh", "group", "services",
+    "company", "international", "nordic", "scandinavia",
+}
+
+
 class AccountMove(models.Model):
     _inherit = "account.move"
+
+    ocr_auto_debit = fields.Boolean(
+        string="Dras automatiskt",
+        copy=False,
+        tracking=True,
+        help="Fakturan dras automatiskt från bolagets konto (autogiro, bankavgift, "
+             "direct debit) och ska INTE betalas manuellt eller tas med i en betalfil. "
+             "Sätts av OCR-tolkningen när underlaget säger det; kan ändras för hand.",
+    )
+    ocr_auto_debit_phrase = fields.Char(
+        string="Dragning enligt OCR",
+        copy=False,
+        readonly=True,
+        help="Frasen i underlaget som fick OCR:en att sätta 'Dras automatiskt'. Tom när "
+             "flaggan satts eller ändrats för hand – då rör en omkörning av OCR:en den inte.",
+    )
+
+    def write(self, vals):
+        # Ändras flaggan för hand äger användaren den: glöm OCR-frasen så att en
+        # omkörning inte nollställer ett manuellt val.
+        if "ocr_auto_debit" in vals and not self.env.context.get("ocr_auto_debit_write"):
+            vals = dict(vals, ocr_auto_debit_phrase=False)
+        return super().write(vals)
 
     def action_run_ocr(self):
         """Re-run OCR + AI on the latest PDF attachment of this draft bill."""
@@ -86,8 +118,9 @@ class AccountMove(models.Model):
         """Push Odoo's settings into the library module and return it.
 
         Shared with hr_expense_ocr_ai. System parameters win over environment defaults; the
-        receiving company's name and VAT number go along so they are never taken for the
-        supplier.
+        receiving company's names and org/VAT numbers (the company and its branches) go along
+        so they are never taken for the supplier. _invoice_ocr_extend also passes them
+        explicitly to extract_invoice_data.
         """
         from ..lib import invoice_ocr
 
@@ -109,8 +142,9 @@ class AccountMove(models.Model):
         invoice_ocr.OLLAMA_URL = param("invoice_ocr.ollama_url", invoice_ocr.OLLAMA_URL)
         invoice_ocr.OLLAMA_MODEL = param("invoice_ocr.ollama_model", invoice_ocr.OLLAMA_MODEL)
         company = company or self.env.company
+        ids, _names = self._ocr_own_identities(company)
         invoice_ocr.OWN_COMPANY = (company.name or "").strip().lower()
-        invoice_ocr.OWN_VAT_NUMBERS = {v.replace(" ", "").upper() for v in (company.vat, company.company_registry) if v}
+        invoice_ocr.OWN_VAT_NUMBERS = {v.replace(" ", "").upper() for v in ids}
         return invoice_ocr
 
     def _invoice_ocr_extend(self, move, files_data):
@@ -133,8 +167,10 @@ class AccountMove(models.Model):
 
         invoice_ocr = self._invoice_ocr_apply_settings(move.company_id)
 
+        own = self._ocr_own_context(move.company_id)
         try:
-            data = invoice_ocr.extract_invoice_data(pdf_data)
+            data = invoice_ocr.extract_invoice_data(
+                pdf_data, own_ids=own["ids"], own_names=own["names"])
         except Exception as e:
             logger.warning("invoice_ocr.extract_invoice_data failed: %s", e)
             return
@@ -162,11 +198,26 @@ class AccountMove(models.Model):
                     break
 
         # ---- Resolve partner from OCR --------------------------------
-        partner_id = self._resolve_partner_from_ocr(data)
+        notes = []  # kontroller som ska synas i chattern
+        for own_nr in data.get("_own_ids_skipped") or []:
+            notes.append(_("Org.nr %s på fakturan är bolagets eget (köparen) – "
+                           "användes inte som leverantörens.") % own_nr)
+        notes += data.get("_notes") or []
+        auto_debit = data.get("auto_debit")
+        partner_id = self._resolve_partner_from_ocr(data, own=own, notes=notes)
         # ---- Build write vals ----------------------------------------
         vals = {}
-        if partner_id and not move.partner_id:
+        current_is_own = bool(move.partner_id) and self._ocr_is_own_partner(move.partner_id, own)
+        if partner_id and (not move.partner_id or current_is_own):
             vals["partner_id"] = partner_id
+            if current_is_own:
+                notes.append(_("Leverantören var satt till det egna bolaget (%s) – "
+                               "ersatt med leverantören från underlaget.")
+                             % move.partner_id.display_name)
+        elif current_is_own:
+            notes.append(_("Leverantören är det egna bolaget (%s) och ingen annan "
+                           "leverantör kunde hittas – välj leverantör för hand.")
+                         % move.partner_id.display_name)
         if data.get("invoice_number") and not move.ref:
             vals["ref"] = data["invoice_number"]
         if data.get("invoice_date") and not move.invoice_date:
@@ -197,9 +248,16 @@ class AccountMove(models.Model):
                 logger.info("OCR: forfallodatum %s -> %s (fran fakturan)",
                             move.invoice_date_due, data["due_date"])
             vals["invoice_date_due"] = data["due_date"]
-        # OCR/payment reference
+        # OCR/payment reference. Bara giltiga OCR-nummer: AI:n har klistrat ihop fakturanumret
+        # med köparens postnummer och ibland tagit postnumret ensamt. Se
+        # _ocr_valid_payment_reference.
         if data.get("ocr_number") and not move.payment_reference:
-            vals["payment_reference"] = data["ocr_number"]
+            ref = self._ocr_valid_payment_reference(data["ocr_number"], data.get("invoice_number"))
+            if ref:
+                vals["payment_reference"] = ref
+            else:
+                logger.info("OCR: betalreferensen %r är inget giltigt OCR-nummer, sparas inte",
+                            data["ocr_number"])
 
         if vals:
             move.write(vals)
@@ -208,22 +266,61 @@ class AccountMove(models.Model):
         if not move.invoice_line_ids:
             self._create_lines_from_ocr(move, data)
 
+        # Extraherat bankgiro/plusgiro/konto som är bolagets eget
+        own_numbers = set()
+        for field in ("plusgiro", "bankgiro"):
+            if self._ocr_is_own_bank_number(data.get(field), own):
+                own_numbers.add(field)
+                notes.append(_("%(field)s %(nr)s på fakturan är bolagets eget konto – "
+                               "används inte som mottagarkonto.")
+                             % {"field": field, "nr": data.get(field)})
+
         # Resolve partner_bank_id (Bankgiro / Plusgiro)
-        if not move.partner_bank_id and partner_id:
-            self._resolve_partner_bank(move, data, partner_id)
+        # Mjuk koppling till en lokaliseringsmodul som har ett eget autogirofält
+        has_l10n_flag = "l10n_se_auto_debit" in move._fields
+        if auto_debit:
+            upd = {"ocr_auto_debit": True, "ocr_auto_debit_phrase": auto_debit}
+            if has_l10n_flag:
+                upd["l10n_se_auto_debit"] = True
+            if move.partner_bank_id:
+                upd["partner_bank_id"] = False
+            move.with_context(ocr_auto_debit_write=True).write(upd)
+        elif move.ocr_auto_debit and move.ocr_auto_debit_phrase:
+            # Flaggan sattes av en tidigare OCR-körning men underlaget ger ingen
+            # dragning längre (t.ex. skärpta mönster) — ta bort den. En flagga som
+            # satts för hand saknar frasen och lämnas orörd.
+            notes.append(_("\"Dras automatiskt\" var satt av OCR (%s) men underlaget "
+                           "anger ingen dragning längre – flaggan togs bort.")
+                         % move.ocr_auto_debit_phrase)
+            upd = {"ocr_auto_debit": False, "ocr_auto_debit_phrase": False}
+            if has_l10n_flag:
+                upd["l10n_se_auto_debit"] = False
+            move.with_context(ocr_auto_debit_write=True).write(upd)
+        if not auto_debit and not move.partner_bank_id and move.partner_id:
+            self._resolve_partner_bank(move, data, move.partner_id.id,
+                                       skip_fields=own_numbers, own=own)
+        self._ocr_drop_own_partner_bank(move, own, notes)
+
+        # Redan bokförd via bankraden?
+        prebooked = self._ocr_find_prebooked_statement_lines(move, data)
 
         # Log a chatter note with confidence info
         conflicts = data.get("_conflicts") or []
-        body = "<p><b>OCR + AI har fyllt i fakturan</b></p><ul>"
-        for k in ("vendor_name", "invoice_number", "invoice_date", "due_date",
-                  "total_amount", "subtotal", "vat_amount", "ocr_number", "plusgiro",
-                  "bankgiro", "org_number", "currency"):
-            if data.get(k) is not None:
-                body += f"<li>{k}: <code>{data[k]}</code></li>"
+        items = [
+            Markup("<li>%s: <code>%s</code></li>") % (k, data[k])
+            for k in ("vendor_name", "invoice_number", "invoice_date", "due_date",
+                      "total_amount", "subtotal", "vat_amount", "ocr_number", "plusgiro",
+                      "bankgiro", "org_number", "currency", "auto_debit")
+            if data.get(k) is not None
+        ]
         if conflicts:
-            body += "<li><b>Konflikter regex/AI:</b><br/>" + "<br/>".join(
-                f"<code>{c}</code>" for c in conflicts) + "</li>"
-        body += "</ul>"
+            items.append(Markup("<li><b>Konflikter regex/AI:</b><br/>%s</li>") % Markup(
+                "<br/>").join(Markup("<code>%s</code>") % c for c in conflicts))
+        if notes:
+            items.append(Markup("<li><b>Kontroller:</b><br/>%s</li>") % Markup(
+                "<br/>").join(notes))
+        body = (Markup("<p><b>OCR + AI har fyllt i fakturan</b></p><ul>%s</ul>")
+                % Markup("").join(items))
         self.env["mail.message"].create({
             "model": "account.move",
             "res_id": move.id,
@@ -233,30 +330,192 @@ class AccountMove(models.Model):
             "author_id": self.env.user.partner_id.id,
         })
 
+        if auto_debit:
+            move.message_post(
+                body=Markup(
+                    "<p><b>⚠ Dras automatiskt från kontot – ska inte betalas manuellt</b></p>"
+                    "<p>Underlaget anger att beloppet dras från bolagets konto "
+                    "(<code>%s</code>). Mottagarkontot har lämnats tomt så att fakturan "
+                    "inte hamnar i en betalfil. Stäm av fakturan mot bankraden när "
+                    "dragningen syns i stället för att betala den.</p>"
+                ) % auto_debit,
+                message_type="comment",
+            )
+        if prebooked:
+            self._ocr_post_prebooked_warning(move, prebooked)
+
+    # ------------------------------------------------------------------
+    # The receiving company (never the vendor)
+    # ------------------------------------------------------------------
+
+    @api.model
+    def _ocr_own_companies(self, company=None):
+        """The buyer: the invoice's company and its branches (the same legal entity).
+
+        OTHER companies in the database are separate legal entities and may well be the
+        vendor (inter-company invoices) — they are not counted as own.
+        """
+        company = (company or self.env.company).sudo()
+        root = company.root_id or company
+        return self.env["res.company"].sudo().with_context(active_test=False).search(
+            [("id", "child_of", root.id)])
+
+    @api.model
+    def _ocr_own_identities(self, company=None):
+        """(org/VAT numbers, names) of the buyer, from res.company — not module constants."""
+        ids, names = [], []
+        for c in self._ocr_own_companies(company):
+            ids += [c.vat, c.company_registry, c.partner_id.vat,
+                    c.partner_id.company_registry]
+            names += [c.name, c.partner_id.name]
+        return [i for i in ids if i], [n for n in names if n]
+
+    @api.model
+    def _ocr_own_context(self, company=None):
+        """The buyer's own identities: org/VAT numbers, names, partners and bank accounts.
+
+        Another partner (archived ones too) carrying the buyer's own org/VAT number also
+        counts as own, e.g. a duplicate created by an e-mail import: it is not an external
+        vendor, and its bank accounts are the buyer's.
+        """
+        from ..lib import invoice_ocr
+
+        companies = self._ocr_own_companies(company)
+        partners = companies.partner_id
+        own_partners = partners | partners.commercial_partner_id
+        ids, names = self._ocr_own_identities(company)
+        own_partners |= self._ocr_partners_with_own_ids(invoice_ocr.build_own_ids(ids))
+        banks = self.env["res.partner.bank"].sudo().with_context(active_test=False).search(
+            [("partner_id", "child_of", own_partners.ids)])
+        bank_keys, account_keys = invoice_ocr.build_own_bank_keys(
+            banks.mapped("sanitized_acc_number"))
+        return {
+            "ids": ids,
+            "names": names,
+            "partner_ids": own_partners.ids,
+            "bank_keys": bank_keys,
+            "account_keys": account_keys,
+        }
+
+    @api.model
+    def _ocr_partners_with_own_ids(self, own_keys):
+        """Partners (archived ones too) whose vat/company_registry is the buyer's own number."""
+        from ..lib import invoice_ocr
+
+        Partner = self.env["res.partner"].sudo().with_context(active_test=False)
+        orgs = {k for k in own_keys if k.isdigit() and len(k) == 10}
+        if not orgs:
+            return Partner
+        terms = set()
+        for o in orgs:
+            terms |= {o, f"{o[:6]}-{o[6:]}"}
+        fnames = [f for f in ("vat", "company_registry") if f in Partner._fields]
+        leaves = [(f, "ilike", t) for f in fnames for t in sorted(terms)]
+        domain = ["|"] * (len(leaves) - 1) + leaves
+        found = Partner.search(domain)
+        return found.filtered(lambda p: any(
+            invoice_ocr.is_own_id(p[f], own_keys) for f in fnames if p[f]))
+
+    @api.model
+    def _ocr_is_own_partner(self, partner, own):
+        partner = partner.sudo()
+        return bool(partner) and (
+            partner.id in own["partner_ids"]
+            or partner.commercial_partner_id.id in own["partner_ids"])
+
+    @api.model
+    def _ocr_is_own_bank_number(self, number, own):
+        """True if an extracted bankgiro/plusgiro/account number is the buyer's own.
+
+        Also catches the buyer's clearing+account number truncated to bankgiro length.
+        """
+        from ..lib import invoice_ocr
+
+        return invoice_ocr.is_own_bank_number(
+            number, own["bank_keys"], own.get("account_keys", ()))
+
+    def _ocr_drop_own_partner_bank(self, move, own, notes):
+        """A vendor bill is never paid to the buyer's own account."""
+        if move.move_type not in ("in_invoice", "in_receipt"):
+            return
+        bank = move.partner_bank_id
+        if bank and self._ocr_is_own_partner(bank.partner_id, own):
+            notes.append(_("Mottagarkontot %s tillhör det egna bolaget – togs bort.")
+                         % bank.display_name)
+            move.partner_bank_id = False
+
+    def _ocr_partner_search(self, domain, own, notes, how, limit=1):
+        """res.partner.search that never returns the buyer's own company.
+
+        If the search would only have hit the own company, that is noted in the chatter.
+        """
+        Partner = self.env["res.partner"]
+        excl = [("id", "not in", own["partner_ids"]),
+                ("commercial_partner_id", "not in", own["partner_ids"])]
+        found = Partner.search(domain + excl, limit=limit)
+        if not found and Partner.search_count(
+                domain + [("commercial_partner_id", "in", own["partner_ids"])], limit=1):
+            notes.append(_("%s pekade på det egna bolaget – hoppades över.") % how)
+        return found
+
+    # ------------------------------------------------------------------
+    # Payment reference
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _ocr_mod10(number):
+        """Luhn/modulus 10 as used by Bankgirot and Plusgirot for OCR numbers."""
+        from ..lib import invoice_ocr
+
+        return invoice_ocr.ocr_mod10(number)
+
+    @api.model
+    def _ocr_valid_payment_reference(self, ocr_number, invoice_number=None):
+        """The payment reference to store, or False (see invoice_ocr.valid_payment_reference)."""
+        from ..lib import invoice_ocr
+
+        return invoice_ocr.valid_payment_reference(ocr_number, invoice_number)
+
     # ------------------------------------------------------------------
     # Helpers (partner, lines, bank)
     # ------------------------------------------------------------------
 
-    def _resolve_partner_from_ocr(self, data):
-        """Match OCR-extracted vendor data to res.partner. Auto-create if needed."""
+    def _resolve_partner_from_ocr(self, data, own=None, notes=None):
+        """Match OCR-extracted vendor data to res.partner. Auto-create if needed.
+
+        Never returns the receiving company's partner (or a contact under it): on a vendor
+        bill the own company is the buyer, not the seller.
+        """
+        from ..lib import invoice_ocr
+
         Partner = self.env["res.partner"]
+        own = own if own is not None else self._ocr_own_context()
+        notes = notes if notes is not None else []
+        own_keys = invoice_ocr.build_own_ids(own["ids"])
+        own_names = invoice_ocr.build_own_names(own["names"])
 
         # 1. VAT (any country prefix already in OCR, or Swedish org number)
         org_raw = (data.get("org_number") or "").strip()
+        if org_raw and invoice_ocr.is_own_id(org_raw, own_keys):
+            # Lib:en filtrerar redan bort egna nummer; detta är ett extra skydd
+            notes.append(_("Org.nr %s är bolagets eget – användes inte.") % org_raw)
+            org_raw = ""
         # If looks like a VAT number with letter prefix (e.g. LU20260743, SE556...)
         if org_raw and re.match(r"^[A-Z]{2}\d", org_raw):
-            p = Partner.search([("vat", "=", org_raw)], limit=1)
+            p = self._ocr_partner_search([("vat", "=", org_raw)], own, notes,
+                                         _("Momsreg.nr %s") % org_raw)
             if p:
                 return p.id
 
         # 2. Swedish org number — multiple variants
         org_clean = re.sub(r"[^0-9]", "", org_raw)
         if org_clean:
+            how = _("Org.nr %s") % org_raw
             for v in [f"SE{org_clean}01", f"SE{org_clean}", org_clean]:
-                p = Partner.search([("vat", "=", v)], limit=1)
+                p = self._ocr_partner_search([("vat", "=", v)], own, [], how)
                 if p:
                     return p.id
-            p = Partner.search([("vat", "ilike", org_clean)], limit=1)
+            p = self._ocr_partner_search([("vat", "ilike", org_clean)], own, notes, how)
             if p:
                 return p.id
 
@@ -266,11 +525,15 @@ class AccountMove(models.Model):
             if not bg:
                 continue
             bg_clean = re.sub(r"[^0-9]", "", bg)
-            if bg_clean:
-                bank = self.env["res.partner.bank"].search(
-                    [("sanitized_acc_number", "ilike", bg_clean)], limit=1)
-                if bank:
-                    return bank.partner_id.id
+            if not bg_clean or self._ocr_is_own_bank_number(bg_clean, own):
+                continue  # det egna kontot säger inget om leverantören
+            bank = self.env["res.partner.bank"].search(
+                [("sanitized_acc_number", "ilike", bg_clean),
+                 ("partner_id", "not in", own["partner_ids"]),
+                 ("partner_id.commercial_partner_id", "not in", own["partner_ids"])],
+                limit=1)
+            if bank:
+                return bank.partner_id.id
 
         # 4. Vendor name fuzzy
         name = (data.get("vendor_name") or "").strip()
@@ -278,21 +541,35 @@ class AccountMove(models.Model):
             # Strip OCR noise prefixes
             name = re.sub(r"^(services from|invoice from|faktura från|leverant.+? från)\s+",
                           "", name, flags=re.IGNORECASE).strip()
+        if name and invoice_ocr._name_key(name) in own_names:
+            notes.append(_("Leverantörsnamnet \"%s\" är det egna bolaget – "
+                           "användes inte.") % name)
+            name = ""
+        if name:
             # Exact match first
-            p = Partner.search([("name", "=ilike", name), ("is_company", "=", True)],
-                               limit=1)
+            p = self._ocr_partner_search(
+                [("name", "=ilike", name), ("is_company", "=", True)], own, notes,
+                _("Namnet \"%s\"") % name)
             if p:
                 return p.id
             # Substring match — only if exactly one
             tokens = [t for t in re.split(r"\s+", name) if len(t) >= 4]
             for t in tokens:
-                p = Partner.search([("name", "ilike", t), ("is_company", "=", True)],
-                                   limit=2)
+                p = self._ocr_partner_search(
+                    [("name", "ilike", t), ("is_company", "=", True)], own, [], "", limit=2)
                 if len(p) == 1:
                     return p.id
 
         # 5. Auto-create partner if we have a name + org/VAT
-        if name and (org_raw or data.get("plusgiro") or data.get("bankgiro")):
+        # Ett autogiro-underlag trycker KÖPARENS konto, inte leverantörens — lägg
+        # inte upp det som leverantörens bankkonto.
+        banks = []
+        if not data.get("auto_debit"):
+            for field, label in [("plusgiro", "PG"), ("bankgiro", "BG")]:
+                bg = (data.get(field) or "").strip()
+                if bg and not self._ocr_is_own_bank_number(bg, own):
+                    banks.append(f"{label} {bg}")
+        if name and (org_raw or banks):
             vals = {"name": name, "is_company": True, "supplier_rank": 1}
             # VAT
             if org_raw and re.match(r"^[A-Z]{2}\d", org_raw):
@@ -307,13 +584,11 @@ class AccountMove(models.Model):
                     vals["country_id"] = country.id
             new_partner = Partner.create(vals)
             # Add bank if BG/PG present
-            for field, label in [("plusgiro", "PG"), ("bankgiro", "BG")]:
-                bg = (data.get(field) or "").strip()
-                if bg:
-                    self.env["res.partner.bank"].create({
-                        "partner_id": new_partner.id,
-                        "acc_number": f"{label} {bg}",
-                    })
+            for acc in banks:
+                self.env["res.partner.bank"].create({
+                    "partner_id": new_partner.id,
+                    "acc_number": acc,
+                })
             return new_partner.id
 
         return None
@@ -591,9 +866,115 @@ class AccountMove(models.Model):
             message_type="comment",
         )
 
-    def _resolve_partner_bank(self, move, data, partner_id):
+    # ------------------------------------------------------------------
+    # Already booked through the bank statement?
+    # ------------------------------------------------------------------
+
+    def _ocr_find_prebooked_statement_lines(self, move, data, window_days=10):
+        """Bank statement lines that already booked the cost directly, without a payable.
+
+        If a debit was already reconciled against e.g. a bank-charges account and the bill
+        is uploaded afterwards, the cost is booked twice. Candidates are posted statement
+        lines of the same company whose text contains the invoice number/payment
+        reference, or that have the same amount within ±window_days of the due date and
+        a word from the vendor's name in the text. Only lines whose counterpart is NOT a
+        payable/receivable account (and not the suspense account) count.
+        """
+        SL = self.env["account.bank.statement.line"]
+        if move.move_type not in ("in_invoice", "in_receipt"):
+            return SL
+        base = [("company_id", "=", move.company_id.id),
+                ("move_id.state", "=", "posted")]
+
+        refs = []
+        for r in (data.get("invoice_number"), move.ref, move.payment_reference,
+                  data.get("ocr_number")):
+            r = re.sub(r"\s+", "", str(r or ""))
+            # korta referenser ('08635') träffar för mycket
+            if len(r) >= 6 and r not in refs:
+                refs.append(r)
+        candidates = SL
+        if refs:
+            dom = ["|"] * (len(refs) - 1) + [("payment_ref", "ilike", r) for r in refs]
+            candidates |= SL.search(base + dom, limit=20)
+
+        total = move.amount_total
+        ref_date = (move.invoice_date_due or move.invoice_date
+                    or fields.Date.to_date(data.get("due_date") or data.get("invoice_date")))
+        if total and ref_date:
+            if move.currency_id == move.company_id.currency_id:
+                amount_dom = [("amount", ">=", -total - 0.005), ("amount", "<=", -total + 0.005)]
+            else:
+                amount_dom = [("foreign_currency_id", "=", move.currency_id.id),
+                              ("amount_currency", ">=", -total - 0.005),
+                              ("amount_currency", "<=", -total + 0.005)]
+            same_amount = SL.search(base + amount_dom + [
+                ("date", ">=", ref_date - timedelta(days=window_days)),
+                ("date", "<=", ref_date + timedelta(days=window_days)),
+            ], limit=20)
+            tokens = self._ocr_name_tokens(move.partner_id.name, data.get("vendor_name"))
+            for st in same_amount:
+                text = re.sub(r"\s+", "", " ".join(
+                    filter(None, [st.payment_ref, st.partner_name, st.partner_id.name]))).lower()
+                if any(t in text for t in tokens):
+                    candidates |= st
+
+        prebooked = SL
+        for st in candidates:
+            liquidity, suspense, other = st._seek_for_lines()
+            if suspense or not other:
+                continue  # inte avstämd än — inget är bokfört
+            direct = other.filtered(lambda line: line.account_id.account_type
+                                    not in ("liability_payable", "asset_receivable"))
+            # Avstämd mot reskontran plus en liten avgifts-/kursdifferensrad är en
+            # vanlig betalning, inte en direktbokad kostnad: kräv att merparten av
+            # bankradens belopp gått direkt mot andra konton.
+            bank_amount = abs(sum(liquidity.mapped("balance")))
+            if direct and sum(abs(b) for b in direct.mapped("balance")) * 2 >= bank_amount:
+                prebooked |= st
+        return prebooked
+
+    @staticmethod
+    def _ocr_name_tokens(*names):
+        tokens = set()
+        for n in names:
+            for t in re.split(r"[\s,.()/&-]+", str(n or "").lower()):
+                if len(t) >= 3 and t not in _NAME_STOPWORDS and not t.isdigit():
+                    tokens.add(t)
+        return tokens
+
+    def _ocr_post_prebooked_warning(self, move, statement_lines):
+        rows = []
+        for st in statement_lines:
+            _liquidity, _suspense, other = st._seek_for_lines()
+            accounts = ", ".join(sorted({
+                line.account_id.display_name for line in other
+                if line.account_id.account_type not in ("liability_payable", "asset_receivable")}))
+            rows.append(Markup("<li>%s – %s, %s %s (%s) – motkonto: <b>%s</b></li>") % (
+                st.move_id.name, st.date, st.payment_ref or "",
+                st.amount, st.journal_id.name, accounts))
+        logger.warning("OCR: move %s may already be booked through statement line(s) %s",
+                       move.id, statement_lines.ids)
+        move.message_post(
+            body=Markup(
+                "<p><b>⚠ Kostnaden kan redan vara bokförd via banken</b></p>"
+                "<p>Följande bankrad(er) är redan avstämda direkt mot ett kostnads- "
+                "eller annat konto, inte mot leverantörsskulden:</p><ul>%s</ul>"
+                "<p>Bokförs fakturan ovanpå blir kostnaden dubbel. Gör om avstämningen "
+                "av bankraden så att den matchar den här fakturan, eller släng "
+                "utkastet om underlaget redan är bokfört.</p>"
+            ) % Markup("").join(rows),
+            message_type="comment",
+        )
+
+    def _resolve_partner_bank(self, move, data, partner_id, skip_fields=(), own=None):
         """Pick a recipient bank account on the partner that matches OCR plusgiro/bankgiro."""
+        own = own if own is not None else self._ocr_own_context(move.company_id)
+        if move.move_type in ("in_invoice", "in_receipt") and partner_id in own["partner_ids"]:
+            return  # betala aldrig till det egna bolaget
         for field in ("plusgiro", "bankgiro"):
+            if field in skip_fields:
+                continue
             bg = (data.get(field) or "").strip()
             if not bg:
                 continue

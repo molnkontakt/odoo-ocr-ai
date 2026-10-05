@@ -20,7 +20,43 @@ OCR + LLM pre-fill of vendor bills in Odoo 19 Community.
    BAS account and VAT rate. EU suppliers get reverse-charge taxes and the
    account is remapped from the 4000 range to 4515/4535/4545. Marketplace
    invoices use the VAT-declaring entity as vendor.
-6. Posts a chatter note with everything it read and any regex/AI conflicts.
+6. Posts a chatter note with everything it read, any regex/AI conflicts and the
+   checks below.
+
+### Guards
+
+The buyer's own details are printed on every vendor bill, and the first org
+number after a label is often the buyer's. The receiving company (the bill's
+company and its branches, read from `res.company` at run time) is therefore
+never used as the supplier:
+
+- Its org/VAT numbers are skipped when the supplier's org number is extracted;
+  if the regex only finds own numbers, the LLM's value is used instead.
+- The vendor is never the own company, a contact under it, or another partner
+  (archived ones too) carrying its org/VAT number. A pre-set own company is
+  replaced by the vendor from the document.
+- The recipient bank account is never one of the own company's accounts,
+  including the own clearing+account number truncated to bankgiro length. A
+  "bankgiro" that is not 7–8 digits is dropped.
+- **Auto debit**: when the document says the amount is debited automatically
+  (autogiro, direct debit, "Dras automatiskt" …) the bill gets **Dras
+  automatiskt** (`ocr_auto_debit`), the recipient account is left empty so the
+  bill stays out of payment files, and a warning is posted. Matching is per
+  sentence, so marketing, conditions ("if you pay by direct debit …") and
+  lists of payment methods do not trigger it. A field `l10n_se_auto_debit` on
+  `account.move`, if another module provides one, is set as well. A flag set by
+  hand is left alone on a re-run.
+- **Already booked through the bank**: if a posted bank statement line with the
+  invoice number/payment reference, or the same amount near the due date and
+  the vendor's name, is already reconciled directly against an expense (not
+  the payable), a warning about double booking is posted.
+- The payment reference is only stored when it is a valid OCR number
+  (modulus 10). A reference that starts with a valid invoice number is cut back
+  to the invoice number; references with letters (RF) are kept as they are.
+
+For standalone use of `lib/invoice_ocr.py` set `INVOICE_OCR_OWN_COMPANY` and
+`INVOICE_OCR_OWN_VAT` (comma-separated) or pass `own_ids`/`own_names` to
+`extract_invoice_data`.
 
 Long invoices (20+ lines) are aggregated by the model into at most six summary
 lines to stay within token limits. **Run OCR again** is available as a header
