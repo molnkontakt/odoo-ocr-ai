@@ -1766,6 +1766,14 @@ def document_vat(data):
     return None
 
 
+def vat_was_charged(vat_total, net=None):
+    """True when the document's VAT (document_vat) is real VAT, not öre rounding: at least
+    1.00, or at least 1 % of the net."""
+    if vat_total is None or vat_total <= 0.005:
+        return False
+    return vat_total >= 1.0 or bool(net) and vat_total >= 0.01 * abs(net)
+
+
 def spread_amount(amounts, total):
     """`total` split over `amounts` in proportion, in cents; the remainder goes to the
     largest amount, so the shares add up to `total` exactly."""

@@ -385,20 +385,32 @@ class AccountMove(models.Model):
 
         # Currency (#5): the bill is in the document's currency, before any line is created.
         # One that cannot be used (unknown, inactive, no rate) gets a warning and no lines:
-        # amounts in EUR booked as SEK would be wrong by the exchange rate.
+        # amounts in EUR booked as SEK would be wrong by the exchange rate. Lines already on
+        # the bill (a re-run) are not touched, nor is its currency: that is only noted.
+        has_lines = bool(move.invoice_line_ids)
         currency, currency_problem = self._ocr_currency(
             data.get("currency"), company,
             vals.get("invoice_date") or move.invoice_date or fields.Date.context_today(self))
         if currency and currency != move.currency_id:
-            vals["currency_id"] = currency.id
+            if has_lines:
+                notes.append(_("The document is in %(document)s, the bill in %(bill)s: it already "
+                               "has lines, so its currency was not changed.",
+                               document=currency.name, bill=move.currency_id.name))
+            else:
+                vals["currency_id"] = currency.id
+        elif currency_problem and has_lines:
+            notes.append(_("The document is in %(currency)s, but %(problem)s.",
+                           currency=data.get("currency"), problem=currency_problem))
 
         if vals:
             move.write(vals)
 
         # Create lines from AI lines if move has none
-        if currency_problem:
+        if has_lines:
+            pass
+        elif currency_problem:
             self._ocr_post_currency_warning(move, data, currency_problem)
-        elif not move.invoice_line_ids:
+        else:
             self._create_lines_from_ocr(move, data, notes)
 
         # Extraherat bankgiro/plusgiro/konto som är bolagets eget
@@ -976,7 +988,7 @@ class AccountMove(models.Model):
         partner = move.partner_id.commercial_partner_id
         region = lib.vat_region(self._ocr_partner_country_code(partner))
         vat_total = lib.document_vat(data)
-        vat_charged = bool(vat_total and vat_total > 0.005)
+        vat_charged = lib.vat_was_charged(vat_total, sum(line.get("amount") or 0.0 for line in lines))
         se_number = self._ocr_swedish_vat_number(partner, data) if region != "domestic" else None
         treatment = lib.bill_vat_treatment(region, vat_charged, bool(se_number))
         for line in lines:

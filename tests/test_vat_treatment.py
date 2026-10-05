@@ -217,3 +217,13 @@ def test_name_tokens_and_giro_digits():
     assert inv.name_tokens("X & Y Oy") == []
     assert inv.giro_digits("BG 123-4566") == "1234566"
     assert inv.giro_digits(None) == ""
+
+
+def test_vat_was_charged_ignores_rounding():
+    assert inv.vat_was_charged(7.0, 100.0)
+    assert inv.vat_was_charged(0.7, 10.0)        # 7 % of a small receipt
+    assert inv.vat_was_charged(4.0, 1000.0)      # VAT on part of the bill
+    assert not inv.vat_was_charged(0.4, 1000.0)  # total - net off by öre rounding
+    assert not inv.vat_was_charged(0.0, 100.0)
+    assert not inv.vat_was_charged(None, 100.0)
+    assert not inv.vat_was_charged(-5.0, 100.0)

@@ -227,3 +227,19 @@ class TestOcrVat(OcrBillCase):
         move = self._bill(self.se_vendor, [self.LINE])
         self.env["account.move"]._check_ocr_totals(move, {"currency": "EUR"})
         self.assertIn("the bill is in SEK, the document in EUR", self._bodies(move))
+
+    def test_bill_with_lines_keeps_its_currency(self):
+        self._currency("EUR", rate_date="2026-01-01")
+        move = self._bill(self.se_vendor, [self.LINE])
+        self.assertEqual(move.currency_id, self.company.currency_id)
+        self._run_ocr(move, text=TEXT, ai={"vendor_name": "x", "invoice_number": "4711",
+                                           "currency": "EUR", "lines": [self.LINE]})
+        self.assertEqual(move.currency_id, self.company.currency_id)
+        self.assertEqual(len(move.invoice_line_ids), 1)
+        self.assertIn("the bill in SEK: it already has lines", self._bodies(move))
+
+    def test_rounding_difference_is_not_foreign_vat(self):
+        move = self._bill(self.us_vendor, [
+            {"description": "Cloud", "amount": 1000.0, "vat_rate": 0, "account_code": "6540"},
+        ], subtotal=1000.0, total_amount=1000.4)
+        self._assert_tax(move.invoice_line_ids, "purchase_services_tax_25_NEC")
