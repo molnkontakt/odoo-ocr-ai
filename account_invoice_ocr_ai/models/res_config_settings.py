@@ -60,6 +60,16 @@ class ResConfigSettings(models.TransientModel):
              "(limit_time_real_cron, else limit_time_real: 90 s with Odoo's defaults). Keep "
              "it well under that limit: Odoo stops a worker that exceeds it.",
     )
+    invoice_ocr_text_limit = fields.Integer(
+        string="Text sent to the AI (characters)",
+        config_parameter="invoice_ocr.text_limit",
+        default=6000,
+        help="At most this much of a document's text is sent to the AI provider; a longer "
+             "text is sent as its beginning and its end (totals and payment details are "
+             "usually at the end), and the chatter says so. More text costs more tokens and "
+             "time, and must fit in the model's context. 0: the default (6000, or "
+             "INVOICE_OCR_TEXT_LIMIT).",
+    )
     # staik
     invoice_ocr_staik_api_key = fields.Char(string="staik API key", config_parameter="invoice_ocr.staik_api_key")
     invoice_ocr_staik_model = fields.Char(
@@ -86,6 +96,15 @@ class ResConfigSettings(models.TransientModel):
     # Ollama
     invoice_ocr_ollama_url = fields.Char(string="Ollama URL", config_parameter="invoice_ocr.ollama_url", default="http://localhost:11434")
     invoice_ocr_ollama_model = fields.Char(string="Ollama model", config_parameter="invoice_ocr.ollama_model", default="qwen2.5:7b")
+    invoice_ocr_ollama_num_ctx = fields.Integer(
+        string="Ollama context size (tokens)",
+        config_parameter="invoice_ocr.ollama_num_ctx",
+        default=16384,
+        help="The context window Ollama runs the model with (num_ctx), sent with every "
+             "request. Ollama's own default is small (4096 tokens on most hosts) and then cuts "
+             "the beginning of a long prompt — the instructions — without an error. A larger "
+             "value needs more RAM or VRAM. 0: the default (16384, or OLLAMA_NUM_CTX).",
+    )
 
     def set_values(self):
         """Store the on/off switch explicitly as "True"/"False".
@@ -120,25 +139,47 @@ class ResConfigSettings(models.TransientModel):
         return invoice_ocr.config_from_settings(get)
 
     def action_invoice_ocr_verify_provider(self):
-        """Round-trip with the values on the form (saved or not) and report which model answered."""
+        """Round-trip with the values on the form (saved or not): which model answered, how
+        many completion tokens it used and how fast (#23)."""
         self.ensure_one()
         from ..lib import invoice_ocr
 
         res = invoice_ocr.verify_provider(self._invoice_ocr_form_config())
-        if res.get("ok"):
-            served = res.get("model_served") or "?"
-            requested = res.get("model_requested") or "?"
-            # staik reports the base model name even for its "-thinking" variant, so a prefix
-            # relation counts as a match; anything else is a silent substitution worth a warning.
-            mismatch = served != "?" and not (served == requested or requested.startswith(served) or served.startswith(requested))
-            message = _("%(provider)s answered in %(s)s s with model %(served)s%(note)s",
-                        provider=res["provider"], s=res["latency_s"], served=served,
-                        note=_(" — NOTE: you asked for %s; the provider substituted another model", requested) if mismatch else "")
-            kind = "warning" if mismatch else "success"
-        else:
-            message = _("%(provider)s failed: %(err)s", provider=res.get("provider"), err=res.get("error") or _("no valid answer"))
-            kind = "danger"
         return {
             "type": "ir.actions.client", "tag": "display_notification",
-            "params": {"title": _("Invoice OCR provider"), "message": message, "type": kind, "sticky": True},
+            "params": {"title": _("Invoice OCR provider"), "sticky": True,
+                       **self._invoice_ocr_verify_message(res)},
         }
+
+    def _invoice_ocr_verify_message(self, res):
+        """The notification's message and type for a verify_provider result."""
+        from ..lib import invoice_ocr
+
+        provider = res.get("provider")
+        tokens = res.get("completion_tokens")
+        tokens = tokens if tokens is not None else "?"
+        if not res.get("ok"):
+            if res.get("finish_reason") == "length":
+                return {"type": "warning", "message": _(
+                    "%(provider)s is reachable, but its answer was cut off at the token limit "
+                    "(%(tokens)s completion tokens) before it was complete. A reasoning model "
+                    "may need a higher limit (invoice_ocr.max_tokens).",
+                    provider=provider, tokens=tokens)}
+            return {"type": "danger", "message": _(
+                "%(provider)s failed: %(error)s", provider=provider,
+                error=res.get("error") or _("no valid answer"))}
+        served = res.get("model_served") or "?"
+        requested = res.get("model_requested") or "?"
+        message = _("%(provider)s answered in %(seconds)s s with model %(served)s "
+                    "(%(tokens)s completion tokens).", provider=provider,
+                    seconds=res.get("latency_s"), served=served, tokens=tokens)
+        if res.get("model_matches", True):
+            return {"type": "success", "message": message}
+        if (invoice_ocr.reasoning_base_name(requested) or "").lower() == served.lower():
+            note = _("You asked for the reasoning model %(requested)s, but the answer shows no "
+                     "reasoning: the provider probably did not recognise the name and "
+                     "answered with its default model.", requested=requested)
+        else:
+            note = _("You asked for %(requested)s; the provider answered with another model.",
+                     requested=requested)
+        return {"type": "warning", "message": f"{message} {note}"}

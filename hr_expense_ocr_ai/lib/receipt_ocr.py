@@ -16,6 +16,7 @@ fakturabibliotekets miljövariabel-defaults. Modul-globalerna ändras aldrig.
 import contextlib
 import io
 import logging
+import os
 import re
 from datetime import date
 
@@ -295,23 +296,85 @@ def build_prompt(categories):
     return PROMPT.replace("{categories}", "\n".join(rows) or "  (no categories available)")
 
 
+# Characters of receipt text sent to the model (at most the invoice text limit): a till
+# receipt is short, a longer text is mostly noise.
+RECEIPT_TEXT_LIMIT = 4000
+# A reasoning model that answers a receipt in fewer completion tokens than this skipped its
+# reasoning: the JSON answer alone is about a hundred tokens, and even the settings' ping
+# took the default reasoning model 173-256 (#36.9). Lower than the invoice threshold
+# (STAIK_MIN_COMPLETION_TOKENS), which was measured on invoices.
+RECEIPT_MIN_COMPLETION_TOKENS = int(os.environ.get("RECEIPT_MIN_COMPLETION_TOKENS", "300"))
+
+
 def _chat_json(prompt, text, config=None):
     """Structured call through the invoice library: same provider, keys, retries and fallbacks.
 
-    `config` is the per-run config (provider, keys, URLs, the per-call timeout and the
-    receipt's DocumentRun); None = the library's env defaults. The call is cut to the time
-    the receipt has left (#29: no more fixed 180 s, above Odoo's 120 s worker limit).
+    `config` is the per-run config (provider, keys, URLs, the per-call timeout, the answer's
+    token limit max_tokens and the receipt's DocumentRun); None = the library's env
+    defaults. The call is cut to the time the receipt has left (#29: no more fixed 180 s,
+    above Odoo's 120 s worker limit). The answer keeps the call's diagnostics as "_" keys
+    (invoice_ocr.ai_diagnostics: requested and served model, completion tokens, finish
+    reason, notes) for the reasoning check (#36.9).
     """
-    data, meta = inv.chat_json(prompt, text, RECEIPT_SCHEMA, "receipt", max_tokens=4000, max_chars=4000,
-                               config=config)
-    if isinstance(data, dict):
-        data["_served_model"] = meta.get("served_model")
-        data["_completion_tokens"] = meta.get("completion_tokens")
-    return data or {}
+    cfg = inv._cfg(config)
+    data, meta = inv.chat_json(prompt, text, RECEIPT_SCHEMA, "receipt", max_tokens=cfg["max_tokens"],
+                               max_chars=min(RECEIPT_TEXT_LIMIT, cfg["text_limit"]), config=cfg)
+    data = dict(data) if isinstance(data, dict) else {}
+    data.update(inv.ai_diagnostics(meta))
+    return data
+
+
+def _diagnostics(data):
+    """The "_" keys of an answer (see _chat_json), apart from _bad_date."""
+    return {k: v for k, v in (data or {}).items() if k.startswith("_") and k != "_bad_date"}
+
+
+def _answer_problem(ai, min_tokens):
+    """Why a cleaned answer cannot be trusted as it is: "cut" (the answer reached its token
+    limit), "reasoning" (a reasoning model skipped its reasoning), else None."""
+    if str(ai.get("_finish_reason") or "").lower() == "length":
+        return "cut"
+    if inv.reasoning_skipped(ai, min_tokens):
+        return "reasoning"
+    return None
+
+
+def _read_with_ai(prompt, text, categories, cfg):
+    """The model's cleaned answer, read once more when it cannot be trusted (#36.9).
+
+    Like the invoice path: an answer cut off at its token limit, or one from a reasoning
+    model that skipped its reasoning (fewer completion tokens than
+    receipt_min_completion_tokens), is read again once — when the first call took less than
+    retry_skip_seconds and the receipt's deadline leaves room for another — and the second
+    answer is used when it is sound. Returns (answer, notes about it).
+    """
+    run = inv.document_run(cfg)
+    min_tokens = cfg.get("receipt_min_completion_tokens") or RECEIPT_MIN_COMPLETION_TOKENS
+    t0 = inv._clock()
+    ai = _clean(_chat_json(prompt, text, cfg), categories)
+    problem = _answer_problem(ai, min_tokens)
+    elapsed = inv._clock() - t0
+    if problem and elapsed < cfg["retry_skip_seconds"] \
+            and run.remaining() >= elapsed + inv.MIN_CALL_SECONDS:
+        logger.warning("receipt AI answer cannot be trusted (%s) — reading it once more", problem)
+        try:
+            retry = _clean(_chat_json(prompt, text, cfg), categories)
+        except Exception as e:  # noqa: BLE001 — the first answer is kept
+            logger.warning("receipt AI re-run failed: %s — keeping the first answer", e)
+        else:
+            if not _answer_problem(retry, min_tokens):
+                return retry, list(retry.get("_ai_notes") or [])
+    notes = list(ai.get("_ai_notes") or [])
+    if problem == "reasoning":
+        notes.append(f"the AI model answered with only {inv._num(ai.get('_completion_tokens')):.0f} "
+                     f"completion tokens: it skipped its reasoning, so check what it filled in")
+    return ai, notes
 
 
 def _clean(data, categories):
-    out = {}
+    """The model's receipt fields, checked and typed; the call's diagnostics ("_" keys) are
+    kept (#36.9)."""
+    out = _diagnostics(data)
     for k in ("merchant", "receipt_number", "items", "card_last4", "currency", "category_code"):
         v = data.get(k)
         if isinstance(v, str) and v.strip() and v.strip().lower() not in ("null", "none", "unknown"):
@@ -420,8 +483,9 @@ def _apply_guards(fields, text, regex=None):
 
 
 def extract_receipt_data(raw, mimetype=None, filename=None, categories=None, config=None):
-    """Huvudingång. Returnerar {"text": ..., "fields": {...}, "source": "ai"|"regex"|"none",
-    "notes": [...]}, plus "ai_error" (why the AI call failed) when it did.
+    """Main entry point. Returns {"text": ..., "fields": {...}, "source": "ai"|"regex"|"none",
+    "notes": [...], "ai": {the answer's diagnostics}}, plus "ai_error" (why the AI call
+    failed) when it did.
 
     config: per-run config för fakturabiblioteket (se invoice_ocr.default_config); None =
     miljövariabel-defaults. Reading the text and the AI call share one deadline, the
@@ -430,32 +494,41 @@ def extract_receipt_data(raw, mimetype=None, filename=None, categories=None, con
     cfg = inv._cfg(config)
     run = inv.document_run(cfg)
     text = read_text(raw, mimetype, filename, cfg)
-    result = {"text": text, "fields": {}, "source": "none", "notes": list(run.notes)}
+    result = {"text": text, "fields": {}, "source": "none", "notes": []}
     if len(text.strip()) < 15:
+        result["notes"] = list(run.notes)
         return result
     regex = _regex_fields(text)
     skipped = regex.pop("_skipped_currency", None)
+    ai_notes = []
     try:
-        ai = _clean(_chat_json(build_prompt(categories), text, cfg), categories)
-    except Exception as e:  # noqa: BLE001 — AI:n får aldrig fälla mailhämtningen
+        ai, ai_notes = _read_with_ai(build_prompt(categories), text, categories, cfg)
+    except Exception as e:  # noqa: BLE001 — the AI must never break the mail fetch
         logger.warning("receipt AI extraction failed (%s): %s", cfg["provider"], e)
         ai = {}
-        result["ai_error"] = f"{type(e).__name__}: {e}"[:300]
+        result["ai_error"] = inv.error_message(e)
     bad_date = ai.pop("_bad_date", None)
+    result["ai"] = _diagnostics(ai)
+    ai = {k: v for k, v in ai.items() if not k.startswith("_")}
+    notes = []
     if ai or bad_date:
-        # AI ser hela sammanhanget; regex fyller bara luckor
+        # The model sees the whole context; the regex only fills gaps
         fields = dict(regex)
         fields.update(ai)
         fields, notes = _apply_guards(fields, text, regex)
         if bad_date:
             notes.insert(0, f"the model's date {bad_date!r} is not a valid date — ignored")
-        result.update(fields=fields, source="ai", notes=[*result["notes"], *notes])
+        result.update(fields=fields, source="ai")
     elif regex:
-        failed = "AI-tolkningen misslyckades; bara regex"
         if result.get("ai_error"):
-            failed += f" ({result['ai_error']})"
-        result.update(fields=regex, source="regex", notes=[*result["notes"], failed])
+            notes.append(f"the AI step failed ({result['ai_error']}); only the values read by the "
+                         f"regex were used")
+        else:
+            notes.append("the AI gave no usable answer; only the values read by the regex were used")
+        result.update(fields=regex, source="regex")
     if skipped and "total" not in result["fields"]:
-        result["notes"].append(f"the total is in {skipped} – a foreign amount is not read "
-                               "without the AI, the amount stays empty")
+        notes.append(f"the total is in {skipped} – a foreign amount is not read "
+                     "without the AI, the amount stays empty")
+    # The reading's notes (a budget that cut it), then the answer's, then the guards'
+    result["notes"] = list(dict.fromkeys([*run.notes, *ai_notes, *notes]))
     return result

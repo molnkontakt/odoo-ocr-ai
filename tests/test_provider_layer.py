@@ -5,9 +5,10 @@ import pytest
 
 
 class FakeResponse:
-    def __init__(self, status, payload):
+    def __init__(self, status, payload, headers=None):
         self.status_code = status
         self._payload = payload
+        self.headers = headers or {}
 
     def json(self):
         return self._payload
@@ -123,10 +124,13 @@ def test_verify_provider_reports_served_model_and_failure(calls, monkeypatch):
 
 def test_reasoning_token_check_only_for_thinking_models():
     plain = {"total_amount": 100.0, "subtotal": 80.0, "vat_amount": 20.0, "lines": [{"amount": 80.0}],
-             "_completion_tokens": 300, "_served_model": "gpt-4o-mini"}
-    assert not [p for p in inv._ai_answer_problems(plain) if "completion-tokens" in p]
-    thinking = dict(plain, _served_model="qwen3.6:35b-a3b-thinking")
-    assert [p for p in inv._ai_answer_problems(thinking) if "completion-tokens" in p]
+             "_completion_tokens": 300, "_model": "gpt-4o-mini", "_served_model": "gpt-4o-mini"}
+    assert not [p for p in inv._ai_answer_problems(plain) if "completion tokens" in p]
+    # staik reports its reasoning variant under the base name: the requested name decides (#23)
+    thinking = dict(plain, _model="qwen3.6:35b-a3b-thinking", _served_model="qwen3.6:35b-a3b")
+    assert [p for p in inv._ai_answer_problems(thinking) if "completion tokens" in p]
+    assert not [p for p in inv._ai_answer_problems(dict(thinking, _completion_tokens=3400))
+                if "completion tokens" in p]
 
 
 # ── Per-run config: the provider layer never reads or writes run-time globals ─

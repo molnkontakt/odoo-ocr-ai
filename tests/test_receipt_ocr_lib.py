@@ -218,3 +218,88 @@ def test_regex_only_foreign_total_is_noted(monkeypatch):
     assert out["source"] == "regex"
     assert "total" not in out["fields"]
     assert any("the total is in EUR" in n for n in out["notes"])
+
+
+# ── AI diagnostics, the token limit and the reasoning check (#36.9) ──────────
+
+import invoice_ocr as inv  # noqa: E402
+
+ANSWER = {"merchant": "Kvitto", "date": "2026-09-17", "total": 418.0, "items": "Bensin",
+          "category_code": None, "confidence": 0.9}
+
+
+def _fake_chat(monkeypatch, answers, seen=None):
+    """inv.chat_json answers `answers` in order: (data, meta) pairs."""
+    answers = list(answers)
+
+    def chat_json(prompt, text, schema, name, max_tokens=None, max_chars=None, timeout=None,
+                  config=None):
+        if seen is not None:
+            seen.append({"max_tokens": max_tokens, "max_chars": max_chars})
+        return answers.pop(0)
+
+    monkeypatch.setattr(inv, "chat_json", chat_json)
+    monkeypatch.setattr(r, "read_text", lambda *a, **k: TEXT)
+
+
+def _meta(tokens=2000, model="m", served=None, finish="stop", notes=()):
+    return {"model": model, "served_model": served or model, "completion_tokens": tokens,
+            "finish_reason": finish, "notes": list(notes)}
+
+
+def test_diagnostics_are_kept_and_reported(monkeypatch):
+    seen = []
+    _fake_chat(monkeypatch, [(dict(ANSWER), _meta(tokens=812, model="x-thinking", served="x"))],
+               seen)
+    out = r.extract_receipt_data(b"x", "image/jpeg", "r.jpg",
+                                 config={"max_tokens": 12000, "text_limit": 3000})
+    assert out["ai"]["_model"] == "x-thinking" and out["ai"]["_served_model"] == "x"
+    assert out["ai"]["_completion_tokens"] == 812 and out["ai"]["_finish_reason"] == "stop"
+    assert not any(k.startswith("_") for k in out["fields"]), "no diagnostics among the fields"
+    assert out["fields"]["total"] == 418.0
+    # the token limit is the config's (no fixed 4000), the text at most 4000 characters
+    assert seen == [{"max_tokens": 12000, "max_chars": 3000}]
+    _fake_chat(monkeypatch, [(dict(ANSWER), _meta())], seen)
+    r.extract_receipt_data(b"x", "image/jpeg", "r.jpg")
+    assert seen[-1] == {"max_tokens": inv.AI_MAX_TOKENS, "max_chars": r.RECEIPT_TEXT_LIMIT}
+
+
+def test_skipped_reasoning_is_read_once_more(monkeypatch):
+    skipped = (dict(ANSWER, total=339.0), _meta(tokens=120, model="x-thinking", served="x"))
+    sound = (dict(ANSWER), _meta(tokens=900, model="x-thinking", served="x"))
+    _fake_chat(monkeypatch, [skipped, sound])
+    out = r.extract_receipt_data(b"x", "image/jpeg", "r.jpg")
+    assert out["fields"]["total"] == 418.0 and out["ai"]["_completion_tokens"] == 900
+    assert not any("skipped its reasoning" in n for n in out["notes"])
+    # both skipped: the first answer, with a note
+    _fake_chat(monkeypatch, [skipped, skipped])
+    out = r.extract_receipt_data(b"x", "image/jpeg", "r.jpg")
+    assert any("only 120 completion tokens" in n for n in out["notes"])
+    # a plain model answering briefly is fine: one call, no note
+    _fake_chat(monkeypatch, [(dict(ANSWER), _meta(tokens=120, model="gpt-4o-mini"))])
+    out = r.extract_receipt_data(b"x", "image/jpeg", "r.jpg")
+    assert not any("reasoning" in n for n in out["notes"])
+
+
+def test_a_cut_answer_is_read_once_more_and_noted(monkeypatch):
+    cut = ({}, _meta(finish="length", notes=["the AI's answer was cut off at its token limit"]))
+    _fake_chat(monkeypatch, [cut, cut])
+    out = r.extract_receipt_data(b"x", "image/jpeg", "r.jpg")
+    assert out["source"] == "regex" and out["fields"]["total"] == 418.0
+    assert any("cut off at its token limit" in n for n in out["notes"])
+    assert any("no usable answer" in n for n in out["notes"])
+    _fake_chat(monkeypatch, [cut, (dict(ANSWER), _meta())])
+    out = r.extract_receipt_data(b"x", "image/jpeg", "r.jpg")
+    assert out["source"] == "ai" and not any("cut off" in n for n in out["notes"])
+
+
+def test_no_re_read_when_the_first_call_was_slow(monkeypatch):
+    # the receipt's deadline starts at 0, the call starts at 0 and ends at 70 s
+    clock = iter([0.0, 0.0, 70.0])
+    monkeypatch.setattr(inv, "_clock", lambda: next(clock, 70.0))
+    seen = []
+    skipped = (dict(ANSWER), _meta(tokens=120, model="x-thinking"))
+    _fake_chat(monkeypatch, [skipped, skipped], seen)
+    out = r.extract_receipt_data(b"x", "image/jpeg", "r.jpg", config={"total_deadline": 200})
+    assert len(seen) == 1, "70 s is more than retry_skip_seconds (60 s): no second call"
+    assert any("only 120 completion tokens" in n for n in out["notes"])

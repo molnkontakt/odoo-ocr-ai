@@ -74,6 +74,10 @@ Photos are EXIF-rotated, converted to greyscale, upscaled to 2000 px and OCR'd
 with `--psm 4`. A 250 kB phone photo takes about 5 s of tesseract and 30 s of
 LLM time. A photo above 12 megapixels is scaled down to that, one larger than
 20 MB is not read, and tesseract and the whole receipt have time limits (the
-invoice module's *Time limits*); a limit that cut the reading is noted. Provider handling (retries, JSON-schema fallback, Ollama) is shared with the
-invoice module; if the LLM fails altogether, a regex fallback still fills
-amount and date.
+invoice module's *Time limits*); a limit that cut the reading is noted. Provider handling (retries, JSON-schema fallback, parameter adaptation, Ollama)
+and the answer's token limit (`invoice_ocr.max_tokens`) are shared with the
+invoice module. An answer cut off at its token limit, or one from a reasoning
+model that skipped its reasoning (fewer than 300 completion tokens,
+`RECEIPT_MIN_COMPLETION_TOKENS`), is read once more when there is time, and noted
+when it stays so. If the LLM fails altogether, a regex fallback still fills amount and
+date.

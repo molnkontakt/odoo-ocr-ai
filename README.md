@@ -27,9 +27,12 @@ residency, default), Venice.ai, OpenAI, **any OpenAI-compatible endpoint**
 compatibility layer, a local vLLM or LM Studio: base URL + key + model) or a
 local **Ollama**. A *Verify provider* button shows which model actually answers.
 The text of the document, never the file, is sent to the provider — at most 6000
-characters of it, the beginning and the end of a longer one (`INVOICE_OCR_TEXT_LIMIT`); see the
-[module README](account_invoice_ocr_ai/) for the full environment-variable
-list. Keys live in Odoo system parameters. A reasoning-capable model is
+characters of it, the beginning and the end of a longer one (*Text sent to the AI*);
+see the [module README](account_invoice_ocr_ai/) for the full environment-variable
+list. A provider's error is shown with what the provider said, a parameter an
+endpoint does not accept (e.g. `max_tokens` on OpenAI's reasoning models) is
+adapted, a `429` waits as long as `Retry-After` asks within the time limit, and
+Ollama gets an explicit context size. Keys live in Odoo system parameters. A reasoning-capable model is
 strongly recommended; the defaults were tuned with `qwen3.6:35b-a3b-thinking`.
 
 ### When OCR runs, and how long it may take

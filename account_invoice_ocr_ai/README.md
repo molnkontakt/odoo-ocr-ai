@@ -201,8 +201,11 @@ form button reports how many bills were filled, failed or skipped, and why.
 | `invoice_ocr.openai_api_key`, `invoice_ocr.openai_model` | OpenAI (default `gpt-4o-mini`) |
 | `invoice_ocr.base_url`, `invoice_ocr.api_key`, `invoice_ocr.model` | any other endpoint speaking OpenAI's `/chat/completions`: Mistral, Groq, OpenRouter, Together, DeepSeek, Azure OpenAI, Anthropic's compatibility layer, vLLM, LM Studio … Base URL up to the API version |
 | `invoice_ocr.ollama_url`, `invoice_ocr.ollama_model` | local Ollama (native API, JSON-schema `format`) |
+| `invoice_ocr.ollama_num_ctx` | *Ollama context size*: the context window Ollama runs the model with (`num_ctx`, default 16384 tokens), see below |
 | `invoice_ocr.account_list` | *Accounts for invoice lines*: the account codes the model may choose, one per line as `code: hint`; empty = the built-in list (see below) |
-| `invoice_ocr.call_timeout`, `invoice_ocr.total_deadline`, `invoice_ocr.cron_time_budget` | *Time limits*, see *When OCR runs* |
+| `invoice_ocr.call_timeout`, `invoice_ocr.total_deadline`, `invoice_ocr.cron_time_budget` | *Limits*: time, see *When OCR runs* |
+| `invoice_ocr.text_limit` | *Limits*: *Text sent to the AI*, characters (default 6000), see *LLM context limit* |
+| `invoice_ocr.max_tokens` | System parameter: the answer's token limit for every provider (default 8000; `max_tokens`, `max_completion_tokens`, Ollama's `num_predict`). Reasoning models count their reasoning in it |
 
 ### Accounts for invoice lines
 
@@ -217,18 +220,52 @@ default account, else the company's default expense account. For a reverse-charg
 purchase the BAS foreign-purchase account is used when the chart has it (see
 *VAT treatment*).
 
-**Verify provider** on the settings page does a one-token round-trip with the
-values on the form — saved or not — and shows which model actually answered
-and how fast. That is the only way to see staik's silent fallback to its
-default model. The values are passed to that one call only; nothing is changed
-for real extractions until you save.
+**Verify provider** on the settings page sends one short request with the values
+on the form — saved or not — asking for `{"ok": true}` (a handful of tokens on a
+plain model, a few hundred on a reasoning model, at most 1000), and shows which
+model actually answered, how many completion tokens it used and how fast. The
+requested and the answering model must have the same name; two exceptions only:
+a dated snapshot (`gpt-4o-mini` answered as `gpt-4o-mini-2024-07-18`), and a
+reasoning variant that the provider reports under its base name (staik answers
+`qwen3.6:35b-a3b` for `qwen3.6:35b-a3b-thinking`) — the latter only when the
+answer shows reasoning, because the same provider serves an unknown model name
+(a typo) with its default model, without reasoning and under that same base name.
+Anything else is shown as a warning. The values are passed to that one call
+only; nothing is changed for real extractions until you save.
 
-All providers get the same treatment: JSON-schema structured output where the
-endpoint supports it (a `400` on `response_format` falls back to a plain
-completion), one retry after 15 s on `429`, and the reasoning-token sanity
-check only for models whose name says `thinking`/`reasoning` — all within the
-time limit per document. A provider that fails or times out is noted on the bill
-and, in the background job, tried again later.
+All providers get the same treatment, within the time limit per document:
+
+- JSON-schema structured output where the endpoint supports it. Only a `400`
+  that is about the schema (`response_format`, `json_schema`, structured
+  output …) falls back to a plain completion.
+- A `400` that names a parameter the endpoint does not accept is sent once more
+  without it: `max_tokens` becomes `max_completion_tokens` (or back), a rejected
+  `temperature` is left out. OpenAI's reasoning models (o-series, `gpt-5…`) get
+  `max_completion_tokens` and the default temperature up front, on any endpoint;
+  the `openai` preset always sends `max_completion_tokens`.
+- Any other error is raised with the first 300 characters of what the provider
+  said (`HTTP 400 from the AI provider: …`), in the chatter and on the Verify
+  button, not just "400 Bad Request".
+- A `429` is retried once, after the wait the provider asks for (`Retry-After`,
+  else 15 s) — when that wait still fits in the document's time limit.
+- The whole answer must have arrived by the document's deadline: a provider that
+  trickles bytes is cut off then, not only one that stays silent.
+- An answer cut off at its token limit is noted. The reasoning-token sanity check
+  applies to models whose name says `thinking`/`reasoning` — the requested name
+  or the answering one — and a kept answer from a model that skipped its
+  reasoning is noted.
+
+A provider that fails or times out is noted on the bill and, in the background
+job, tried again later.
+
+**Ollama** gets the context window (`num_ctx`, *Ollama context size*, default
+16384 tokens) and the answer's limit (`num_predict`) with every request.
+Ollama's own default context is small (4096 tokens on hosts with less than about
+24 GB of VRAM, CPU-only included) and it then drops the beginning of a longer
+prompt — the instructions — without an error. `truncate: false` asks Ollama to
+fail instead (versions without that option ignore it), and an answer cut off at
+its limit, or a prompt that filled the context, is noted. A larger context needs
+more RAM or VRAM; `OLLAMA_CONTEXT_LENGTH` on the Ollama server is an alternative.
 
 Each run builds its own configuration (system parameters → environment
 defaults, plus the bill's company for the own-company guard) and passes it to
@@ -238,8 +275,9 @@ settings.
 
 ### LLM context limit
 
-At most **6000 characters** of the extracted text are sent to the LLM (tunable
-via `INVOICE_OCR_TEXT_LIMIT`). A longer document is sent as its first two thirds
+At most **6000 characters** of the extracted text are sent to the LLM (*Text
+sent to the AI* in the settings, `invoice_ocr.text_limit`; environment default
+`INVOICE_OCR_TEXT_LIMIT`). A longer document is sent as its first two thirds
 and its last third of that budget, joined by a marker saying how much was left
 out, so the totals, VAT summary and payment details at the end stay in view. The
 chatter note then says that the model saw only part of the text (its lines may be
@@ -267,9 +305,12 @@ All of these are read as **defaults** when the corresponding system parameter
 | `STAIK_API_KEY` | — | staik API key |
 | `STAIK_MODEL` | `qwen3.6:35b-a3b-thinking` | staik model (reasoning variant) |
 | `STAIK_TIMEOUT` | `120` | Cap in seconds on one staik call (the *AI call timeout* setting wins) |
-| `STAIK_MIN_COMPLETION_TOKENS` | `1000` | Answers from a reasoning model (name contains `thinking`/`reasoning`) below this completion-token count are treated as suspect (the model skipped its reasoning) and re-run |
+| `STAIK_MIN_COMPLETION_TOKENS` | `1000` | Answers from a reasoning model (the requested or the answering model's name contains `thinking`/`reasoning`) below this completion-token count are treated as suspect (the model skipped its reasoning) and re-run |
+| `RECEIPT_MIN_COMPLETION_TOKENS` | `300` | The same check for receipts (`hr_expense_ocr_ai`): a receipt answer is far shorter than an invoice |
+| `INVOICE_AI_MAX_TOKENS` | `8000` | The answer's token limit, every provider (`invoice_ocr.max_tokens` wins) |
 | `OLLAMA_URL` | `http://localhost:11434` | Local Ollama base URL |
 | `OLLAMA_MODEL` | `qwen2.5:7b` | Ollama model |
+| `OLLAMA_NUM_CTX` | `16384` | Ollama context window in tokens (*Ollama context size* wins) |
 | `INVOICE_AI_RETRY_SKIP_SECONDS` | `60` | Skip the reliability re-run when the first call already took this long |
 | `INVOICE_OCR_OWN_COMPANY` | — | Receiving company name ("Acme AB"), so its name is never taken for the supplier |
 | `INVOICE_OCR_OWN_VAT` | — | Comma-separated receiving company VAT/org numbers ("SE5566...,5566..."), same purpose |

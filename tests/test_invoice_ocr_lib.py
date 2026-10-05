@@ -166,8 +166,10 @@ def test_non_se_candidate_still_wins(monkeypatch):
 # ── _ai_answer_problems ──────────────────────────────────────────────────────
 
 def test_ai_answer_problems_empty_answer():
-    assert inv._ai_answer_problems(None) == ["tomt svar"]
-    assert inv._ai_answer_problems({}) == ["tomt svar"]
+    assert inv._ai_answer_problems(None) == ["empty answer"]
+    assert inv._ai_answer_problems({}) == ["empty answer"]
+    # an answer with only its diagnostics (unparseable JSON) is empty too
+    assert inv._ai_answer_problems({"_completion_tokens": 9, "_ai_notes": []}) == ["empty answer"]
 
 
 def test_ai_answer_problems_tolerance():

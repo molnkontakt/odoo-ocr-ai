@@ -12,14 +12,18 @@ Användning:
 """
 
 import base64
+import contextlib
+import email.utils
 import io
 import json
 import logging
 import math
 import os
 import re
+import socket
+import threading
 import time
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pdfplumber
 
@@ -34,9 +38,14 @@ except ImportError:
 
 # ── Tunables ─────────────────────────────────────────────────────────────────
 
-# How much invoice text the LLM sees. The full document is never sent; long
-# specifications are truncated so the prompt (and the bill) stays bounded.
+# How much invoice text the LLM sees (setting invoice_ocr.text_limit, #21). The full
+# document is never sent; a longer one is sent as its head and its tail (clip_text), so the
+# prompt (and the bill) stays bounded.
 TEXT_LIMIT = int(os.environ.get("INVOICE_OCR_TEXT_LIMIT", "6000"))
+# The answer's token limit for every provider (system parameter invoice_ocr.max_tokens):
+# max_tokens / max_completion_tokens, Ollama's num_predict. Reasoning models count their
+# reasoning in it: correct invoice answers of the default staik model used 3400-7200.
+AI_MAX_TOKENS = int(os.environ.get("INVOICE_AI_MAX_TOKENS", "8000"))
 # Image-based PDFs are rendered page by page; cap it so a 300-page PDF cannot
 # pin a worker for minutes in the synchronous upload path.
 MAX_OCR_PAGES = int(os.environ.get("INVOICE_OCR_MAX_PAGES", "10"))
@@ -1304,6 +1313,8 @@ def default_config():
         "own_ids": sorted(OWN_VAT_NUMBERS),
         "own_names": _default_own_names(),
         "text_limit": TEXT_LIMIT,
+        "max_tokens": AI_MAX_TOKENS,
+        "ollama_num_ctx": OLLAMA_NUM_CTX,
         # The account codes the model may choose, [(code, hint)]; None = DEFAULT_ACCOUNTS.
         "accounts": None,
         "max_ocr_pages": MAX_OCR_PAGES,
@@ -1344,10 +1355,12 @@ PROVIDER_SETTINGS = (
 
 
 # Numeric limits the Odoo module reads from the system parameters "invoice_ocr.<key>" (#9,
-# #26); the settings page has fields for call_timeout and total_deadline.
+# #20, #21, #26); the settings page has fields for call_timeout, total_deadline,
+# text_limit and ollama_num_ctx.
 LIMIT_SETTINGS = (
     "call_timeout", "total_deadline", "extract_time_budget", "max_text_pages",
     "max_ocr_pages", "max_page_pixels", "tesseract_timeout", "max_image_bytes",
+    "text_limit", "max_tokens", "ollama_num_ctx",
 )
 
 
@@ -1593,11 +1606,291 @@ def build_extraction_prompt(accounts=DEFAULT_ACCOUNTS):
 EXTRACTION_PROMPT = build_extraction_prompt()
 
 
-def _post(url, **kwargs):
-    """Single seam for HTTP so tests can fake the provider."""
+# ── HTTP: one deadline for the whole transfer (#9) ───────────────────────────
+
+# Bytes read per step from a streamed answer.
+READ_CHUNK = 16 * 1024
+
+
+def _response_socket(response):
+    """The socket a streamed requests response reads from, or None (urllib3 1.26 and 2.x)."""
+    raw = getattr(response, "raw", None)
+    sock = getattr(getattr(raw, "_connection", None), "sock", None)
+    if sock is None:
+        fp = getattr(getattr(raw, "_fp", None), "fp", None)
+        sock = getattr(getattr(fp, "raw", None), "_sock", None)
+    return sock
+
+
+def _cut_connection(response, fired):
+    """The watchdog: shut the response's socket down, so a blocked read returns at once."""
+    fired.set()
+    sock = _response_socket(response)
+    if sock is not None:
+        with contextlib.suppress(OSError):
+            sock.shutdown(socket.SHUT_RDWR)
+
+
+def _transfer_too_slow():
+    return DeadlineExceeded(
+        "the AI provider's answer was still arriving when the time limit per document ran out")
+
+
+def _read_within(response, deadline):
+    """The body of a streamed `response`, read completely by `deadline` (a _clock() value).
+
+    A read timeout only bounds each read, so a provider that trickles a byte now and then
+    could keep a request open far past the document's deadline. A watchdog shuts the
+    connection down at the deadline, whatever is being read, and the read then ends in
+    DeadlineExceeded.
+    """
+    fired = threading.Event()
+    watchdog = threading.Timer(max(deadline - _clock(), 0.0), _cut_connection,
+                               (response, fired))
+    watchdog.daemon = True
+    watchdog.start()
+    chunks = []
+    try:
+        for chunk in response.iter_content(READ_CHUNK):
+            chunks.append(chunk)
+            if fired.is_set() or _clock() >= deadline:
+                raise _transfer_too_slow()
+    except DeadlineExceeded:
+        raise
+    except Exception as e:
+        if fired.is_set():
+            raise _transfer_too_slow() from e
+        raise
+    finally:
+        watchdog.cancel()
+    if fired.is_set():  # the connection was cut: what was read is not the whole answer
+        raise _transfer_too_slow()
+    return b"".join(chunks)
+
+
+def _post(url, deadline=None, **kwargs):
+    """Single seam for HTTP so tests can fake the provider.
+
+    With a `deadline` (a _clock() value) the answer is streamed and read completely by then
+    (_read_within), so the whole transfer, not only each read, ends at the document's
+    deadline. Until the headers arrive, the per-read `timeout` applies, which the callers
+    cut to the time the document has left.
+    """
     import requests
 
-    return requests.post(url, **kwargs)
+    if deadline is None:
+        return requests.post(url, **kwargs)
+    response = requests.post(url, stream=True, **kwargs)
+    try:
+        # Stored where requests keeps a body it has read: .json() and .text use it.
+        response._content = _read_within(response, deadline)
+    finally:
+        response.close()
+    return response
+
+
+# ── Provider errors ──────────────────────────────────────────────────────────
+
+# Characters of a provider's error message kept in the error (chatter, Verify button, log).
+ERROR_DETAIL_CHARS = 300
+
+
+class ProviderError(RuntimeError):
+    """The AI provider answered with an HTTP error; the message says what the provider said."""
+
+    def __init__(self, status, detail=""):
+        self.status = status
+        self.detail = detail
+        if detail:
+            message = f"HTTP {status} from the AI provider: {detail}"
+        else:
+            message = f"HTTP {status} from the AI provider"
+        super().__init__(message)
+
+
+def _response_text(response):
+    text = getattr(response, "text", None)
+    if isinstance(text, str):
+        return text
+    try:
+        return json.dumps(response.json())
+    except Exception:  # noqa: BLE001 — no readable body
+        return ""
+
+
+def error_details(response):
+    """What an error response says: (the error object, its message, the whole body as text).
+
+    OpenAI-style bodies {"error": {"message", "param", "code"}} and {"error": "..."}, and
+    {"message": ...} / {"detail": ...} of other servers; otherwise the body's text.
+    """
+    text = _response_text(response)
+    try:
+        payload = response.json()
+    except Exception:  # noqa: BLE001 — not JSON
+        payload = None
+    error, message = {}, ""
+    if isinstance(payload, dict):
+        raw = payload.get("error")
+        if isinstance(raw, dict):
+            error, message = raw, raw.get("message")
+        elif isinstance(raw, str):
+            message = raw
+        else:
+            message = payload.get("message") or payload.get("detail")
+    if not isinstance(message, str):
+        message = json.dumps(message) if message else ""
+    if not message and isinstance(payload, dict):
+        text = text if payload else ""  # {} says nothing
+    return error, message or text, text
+
+
+def short_detail(text, limit=ERROR_DETAIL_CHARS):
+    """`text` on one line, at most `limit` characters."""
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+# ── OpenAI-compatible requests ───────────────────────────────────────────────
+
+# OpenAI's reasoning models — the o-series (o1, o3-mini, o4-mini …) and the gpt-5 family —
+# take max_completion_tokens instead of max_tokens and only the default temperature (#19).
+# Also behind a vendor prefix ("openai/o3-mini" on a router).
+_OPENAI_REASONING_RE = re.compile(r"(?:^|/)(?:o\d+(?:[-.:_]|$)|gpt-5)", re.IGNORECASE)
+# The two names of the answer's token limit; an endpoint that rejects one gets the other.
+OUTPUT_CAP_PARAMETERS = ("max_tokens", "max_completion_tokens")
+# Never dropped from a request.
+_REQUIRED_PARAMETERS = ("model", "messages")
+# A 400 that says a parameter is not accepted (OpenAI: "Unsupported parameter: 'max_tokens'
+# …", "Unsupported value: 'temperature' does not support 0 …"; pydantic-based servers:
+# "Extra inputs are not permitted").
+_REJECTED_RE = re.compile(
+    r"unsupported|not supported|unrecognized|unknown|not allowed|not permitted|"
+    r"extra inputs|extra_forbidden|does not support|only the default", re.IGNORECASE)
+# A 400 about the JSON-schema answer format: the provider cannot do structured output.
+_SCHEMA_ERROR_RE = re.compile(
+    r"response_format|json[_ ]?schema|structured[_ ]outputs?|guided_json|grammar", re.IGNORECASE)
+# Adapted retries after a 400, at most (each parameter is dropped once).
+MAX_ADAPTATIONS = 4
+
+
+def is_openai_reasoning_model(model):
+    """True for OpenAI's reasoning models (o1, o3, o4-mini …, gpt-5 …), see #19."""
+    return bool(_OPENAI_REASONING_RE.search(str(model or "")))
+
+
+def openai_request_body(provider, model, content, max_tokens, schema_name, schema):
+    """The /chat/completions request.
+
+    The answer's token limit is max_completion_tokens for OpenAI (every current OpenAI chat
+    model takes it; max_tokens is deprecated there) and for OpenAI's reasoning models on any
+    endpoint, else max_tokens. Temperature 0, except for OpenAI's reasoning models, which
+    only take the default. Anything else an endpoint rejects is adapted after its 400
+    (adapt_rejected_request).
+    """
+    reasoning = is_openai_reasoning_model(model)
+    cap = "max_completion_tokens" if provider == "openai" or reasoning else "max_tokens"
+    body = {"model": model, "messages": [{"role": "user", "content": content}],
+            cap: max_tokens}
+    if not reasoning:
+        body["temperature"] = 0
+    body["response_format"] = {"type": "json_schema",
+                               "json_schema": {"name": schema_name, "schema": schema}}
+    return body
+
+
+def rejected_parameter(error, message, body):
+    """The parameter of `body` a 400 says is not accepted, or None.
+
+    OpenAI names it in error.param, with code unsupported_parameter / unsupported_value;
+    other endpoints only in the message. Model and messages never count.
+    """
+    names = [name for name in body if name not in _REQUIRED_PARAMETERS]
+    error = error if isinstance(error, dict) else {}
+    param, code = error.get("param"), str(error.get("code") or "")
+    if param in names and (code.startswith("unsupported") or _REJECTED_RE.search(message)):
+        return param
+    if not _REJECTED_RE.search(message):
+        return None
+    for name in names:
+        if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", message):
+            return name
+    return None
+
+
+def adapt_rejected_request(body, error, message, text, dropped):
+    """The request to send again after a 400, and why; (None, None) when it cannot be helped.
+
+    * A parameter the provider says it does not accept is left out, once (#19). The answer's
+      token limit moves to its other name (max_tokens ↔ max_completion_tokens), so it stays
+      bounded; a rejected temperature is simply left out.
+    * Else, when the error is about the JSON-schema answer format (response_format,
+      json_schema …), the request is sent as a plain completion.
+    Any other 400 (too long a prompt, a bad key …) is not retried. `dropped` collects what
+    was left out, so nothing is retried twice.
+    """
+    param = rejected_parameter(error, message, body)
+    if param and param not in dropped:
+        dropped.add(param)
+        new = {k: v for k, v in body.items() if k != param}
+        if param in OUTPUT_CAP_PARAMETERS:
+            other = next(p for p in OUTPUT_CAP_PARAMETERS if p != param)
+            if other not in body and other not in dropped:
+                new[other] = body[param]
+        return new, f"rejected the parameter {param!r}"
+    if ("response_format" in body and "response_format" not in dropped
+            and _SCHEMA_ERROR_RE.search(text)):
+        dropped.add("response_format")
+        return ({k: v for k, v in body.items() if k != "response_format"},
+                "rejected the JSON schema (response_format)")
+    return None, None
+
+
+def retry_after_seconds(headers):
+    """The wait a 429 asks for, in seconds: retry-after-ms, else Retry-After as seconds or as
+    an HTTP date; None when there is none or it cannot be read."""
+    found = {str(k).lower(): v for k, v in (headers or {}).items()}
+    with contextlib.suppress(TypeError, ValueError):
+        if found.get("retry-after-ms") is not None:
+            return max(float(found["retry-after-ms"]) / 1000.0, 0.0)
+    value = found.get("retry-after")
+    if value is None:
+        return None
+    with contextlib.suppress(TypeError, ValueError):
+        return max(float(str(value).strip()), 0.0)
+    try:
+        when = email.utils.parsedate_to_datetime(str(value).strip())
+    except (TypeError, ValueError, IndexError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return max((when - datetime.now(UTC)).total_seconds(), 0.0)
+
+
+def _send(url, run, timeout, state, **kwargs):
+    """One POST within the document's deadline. A 429 is retried once in the whole call,
+    after the wait the provider asks for (Retry-After, else RATE_LIMIT_WAIT), when that wait
+    and a request still fit in the deadline; otherwise DeadlineExceeded."""
+    response = _post(url, timeout=call_timeout(run, timeout), deadline=run.deadline, **kwargs)
+    if response.status_code != 429 or state.get("rate_limited"):
+        return response
+    state["rate_limited"] = True
+    wait = retry_after_seconds(getattr(response, "headers", None))
+    if wait is None:
+        wait = RATE_LIMIT_WAIT
+    if run.remaining() - wait < MIN_CALL_SECONDS:
+        raise DeadlineExceeded(
+            f"the AI provider is rate limiting (HTTP 429) and asks to wait {wait:.0f} s; the "
+            f"time limit per document ({run.total:.0f} s) leaves no time to wait and retry")
+    logger.info("AI provider rate limited (HTTP 429): retrying in %.0f s", wait)
+    time.sleep(wait)
+    return _post(url, timeout=call_timeout(run, timeout), deadline=run.deadline, **kwargs)
+
+
+def _raise_for_status(response):
+    if response.status_code >= 400:
+        _error, message, _text = error_details(response)
+        raise ProviderError(response.status_code, short_detail(message))
 
 
 def resolve_endpoint(config=None):
@@ -1667,115 +1960,262 @@ def clip_text(text, max_chars):
     return text[:head] + TRUNCATION_MARKER.format(omitted=omitted) + text[len(text) - tail:]
 
 
-def chat_json(prompt, text, schema, schema_name, max_tokens=8000, max_chars=None, timeout=None,
+def _reasoning_text(message):
+    message = message if isinstance(message, dict) else {}
+    return (message.get("reasoning_content") or message.get("reasoning")
+            or message.get("thinking") or "")
+
+
+def chat_json(prompt, text, schema, schema_name, max_tokens=None, max_chars=None, timeout=None,
               config=None):
     """One structured-output call to the configured provider.
 
     Returns (data, meta): `data` is the parsed JSON dict ({} when unparseable), `meta` has
-    served_model, completion_tokens and finish_reason. Handles the provider quirks in one
-    place: a 429 is retried once after 15 s; a 400 on `response_format` (provider without
-    JSON-schema support) is retried as a plain completion; Ollama uses its own API.
+    model (requested), served_model, completion_tokens, finish_reason, reasoning_chars
+    (length of any reasoning the answer carries) and notes for the reviewer (answer_notes).
+
+    Handles the provider quirks in one place:
+    * a 429 is retried once, after the wait the provider asks for (Retry-After);
+    * a 400 that names a parameter the endpoint does not accept is retried without it
+      (max_tokens ↔ max_completion_tokens, temperature), and one about the JSON schema as a
+      plain completion; any other error is raised with what the provider said (#19);
+    * OpenAI's reasoning models get max_completion_tokens and no temperature up front;
+    * Ollama uses its own API (_ollama_chat_json).
 
     Provider, keys, URLs and limits are read from `config` (merged over default_config()),
     never from module globals set at run time — those are shared by every run in an Odoo
-    worker. `max_chars` defaults to the config's text_limit, `timeout` to the provider's
-    per-call cap. A longer text is sent as head + tail (clip_text).
+    worker. `max_tokens` defaults to the config's max_tokens, `max_chars` to its
+    text_limit, `timeout` to the provider's per-call cap. A longer text is sent as head +
+    tail (clip_text).
 
-    Every POST, the 429 wait included, fits in the document's deadline (the config's
-    DocumentRun, or a new one of total_deadline seconds): each request gets at most the
-    time that is left, and none is started — nor the 429 wait — when too little is left
-    (DeadlineExceeded). So one call can no longer take 3 × the per-call cap plus 15 s (#9).
+    Every request, the 429 wait and the whole transfer of each answer fit in the document's
+    deadline (the config's DocumentRun, or a new one of total_deadline seconds): each
+    request gets at most the time that is left, none is started — nor the 429 wait — when
+    too little is left (DeadlineExceeded), and an answer still arriving at the deadline is
+    cut off (#9).
     """
     cfg = _cfg(config)
     run = document_run(cfg)
     if max_chars is None:
         max_chars = cfg["text_limit"]
+    if max_tokens is None:
+        max_tokens = cfg["max_tokens"]
     timeout = timeout or _default_timeout(cfg)
-    if (cfg["provider"] or "").strip().lower() == "ollama":
-        return _ollama_chat_json(prompt, text, schema, max_chars, timeout, cfg)
+    content = prompt + clip_text(text, max_chars)
+    provider = (cfg["provider"] or "").strip().lower()
+    if provider == "ollama":
+        return _ollama_chat_json(content, schema, max_tokens, timeout, cfg)
     base, key, model = resolve_endpoint(cfg)
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
-    body = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt + clip_text(text, max_chars)}],
-        "max_tokens": max_tokens,
-        "temperature": 0,
-        "response_format": {"type": "json_schema", "json_schema": {"name": schema_name, "schema": schema}},
-    }
+    body = openai_request_body(provider, model, content, max_tokens, schema_name, schema)
     url = f"{base}/chat/completions"
-    r = _post(url, headers=headers, json=body, timeout=call_timeout(run, timeout))
-    if r.status_code == 429:
-        if run.remaining() - RATE_LIMIT_WAIT < MIN_CALL_SECONDS:
-            raise DeadlineExceeded(
-                f"the AI provider is rate limiting (HTTP 429) and the time limit per "
-                f"document ({run.total:.0f} s) leaves no time to wait and retry")
-        time.sleep(RATE_LIMIT_WAIT)
-        r = _post(url, headers=headers, json=body, timeout=call_timeout(run, timeout))
-    if r.status_code == 400 and "response_format" in body:
-        logger.info("%s rejected response_format — retrying without JSON schema", base)
-        body = {k: v for k, v in body.items() if k != "response_format"}
-        r = _post(url, headers=headers, json=body, timeout=call_timeout(run, timeout))
-    r.raise_for_status()
+    state, dropped = {}, set()
+    r = _send(url, run, timeout, state, headers=headers, json=body)
+    for _round in range(MAX_ADAPTATIONS):
+        if r.status_code != 400:
+            break
+        error, message, text = error_details(r)
+        adapted, why = adapt_rejected_request(body, error, message, text, dropped)
+        if adapted is None:
+            break
+        logger.info("%s (%s) %s — retrying: %s", base, model, why, short_detail(message))
+        body = adapted
+        r = _send(url, run, timeout, state, headers=headers, json=body)
+    _raise_for_status(r)
     j = r.json()
     choice = j["choices"][0]
+    message = choice.get("message") or {}
     finish = choice.get("finish_reason")
-    if finish == "length":
-        logger.warning("Answer from %s was cut by max_tokens=%s; the JSON is incomplete.", model, max_tokens)
-    # staik faller TYST tillbaka till sin default-modell vid okant modellnamn, och
-    # model-faltet speglar basmodellen aven for -thinking. Antalet tokens ar darfor
-    # enda tillforlitliga tecknet pa att resonemanget faktiskt kordes.
+    cap = next((body[p] for p in OUTPUT_CAP_PARAMETERS if p in body), None)
     meta = {
         "served_model": j.get("model"),
         "completion_tokens": (j.get("usage") or {}).get("completion_tokens"),
         "finish_reason": finish,
+        # staik falls back SILENTLY to its default model for an unknown model name, and its
+        # model field shows the base model even for -thinking: the reasoning that came back
+        # and the token count are the only signs that the reasoning really ran.
+        "reasoning_chars": len(_reasoning_text(message)),
         "model": model,
     }
-    return _parse_ai_json(choice["message"]["content"] or ""), meta
+    meta["notes"] = answer_notes(meta, cap)
+    return _parse_ai_json(message.get("content") or ""), meta
 
 
-def _ollama_chat_json(prompt, text, schema, max_chars, timeout, cfg):
-    """Ollama's native API; `format` takes a JSON schema since 0.5."""
+# Ollama: the context window (num_ctx) the model runs with. Ollama's own default is small
+# (4096 tokens on hosts with less than about 24 GB of VRAM, also CPU-only) and it then cuts
+# the START of a longer prompt — the instructions — without an error (#20). 16384 tokens
+# hold the prompt, 6000 characters of text and the answer; more needs more RAM/VRAM.
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "16384"))
+# A prompt that fills this share of num_ctx has probably been cut by Ollama.
+OLLAMA_CONTEXT_FULL = 0.95
+
+
+def _ollama_chat_json(content, schema, max_tokens, timeout, cfg):
+    """Ollama's native API; `format` takes a JSON schema since 0.5.
+
+    The context window (num_ctx, the config's ollama_num_ctx) and the answer's limit
+    (num_predict = max_tokens) are sent with every request, and truncate: false asks
+    Ollama to fail instead of cutting a prompt that does not fit (Ollama versions without
+    that option ignore it). A cut answer or a prompt that filled the window is noted
+    (answer_notes).
+    """
+    run = document_run(cfg)
     model = cfg["ollama_model"]
-    r = _post(
-        f"{(cfg['ollama_url'] or '').rstrip('/')}/api/chat",
-        json={
-            "model": model, "stream": False, "format": schema or "json",
-            "options": {"temperature": 0},
-            "messages": [{"role": "user", "content": prompt + clip_text(text, max_chars)}],
-        },
-        timeout=call_timeout(document_run(cfg), timeout),
-    )
-    r.raise_for_status()
+    num_ctx = int(cfg.get("ollama_num_ctx") or 0)
+    options = {"temperature": 0}
+    if num_ctx:
+        options["num_ctx"] = num_ctx
+    if max_tokens:
+        options["num_predict"] = int(max_tokens)
+    r = _send(f"{(cfg['ollama_url'] or '').rstrip('/')}/api/chat", run, timeout, {},
+              json={"model": model, "stream": False, "format": schema or "json",
+                    "truncate": False, "options": options,
+                    "messages": [{"role": "user", "content": content}]})
+    _raise_for_status(r)
     j = r.json()
+    message = j.get("message") or {}
     meta = {"served_model": j.get("model"), "completion_tokens": j.get("eval_count"),
-            "finish_reason": j.get("done_reason"), "model": model}
-    return _parse_ai_json((j.get("message") or {}).get("content") or ""), meta
+            "finish_reason": j.get("done_reason"), "prompt_tokens": j.get("prompt_eval_count"),
+            "num_ctx": num_ctx or None, "reasoning_chars": len(_reasoning_text(message)),
+            "model": model, "ollama": True}
+    meta["notes"] = answer_notes(meta, max_tokens)
+    return _parse_ai_json(message.get("content") or ""), meta
+
+
+def answer_notes(meta, max_tokens=None):
+    """Notes for the reviewer about one answer (`meta` of chat_json): it was cut off at its
+    token limit, or (Ollama) the prompt filled the model's context window and was probably
+    cut. Also logged."""
+    notes = []
+    finish = str(meta.get("finish_reason") or "").lower()
+    num_ctx, prompt_tokens = meta.get("num_ctx"), _num(meta.get("prompt_tokens"))
+    if finish == "length":
+        if meta.get("ollama"):
+            notes.append(
+                f"the AI's answer was cut off: it reached its token limit ({max_tokens}) or "
+                f"filled the model's context ({num_ctx} tokens) – raise the limit or the "
+                f"Ollama context size")
+        else:
+            notes.append(
+                f"the AI's answer was cut off at its token limit ({max_tokens} tokens) and "
+                f"is incomplete – raise the token limit (invoice_ocr.max_tokens)")
+    elif "trunc" in finish:
+        notes.append(f"the AI provider cut the prompt ({meta.get('finish_reason')}) – the "
+                     f"model may not have seen all instructions")
+    if num_ctx and prompt_tokens and prompt_tokens >= OLLAMA_CONTEXT_FULL * num_ctx:
+        notes.append(
+            f"the prompt filled the model's context ({prompt_tokens:.0f} of {num_ctx} "
+            f"tokens): Ollama may have cut it, so the model may not have seen the "
+            f"instructions – raise the Ollama context size")
+    for note in notes:
+        logger.warning("AI answer from %s: %s", meta.get("model"), note)
+    return notes
+
+
+# ── Which model answered (#23) ───────────────────────────────────────────────
+
+# A dated snapshot name: OpenAI, Azure and Anthropic answer "gpt-4o-mini-2024-07-18" or
+# "claude-x-20250929" for a request for "gpt-4o-mini" or "claude-x".
+_SNAPSHOT_SUFFIX_RE = re.compile(r"-(?:\d{4}-\d{2}-\d{2}|\d{8})")
+# A reasoning variant named "<base>-thinking" / "<base>-reasoning" (also ':' or '_').
+_REASONING_VARIANT_RE = re.compile(r"(.+?)[-:_](?:thinking|reasoning)", re.IGNORECASE)
+# The ping's answer, {"ok": true}, is a handful of tokens; a model that reasoned before
+# answering used far more (173–256 in our measurement of the default staik model).
+VERIFY_REASONING_TOKENS = 50
+
+
+def is_reasoning_model_name(name):
+    """True when a model name says it is a reasoning model ('thinking', 'reasoning')."""
+    name = str(name or "").lower()
+    return "think" in name or "reason" in name
+
+
+def reasoning_base_name(model):
+    """The base model of a reasoning variant ('qwen3.6:35b-a3b-thinking' → 'qwen3.6:35b-a3b'),
+    else None."""
+    m = _REASONING_VARIANT_RE.fullmatch(str(model or "").strip())
+    return m.group(1) if m else None
+
+
+def served_model_matches(requested, served, reasoning_shown=True):
+    """True when the provider answered with the model that was asked for (#23).
+
+    The names must be the same (case aside), with two exceptions, both exact:
+    * a dated snapshot of the requested name ('gpt-4o-mini' → 'gpt-4o-mini-2024-07-18');
+    * a reasoning variant reported under its base name: some providers (staik) answer
+      'X' for 'X-thinking'. As they also serve an unknown name with their default model,
+      the base name only counts when the answer shows reasoning (`reasoning_shown`).
+    No other prefix relation counts: a typo in a reasoning model's name ('X-thinkng'),
+    which the provider silently serves with 'X', is a mismatch. A provider that names no
+    model cannot be checked (True).
+    """
+    requested = str(requested or "").strip().lower()
+    served = str(served or "").strip().lower()
+    if not requested or not served or served == requested:
+        return True
+    if served.startswith(requested) and _SNAPSHOT_SUFFIX_RE.fullmatch(served[len(requested):]):
+        return True
+    base = reasoning_base_name(requested)
+    return bool(reasoning_shown) and bool(base) and served == base.lower()
+
+
+def reasoning_shown(meta):
+    """True when an answer shows that the model reasoned: reasoning text, or more completion
+    tokens than a bare answer to the ping needs."""
+    tokens = _num((meta or {}).get("completion_tokens"))
+    return bool((meta or {}).get("reasoning_chars")) or (
+        tokens is not None and tokens >= VERIFY_REASONING_TOKENS)
+
+
+# The ping's answer limit: room for a reasoning model to think before {"ok": true} (#23).
+PING_MAX_TOKENS = 1000
 
 
 def verify_provider(config=None):
-    """Cheap round-trip for the settings page: which model actually answers, and how fast.
+    """A short round-trip for the settings page: which model actually answers, how many
+    completion tokens it used, and how fast.
 
-    Exposes staik's silent fallback (an unknown model name is served by the default model,
-    visible only in `served_model`) and any URL/key mistake before a real invoice is sent.
-    The settings page passes a config built from the form's (possibly unsaved) values; this
-    function never writes module globals, so an unsaved key is never used by real runs.
+    The prompt asks for {"ok": true}; a plain model answers in a handful of tokens, a
+    reasoning model in a few hundred. Exposes a silent model substitution (staik serves an
+    unknown model name with its default model, visible only in the served model and in
+    the missing reasoning, see served_model_matches) and any URL/key mistake before a real
+    invoice is sent. The settings page passes a config built from the form's (possibly
+    unsaved) values; this function never writes module globals, so an unsaved key is
+    never used by real runs.
     """
     cfg = _cfg(config)
     provider = cfg["provider"]
-    t0 = time.time()
+    t0 = time.monotonic()
     schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
     try:
-        data, meta = chat_json('Reply with the JSON object {"ok": true} and nothing else.\n', "", schema, "ping",
-                               max_tokens=300, max_chars=0, timeout=60, config=cfg)
+        data, meta = chat_json('Reply with the JSON object {"ok": true} and nothing else.\n', "",
+                               schema, "ping", max_tokens=PING_MAX_TOKENS, max_chars=0,
+                               timeout=60, config=cfg)
     except Exception as e:  # noqa: BLE001 — the whole point is to report the failure
-        return {"ok": False, "provider": provider, "error": str(e)[:300], "latency_s": round(time.time() - t0, 1)}
+        return {"ok": False, "provider": provider, "error": error_message(e),
+                "latency_s": round(time.monotonic() - t0, 1)}
+    requested, served = meta.get("model"), meta.get("served_model")
+    shown = reasoning_shown(meta)
     return {
         "ok": bool(isinstance(data, dict) and data.get("ok") is True),
-        "provider": provider, "model_requested": meta.get("model"), "model_served": meta.get("served_model"),
-        "completion_tokens": meta.get("completion_tokens"), "latency_s": round(time.time() - t0, 1),
+        "provider": provider, "model_requested": requested, "model_served": served,
+        "model_matches": served_model_matches(requested, served, shown),
+        "reasoning_expected": bool(reasoning_base_name(requested)),
+        "reasoning_shown": shown,
+        "completion_tokens": meta.get("completion_tokens"),
+        "finish_reason": meta.get("finish_reason"),
+        "latency_s": round(time.monotonic() - t0, 1),
     }
+
+
+def error_message(error, limit=ERROR_DETAIL_CHARS):
+    """The readable message of an exception: the library's own message as it is, anything
+    else as 'Type: message', at most `limit` characters."""
+    if isinstance(error, (ProviderError, DeadlineExceeded, ValueError)) and error.args:
+        return str(error.args[0])[:limit]
+    return f"{type(error).__name__}: {error}"[:limit]
 
 
 def _parse_ai_json(content):
@@ -1821,10 +2261,15 @@ def _parse_ai_json(content):
 
 
 def _strip_meta(data):
-    """Ta bort interna diagnosfalt sa de inte foljer med in i fakturan."""
+    """The answer without its internal diagnostics ("_" keys), which must not reach the
+    bill — except the notes about it (`_ai_notes`), which the reviewer sees."""
     if isinstance(data, dict):
-        return {k: v for k, v in data.items() if not k.startswith("_")}
+        return {k: v for k, v in data.items() if not k.startswith("_") or k == "_ai_notes"}
     return data
+
+
+def _has_fields(data):
+    return isinstance(data, dict) and any(not k.startswith("_") for k in data)
 
 
 # ── VAT treatment of a vendor bill (BAS accounts, l10n_se taxes) ─────────────
@@ -2166,8 +2611,8 @@ def _ai_answer_problems(data, reference=None, config=None):
     stallet for 2636,00. En Hetzner-korning rapporterade noll rakt igenom, ocksa
     internt konsistent. Bada hade passerat en kontroll som saknar facit.
     """
-    if not isinstance(data, dict) or not data:
-        return ["tomt svar"]
+    if not _has_fields(data):
+        return ["empty answer"]
     try:
         return _ai_answer_problems_unsafe(data, reference if isinstance(reference, dict) else {},
                                           _cfg(config))
@@ -2180,11 +2625,9 @@ def _ai_answer_problems_unsafe(data, reference, cfg):
 
     # Only a reasoning model is expected to spend tokens before answering; a plain model
     # answering in 500 tokens is normal, a "-thinking" model doing so skipped its reasoning.
-    ctok = _num(data.get("_completion_tokens"))
-    model_name = str(data.get("_served_model") or data.get("_model") or "").lower()
-    if (ctok is not None and ctok < cfg["staik_min_completion_tokens"]
-            and ("think" in model_name or "reason" in model_name)):
-        problems.append(f"bara {ctok:.0f} completion-tokens (resonemanget hoppades over)")
+    if reasoning_skipped(data, cfg["staik_min_completion_tokens"]):
+        problems.append(f"only {_num(data.get('_completion_tokens')):.0f} completion tokens "
+                        f"(the reasoning was skipped)")
 
     # 1. Mot fakturans tryckta belopp
     for key, label in (("total_amount", "total"), ("subtotal", "netto"),
@@ -2224,31 +2667,55 @@ def _call_provider(text, config=None):
     cfg = _cfg(config)
     accounts = _accounts(cfg)
     data, meta = chat_json(build_extraction_prompt(accounts), text, invoice_json_schema(accounts),
-                           "invoice", max_tokens=8000, max_chars=cfg["text_limit"], config=cfg)
+                           "invoice", max_tokens=cfg["max_tokens"], max_chars=cfg["text_limit"],
+                           config=cfg)
     data = _sanitize_ai(data)
-    if data:
-        # Diagnostics for _ai_answer_problems; stripped before the data reaches the invoice.
-        data["_completion_tokens"] = meta.get("completion_tokens")
-        data["_served_model"] = meta.get("served_model")
-        data["_model"] = meta.get("model")
+    # Diagnostics for _ai_answer_problems (stripped before the data reaches the invoice), and
+    # the notes about this answer (cut off, a full context …), kept with it so only the notes
+    # of the answer that is used reach the reviewer. Also on an empty (unusable) answer.
+    data.update(ai_diagnostics(meta))
     return data
+
+
+def ai_diagnostics(meta):
+    """The diagnostics of one answer (`meta` of chat_json) as "_" keys of the answer."""
+    return {"_completion_tokens": meta.get("completion_tokens"),
+            "_served_model": meta.get("served_model"), "_model": meta.get("model"),
+            "_finish_reason": meta.get("finish_reason"),
+            "_ai_notes": list(meta.get("notes") or [])}
+
+
+def reasoning_skipped(data, min_tokens):
+    """True when a reasoning model answered with fewer than `min_tokens` completion tokens:
+    it skipped its reasoning, which gives wrong multi-term sums (#23, #36.9).
+
+    A reasoning model is told by its name ('thinking', 'reasoning'): the requested one
+    (`_model`) or the served one, as some providers (staik) report a reasoning variant
+    under its base name. A plain model answering in few tokens is normal.
+    """
+    tokens = _num((data or {}).get("_completion_tokens"))
+    names = ((data or {}).get("_model"), (data or {}).get("_served_model"))
+    return (tokens is not None and tokens < min_tokens
+            and any(is_reasoning_model_name(name) for name in names))
 
 
 def _extract_fields_ai(text, reference=None, config=None):
     """AI validation: extract invoice fields using configured LLM provider.
 
-    Kor om anropet en gang om svaret ser opalitligt ut. Reasoning-modeller hoppar
-    ibland over resonemanget och svarar rakt av, vilket ger fel pa flertermssummor.
-    Det ar sporadiskt, sa en omkorning racker — men vi behaller det basta av de tva
-    svaren i stallet for att blint ta det sista.
+    Runs the call once more when the answer looks unreliable (_ai_answer_problems).
+    Reasoning models sometimes skip their reasoning and answer straight away, which gives
+    wrong multi-term sums. That is sporadic, so one re-run is enough — and the better of the
+    two answers is kept rather than blindly the last.
 
-    Omkörningen hoppas over om första anropet redan tog retry_skip_seconds, or when
-    the document's deadline (#9) leaves less time than the first call took: the re-run
-    would most likely not finish.
+    The re-run is skipped when the first call already took retry_skip_seconds, when the
+    text was cut for the model (the re-run would see the same cut text, #21), or when the
+    document's deadline (#9) leaves less time than the first call took: the re-run would
+    most likely not finish.
 
     A failing first call is raised (the caller keeps the regex fields, notes the failure
-    and, in Odoo's background job, tries the document again later); a failing re-run
-    keeps the first answer.
+    and, in Odoo's background job, tries the document again later); a failing re-run keeps
+    the first answer. The answer kept carries its notes in `_ai_notes` (cut off at the
+    token limit, a full Ollama context, a skipped reasoning).
     """
     cfg = _cfg(config)
     run = document_run(cfg)
@@ -2263,7 +2730,7 @@ def _extract_fields_ai(text, reference=None, config=None):
 
     problems = _ai_answer_problems(data, reference, cfg)
     if not problems:
-        return _strip_meta(data)
+        return _kept_answer(data, cfg)
 
     if len(text or "") > cfg["text_limit"]:
         # The retry would see the same cut text and fail the same way (#21).
@@ -2271,39 +2738,53 @@ def _extract_fields_ai(text, reference=None, config=None):
             "AI answer looks unreliable (%s) but the text was cut to %s of %s characters — "
             "no retry, the bill needs a manual check.",
             "; ".join(problems), cfg["text_limit"], len(text))
-        return _strip_meta(data)
+        return _kept_answer(data, cfg)
 
     if elapsed >= cfg["retry_skip_seconds"]:
         logger.warning(
-            "AI-svaret ser opalitligt ut (%s) men forsta anropet tog %.0f s — "
-            "hoppar over omkorningen for att inte blockera behandlingen. "
-            "Fakturan behover granskas manuellt.",
+            "AI answer looks unreliable (%s) but the first call took %.0f s — no retry, so "
+            "as not to hold up the processing. The bill needs a manual check.",
             "; ".join(problems), elapsed)
-        return _strip_meta(data)
+        return _kept_answer(data, cfg)
 
     if run.remaining() < elapsed + MIN_CALL_SECONDS:
         logger.warning(
             "AI answer looks unreliable (%s) but only %.0f s of the document's time limit are "
             "left and the first call took %.0f s — no retry, the bill needs a manual check.",
             "; ".join(problems), run.remaining(), elapsed)
-        return _strip_meta(data)
+        return _kept_answer(data, cfg)
 
-    logger.warning("AI-svaret ser opalitligt ut (%s) — kor om en gang",
-                   "; ".join(problems))
+    logger.warning("AI answer looks unreliable (%s) — running it once more", "; ".join(problems))
     try:
         retry = _call_provider(text, cfg)
     except Exception as e:
-        logger.warning("Omkorningen misslyckades (%s): %s — behaller forsta svaret",
-                       provider, e)
-        return _strip_meta(data)
+        logger.warning("The re-run failed (%s): %s — keeping the first answer", provider, e)
+        return _kept_answer(data, cfg)
 
     if not _ai_answer_problems(retry, reference, cfg):
-        logger.info("Omkorningen gav ett svar som gar ihop — anvander det")
-        return _strip_meta(retry)
+        logger.info("The re-run gave an answer that adds up — using it")
+        return _kept_answer(retry, cfg)
 
-    logger.warning("Aven omkorningen ser opalitlig ut — behaller det forsta svaret. "
-                   "Fakturan behover granskas manuellt.")
-    return _strip_meta(data)
+    logger.warning("The re-run looks unreliable too — keeping the first answer. "
+                   "The bill needs a manual check.")
+    return _kept_answer(data, cfg)
+
+
+def _kept_answer(data, cfg):
+    """The answer to use, without its diagnostics; its notes in `_ai_notes`, with a note when
+    a reasoning model skipped its reasoning (reasoning_skipped)."""
+    notes = list((data or {}).get("_ai_notes") or [])
+    if reasoning_skipped(data, cfg["staik_min_completion_tokens"]):
+        notes.append(
+            f"the AI model answered with only {_num(data.get('_completion_tokens')):.0f} "
+            f"completion tokens: it skipped its reasoning, so its lines may be wrong")
+    out = _strip_meta(data)
+    out.pop("_ai_notes", None)
+    if notes and _has_fields(out):
+        out["_ai_notes"] = notes
+    elif notes:
+        out = {"_ai_notes": notes}
+    return out
 
 
 def extract_invoice_data(pdf_b64_or_bytes, config=None, *, own_ids=None, own_names=None):
@@ -2357,10 +2838,11 @@ def extract_invoice_data_from_text(text, own_ids=None, own_names=None, config=No
     except Exception as e:  # noqa: BLE001 — the regex fields must survive any AI failure (#10)
         logger.warning("AI step failed (%s) — keeping the regex fields", e,
                        exc_info=not isinstance(e, (TimeoutError, OSError)))
-        ai_fields, ai_error = {}, f"{type(e).__name__}: {e}"[:300]
+        ai_fields, ai_error = {}, error_message(e)
+    ai_notes = list(ai_fields.pop("_ai_notes", None) or [])
     ai_fields, account_notes = check_account_codes(ai_fields, _accounts(cfg))
     final = _merge_fields(text, regex_fields, ai_fields, own_keys)
-    notes = [*run.notes, *account_notes]
+    notes = [*run.notes, *ai_notes, *account_notes]
     if notes:
         final.setdefault("_notes", []).extend(notes)
     if ai_error:

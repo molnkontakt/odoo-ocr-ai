@@ -11,9 +11,10 @@ import pytest
 
 
 class FakeResponse:
-    def __init__(self, status, payload=None):
+    def __init__(self, status, payload=None, headers=None):
         self.status_code = status
         self._payload = payload or {}
+        self.headers = headers or {}
 
     def json(self):
         return self._payload
@@ -86,6 +87,32 @@ def test_429_wait_counts_against_the_deadline(http, clock):
     inv.chat_json("P", "t", {"type": "object"}, "x", config=dict(CFG, total_deadline=60))
     # 10 s for the first call, 15 s of waiting: 35 s left for the retry
     assert http.timeouts == [60, 35]
+
+
+def test_429_honours_retry_after(http, clock):
+    http.steps = [(10, FakeResponse(429, headers={"Retry-After": "3"})), (1, _ok())]
+    inv.chat_json("P", "t", {"type": "object"}, "x", config=dict(CFG, total_deadline=60))
+    # 10 s for the first call, the 3 s the provider asked for: 47 s left for the retry
+    assert http.timeouts == [60, 47]
+    http.timeouts.clear()
+    http.steps = [(1, FakeResponse(429, headers={"retry-after-ms": "500"})), (1, _ok())]
+    inv.chat_json("P", "t", {"type": "object"}, "x", config=dict(CFG, total_deadline=60))
+    assert http.timeouts == [60, 58.5]
+
+
+def test_429_asking_for_more_than_the_deadline_gives_up(http, clock):
+    http.steps = [(5, FakeResponse(429, headers={"Retry-After": "120"}))]
+    with pytest.raises(inv.DeadlineExceeded, match="asks to wait 120 s"):
+        inv.chat_json("P", "t", {"type": "object"}, "x", config=dict(CFG, total_deadline=60))
+    assert len(http.timeouts) == 1 and clock.now == 1005.0, "no wait, no second request"
+
+
+def test_a_second_429_is_an_error(http, clock):
+    http.steps = [(1, FakeResponse(429, headers={"Retry-After": "1"})),
+                  (1, FakeResponse(429, {"error": {"message": "rate limit reached"}}))]
+    with pytest.raises(inv.ProviderError, match="HTTP 429 from the AI provider: rate limit"):
+        inv.chat_json("P", "t", {"type": "object"}, "x", config=dict(CFG, total_deadline=60))
+    assert len(http.timeouts) == 2
 
 
 def test_429_without_time_to_wait_gives_up(http, clock):
@@ -163,10 +190,10 @@ def test_worst_case_is_bounded_by_the_deadline(http, clock, monkeypatch):
 
 
 def test_provider_failure_is_reported_not_swallowed(http, clock):
-    http.steps = [(1, FakeResponse(503))]
+    http.steps = [(1, FakeResponse(503, {"error": {"message": "the model is overloaded"}}))]
     out = inv.extract_invoice_data_from_text("Fakturanummer: 4711\nAtt betala: 125,00\n",
                                              config=CFG)
-    assert out["_ai_error"] == "RuntimeError: HTTP 503"
+    assert out["_ai_error"] == "HTTP 503 from the AI provider: the model is overloaded"
     assert out["invoice_number"] == "4711"
 
 
@@ -185,6 +212,6 @@ def test_receipt_ai_failure_is_reported(http, clock, monkeypatch):
                         "Kvitto 2026-09-17\nTotalt 418,00\n")
     http.steps = [(1, FakeResponse(503))]
     res = r.extract_receipt_data(b"img", "image/jpeg", config=CFG)
-    assert res["ai_error"] == "RuntimeError: HTTP 503"
+    assert res["ai_error"] == "HTTP 503 from the AI provider"
     assert res["source"] == "regex" and res["fields"]["total"] == 418.0
     assert any("HTTP 503" in n for n in res["notes"])
