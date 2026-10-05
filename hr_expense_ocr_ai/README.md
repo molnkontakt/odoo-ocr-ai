@@ -23,6 +23,14 @@ Off switch: *Expense receipt OCR* in the same settings block as the invoice OCR
 
 Only empty fields: amount (`total_amount_currency` = 0), date (when still today's
 default), category (no product) and the description (empty or very short).
+The placeholders of the standard **Upload** button count as empty: the generic
+`EXP_GEN` category (or the first expensable product Upload falls back to) and the
+"Untitled Expense <date>" description are replaced by what the receipt says.
+
+A description that starts with one of the prefixes in the system parameter
+`expense_ocr.placeholder_name_prefixes` (comma-separated, empty by default; also
+*Placeholder name prefixes* in the settings) gets the receipt's description
+appended, e.g. the subject a mail alias gives expenses from unknown senders.
 
 The amount is written in the receipt's currency: the expense's currency is set
 in the same write and the amount is rounded like that currency. A currency that

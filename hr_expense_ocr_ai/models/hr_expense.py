@@ -141,9 +141,10 @@ class HrExpense(models.Model):
                 filled.append(_("datum %s", day))
             else:
                 notes.append(_("the date %s is not a valid date – not used", f["date"]))
-        if f.get("category_code") and (force or not self.product_id):
+        placeholder = self._expense_ocr_placeholders()
+        if f.get("category_code") and (force or not self.product_id or placeholder["product"]):
             product = by_code.get(f["category_code"])
-            if product:
+            if product and product != self.product_id:
                 vals["product_id"] = product.id
                 filled.append(_("kategori %s", product.name))
         if f.get("total") is not None and (force or not self.total_amount_currency):
@@ -153,10 +154,10 @@ class HrExpense(models.Model):
         if items:
             label = f"{label} — {items}" if label else items
         current = (self.name or "").strip()
-        if label and (force or len(current) <= 3):
+        if label and (force or len(current) <= 3 or placeholder["name"]):
             vals["name"] = label
             filled.append(_("beskrivning"))
-        elif label and current.startswith("OKÄND AVSÄNDARE") and label.lower() not in current.lower():
+        elif label and placeholder["name_prefix"] and label.lower() not in current.lower():
             vals["name"] = f"{current} — {label}"
             filled.append(_("beskrivning"))
         if vals:
@@ -181,6 +182,37 @@ class HrExpense(models.Model):
                 body += Markup("<p><b>Anmärkningar:</b> %s</p>") % escape("; ".join(notes))
         self.message_post(body=body, message_type="comment", subtype_xmlid="mail.mt_note")
         return filled
+
+    def _expense_ocr_placeholders(self):
+        """Which values are placeholders that the receipt may replace (#34).
+
+        * product: the category Upload puts on every expense (create_expense_from_attachments:
+          the EXP_GEN product, or the first expensable product when the name is still the
+          untitled placeholder);
+        * name: Upload's "Untitled Expense <date>";
+        * name_prefix: the name starts with one of the prefixes in the system parameter
+          expense_ocr.placeholder_name_prefixes (comma-separated, e.g. the subject prefix of
+          a mail alias for unknown senders): the receipt's description is appended.
+        """
+        self.ensure_one()
+        name = (self.name or "").strip()
+        untitled = {self.with_context(lang=lang)._get_untitled_expense_name("").strip()
+                    for lang in {self.env.lang or "en_US", "en_US"}}
+        name_is_untitled = any(prefix and name.startswith(prefix) for prefix in untitled)
+        product = self.product_id
+        upload_product = False
+        if product and name_is_untitled:
+            expensable = self.env["product.product"].search([("can_be_expensed", "=", True)])
+            upload_product = product == (
+                expensable.filtered(lambda p: p.default_code == "EXP_GEN")[:1] or expensable[:1])
+        param = self.env["ir.config_parameter"].sudo().get_param(
+            "expense_ocr.placeholder_name_prefixes") or ""
+        prefixes = [p.strip() for p in param.split(",") if p.strip()]
+        return {
+            "product": bool(product) and (product.default_code == "EXP_GEN" or upload_product),
+            "name": name_is_untitled,
+            "name_prefix": any(name.startswith(prefix) for prefix in prefixes),
+        }
 
     def _expense_ocr_vat_note(self, f, text):
         """A note when the receipt's printed VAT and the category's tax differ by more than 1
