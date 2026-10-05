@@ -26,7 +26,9 @@ The background job is the one of `account_invoice_ocr_ai` (*OCR: read queued
 bills and receipts*), with the same time budget per run, retries, *OCR* state,
 *OCR pending/failed* filters and form banner, and the same rule: an expense
 someone changed after it was queued is not read (see that module's *When OCR
-runs*). The upload, the mail fetch or the API call returns at once, and a failed
+runs*). The job reads an expense as the user who queued it, with their rights
+and language; an e-mailed expense (queued by the mail gateway) as the user of
+its employee. The upload, the mail fetch or the API call returns at once, and a failed
 read is rolled back on its own and noted in the chatter.
 
 Off switch: *Expense receipt OCR* in the same settings block as the invoice OCR

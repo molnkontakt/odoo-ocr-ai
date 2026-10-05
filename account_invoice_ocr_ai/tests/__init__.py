@@ -7,6 +7,7 @@ from . import (
     test_ocr_lock_dates,
     test_ocr_long_text,
     test_ocr_queue,
+    test_ocr_queue_user,
     test_ocr_savepoint,
     test_ocr_vat,
     test_ocr_vendor,

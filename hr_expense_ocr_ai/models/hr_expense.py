@@ -116,6 +116,11 @@ class HrExpense(models.Model):
             return _("not a draft expense")
         return None
 
+    def _ocr_queue_default_user(self):
+        """An expense that came in by e-mail (the mail gateway runs as OdooBot) is read as
+        its employee's user."""
+        return self._ocr_real_user(self.sudo().employee_id.user_id)
+
     def _ocr_queue_read(self, final=True):
         att = self.ocr_attachment_id
         if not (att and att.res_model == "hr.expense" and att.res_id == self.id

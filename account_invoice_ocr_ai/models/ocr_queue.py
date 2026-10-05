@@ -23,6 +23,11 @@ State machine of a document:
 The claim is committed before the document is read, so an attempt that kills the worker
 (time or memory limit) still counts, and a document left "running" is picked up by the
 next run as an interrupted attempt.
+
+The job reads a document as the user who queued it (ocr_requested_by), with that user's
+access rights, language and company, and its notes have that user as author; only the
+queue's own bookkeeping (claim, state, attempts) is done with superuser rights. See
+_ocr_queue_reader.
 """
 
 import logging
@@ -86,6 +91,14 @@ class OcrQueueMixin(models.AbstractModel):
         help="The attachment OCR reads: the uploaded file, or the one chosen when OCR was "
              "requested.",
     )
+    ocr_requested_by = fields.Many2one(
+        "res.users", string="OCR requested by", copy=False, readonly=True, ondelete="set null",
+        help="The user who queued the document for OCR. The background job reads it as this "
+             "user: with their access rights (a vendor is only created by a user who may create "
+             "contacts), in their language, and their name is on the notes. A document that "
+             "came in by e-mail is read as its sender when the sender is a user; otherwise "
+             "this is empty and the job reads it as OdooBot.",
+    )
 
     # ------------------------------------------------------------------
     # Hooks for the models (account.move, hr.expense)
@@ -94,6 +107,11 @@ class OcrQueueMixin(models.AbstractModel):
     def _ocr_queue_skip_reason(self):
         """Why this document can no longer be read (not a draft …), or None."""
         return None
+
+    def _ocr_queue_default_user(self):
+        """The user to read this document as when no person queued it (the mail gateway runs
+        as OdooBot): e.g. the sender of the e-mail, when that is a user. None by default."""
+        return self.env["res.users"]
 
     def _ocr_queue_read(self, final=True):
         """Read this queued document and fill it in; returns the outcome (see _ocr_result).
@@ -217,19 +235,71 @@ class OcrQueueMixin(models.AbstractModel):
 
     def _ocr_enqueue(self, attachment=None):
         """Queue these documents for the background OCR (the cron is not woken here, see
-        _ocr_queue_trigger). `attachment`: the file to read, if known."""
+        _ocr_queue_trigger). `attachment`: the file to read, if known.
+
+        The current user is stored as the one the job reads the document as (#9, #29), unless it
+        is no person (OdooBot, the superuser, a portal or public user): then the model's
+        _ocr_queue_default_user, e.g. the sender of an e-mailed document.
+        """
         if not self:
             return
-        self.sudo().write({
-            "ocr_state": "pending",
-            "ocr_error": False,
-            "ocr_attempts": 0,
-            # The transaction's time: writes in this same transaction have exactly this
-            # write_date, so only a later change by someone else is newer (see
-            # _ocr_queue_changed).
-            "ocr_requested_at": self.env.cr.now(),
-            "ocr_attachment_id": attachment.id if attachment else False,
-        })
+        requester = self._ocr_real_user(self.env.user)
+        for record in self:
+            user = requester or record._ocr_queue_default_user()
+            record.sudo().write({
+                "ocr_state": "pending",
+                "ocr_error": False,
+                "ocr_attempts": 0,
+                # The transaction's time: writes in this same transaction have exactly this
+                # write_date, so only a later change by someone else is newer (see
+                # _ocr_queue_changed).
+                "ocr_requested_at": self.env.cr.now(),
+                "ocr_attachment_id": attachment.id if attachment else False,
+                "ocr_requested_by": user.id or False,
+            })
+
+    @api.model
+    def _ocr_real_user(self, user):
+        """`user` when it is a person who can work in the back end: active, internal, not
+        OdooBot or the superuser; else an empty recordset."""
+        user = user.sudo()[:1]
+        if user and user.active and not user.share and not user._is_superuser():
+            return user
+        return self.env["res.users"]
+
+    def _ocr_queue_company(self):
+        return self.company_id if "company_id" in self._fields else self.env.company
+
+    def _ocr_queue_lang(self):
+        """The language of the notes on a document no person queued: the company's."""
+        return self._ocr_queue_company().sudo().partner_id.lang or self.env.lang or "en_US"
+
+    def _ocr_queue_reader(self):
+        """(this document as the job reads it, why it cannot be read or None).
+
+        Read as the user who queued it (ocr_requested_by; #9, #29): with that user's access
+        rights, in that user's language, with the document's company as the allowed company
+        (the user must still have it); the notes then have that user as author. A user who
+        is archived, lost the company or can no longer change the document gives a reason
+        instead: the job does not fall back to OdooBot's rights. A document no person
+        queued is read as the job's own user, in the company's language.
+        """
+        self.ensure_one()
+        user = self.ocr_requested_by.sudo()
+        if not user:
+            return self.with_context(lang=self._ocr_queue_lang()), None
+        lang = user.lang or self._ocr_queue_lang()
+        plain = self.with_context(lang=lang)
+        company = self._ocr_queue_company().sudo()
+        if not user.active:
+            return plain, plain.env._("the user who queued it, %s, is archived", user.name)
+        if company not in user.company_ids:
+            return plain, plain.env._("%(user)s, who queued it, no longer has access to the "
+                                      "company %(company)s", user=user.name, company=company.name)
+        reader = self.with_user(user).with_context(lang=lang, allowed_company_ids=[company.id])
+        if not reader.has_access("write"):
+            return plain, plain.env._("%s, who queued it, may no longer change it", user.name)
+        return reader, None
 
     @api.model
     def _ocr_queue_cron(self):
@@ -353,20 +423,21 @@ class OcrQueueMixin(models.AbstractModel):
     def _ocr_queue_recover(self, max_attempts):
         """Documents left "running" by a run that was killed (time or memory limit): the
         attempt counts; they are queued again, or failed after the last attempt."""
-        reason = _("the background job stopped while reading it (Odoo's time or memory "
-                   "limit?)")
         for Model in self._ocr_queue_models():
             for record in Model.search([("ocr_state", "=", "running")]):
                 record = record.try_lock_for_update(allow_referencing=True)
                 if not record:
                     continue
                 record.invalidate_recordset()  # the values as committed, not as cached
-                if record.ocr_state != "running" or record._ocr_queue_drop_if_stale():
+                keeper = record._ocr_queue_reader()[0].sudo()
+                if keeper.ocr_state != "running" or keeper._ocr_queue_drop_if_stale():
                     continue
                 logger.warning("OCR: %s was left running by an interrupted run", record)
-                record._ocr_queue_settle(self._ocr_result("failed", reason, retry=True),
-                                         record.ocr_attempts,
-                                         record.ocr_attempts >= max_attempts)
+                reason = keeper.env._("the background job stopped while reading it (Odoo's "
+                                      "time or memory limit?)")
+                keeper._ocr_queue_settle(self._ocr_result("failed", reason, retry=True),
+                                         keeper.ocr_attempts,
+                                         keeper.ocr_attempts >= max_attempts)
 
     def _ocr_queue_changed(self):
         """True when someone changed the document after it was queued (or taken up)."""
@@ -399,7 +470,13 @@ class OcrQueueMixin(models.AbstractModel):
             self.env.cr.rollback()
 
     def _ocr_queue_process_one(self, max_attempts):
-        """Claim, read and settle one queued document (see _ocr_cron_process)."""
+        """Claim, read and settle one queued document (see _ocr_cron_process).
+
+        The document is read as the user who queued it (_ocr_queue_reader); the claim and
+        the settling are done with superuser rights as that user (`keeper`), so the notes
+        are theirs and in their language. A document its user can no longer read is failed
+        with the reason, without being read.
+        """
         self.ensure_one()
         record = self.try_lock_for_update(allow_referencing=True)
         if not record:
@@ -407,25 +484,31 @@ class OcrQueueMixin(models.AbstractModel):
         # The values as committed (the form button may have read it meanwhile), not as
         # cached when the queue was listed.
         record.invalidate_recordset()
-        if record.ocr_state != "pending" or record._ocr_queue_drop_if_stale():
+        reader, problem = record._ocr_queue_reader()
+        keeper = reader.sudo()
+        if keeper.ocr_state != "pending" or keeper._ocr_queue_drop_if_stale():
             return
-        attempt = record.ocr_attempts + 1
-        record.write({"ocr_state": "running", "ocr_attempts": attempt,
+        attempt = keeper.ocr_attempts + 1
+        keeper.write({"ocr_state": "running", "ocr_attempts": attempt,
                       "ocr_requested_at": self.env.cr.now()})
         # Committed before reading: an attempt that kills the worker still counts.
         self.env["ir.cron"]._commit_progress(0)
         final = attempt >= max_attempts
+        if problem:
+            logger.warning("OCR: %s is not read: %s", record, problem)
+            keeper._ocr_queue_settle(self._ocr_result("failed", problem), attempt, True)
+            return
         try:
             with self.env.cr.savepoint():
-                outcome = record._ocr_queue_read(final=final)
+                outcome = reader._ocr_queue_read(final=final)
             with self.env.cr.savepoint():
-                record._ocr_queue_settle(outcome, attempt, final)
+                keeper._ocr_queue_settle(outcome, attempt, final)
         except Exception as e:  # noqa: BLE001 — one document must never stop the queue
             logger.warning("OCR failed for %s (attempt %s)", record, attempt, exc_info=True)
-            record._ocr_queue_rollback()
-            record.invalidate_recordset()
-            outcome = self._ocr_result("failed", self._ocr_error_reason(e), retry=True)
-            record._ocr_queue_settle(outcome, attempt, final)
+            keeper._ocr_queue_rollback()
+            keeper.invalidate_recordset()
+            outcome = self._ocr_result("failed", keeper._ocr_error_reason(e), retry=True)
+            keeper._ocr_queue_settle(outcome, attempt, final)
 
     def _ocr_queue_settle(self, outcome, attempts, final):
         """Record the outcome of an attempt: read, queued again, failed or off the queue."""

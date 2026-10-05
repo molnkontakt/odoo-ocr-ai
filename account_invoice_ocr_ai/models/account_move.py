@@ -147,6 +147,12 @@ class AccountMove(models.Model):
             return _("not a draft vendor bill")
         return None
 
+    def _ocr_queue_default_user(self):
+        """A bill that came in by e-mail (the mail gateway runs as OdooBot) is read as the
+        sender of that e-mail when the sender is a user, e.g. an employee forwarding a bill."""
+        message = self.sudo().message_ids.filtered(lambda m: m.message_type == "email")[:1]
+        return self._ocr_real_user(message.author_id.user_ids.filtered(lambda u: not u.share))
+
     def _ocr_queue_read(self, final=True):
         att = self._ocr_queue_pdf()
         if not att:

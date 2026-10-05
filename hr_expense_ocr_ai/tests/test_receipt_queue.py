@@ -160,3 +160,38 @@ class TestReceiptQueue(TransactionCase):
         bodies = self._bodies(expense)
         self.assertIn("Receipt OCR", bodies)
         self.assertNotIn("OCR did not read this document", bodies)
+
+
+@tagged("post_install", "-at_install", "expense_ocr")
+class TestReceiptQueueUser(TransactionCase):
+    """An e-mailed receipt (queued as OdooBot) is read as its employee's user (#29)."""
+
+    def test_read_as_the_employees_user(self):
+        from odoo.tests import new_test_user
+
+        self.env["ir.config_parameter"].sudo().set_param("expense_ocr.enabled", "True")
+        self.env["res.lang"]._activate_lang("fr_FR")
+        user = new_test_user(self.env, "ocr_employee", groups="base.group_user", lang="fr_FR")
+        employee = self.env["hr.employee"].create({"name": "Example Employee", "user_id": user.id})
+        expense = self.env["hr.expense"].create({"name": "x", "employee_id": employee.id})
+        att = self.env["ir.attachment"].create({
+            "name": "receipt.jpg", "raw": b"not really a jpeg", "mimetype": "image/jpeg",
+            "res_model": "hr.expense", "res_id": expense.id})
+        expense.message_main_attachment_id = att  # as the superuser, like the mail gateway
+        self.assertEqual(expense.ocr_requested_by, user)
+        seen = []
+        Expense = type(self.env["hr.expense"])
+        original = Expense._expense_ocr_read
+
+        def spy(record, att, force=False, final=True):
+            seen.append((record.env.uid, record.env.su, record.env.lang))
+            return original(record, att, force=force, final=final)
+
+        with mock.patch.object(receipt_ocr, "extract_receipt_data", return_value=_result()), \
+                mock.patch.object(Expense, "_expense_ocr_read", spy):
+            run_ocr_cron(self.env)
+        self.assertEqual(seen, [(user.id, False, "fr_FR")])
+        self.assertEqual(expense.ocr_state, "done")
+        self.assertEqual(expense.total_amount_currency, 112.0)
+        note = expense.message_ids.filtered(lambda m: "Receipt OCR" in str(m.body))
+        self.assertEqual(note.author_id, user.partner_id)

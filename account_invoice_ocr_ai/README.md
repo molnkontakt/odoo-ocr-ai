@@ -73,6 +73,16 @@ documents oldest first, one at a time, each committed on its own:
   empty).
 - The job reads the PDF the bill was queued with, else the bill's main
   attachment.
+- **As whom**: the job reads a bill as the user who queued it (*OCR requested
+  by*, `ocr_requested_by`): with that user's access rights — a vendor is only
+  created by a user who may create contacts, as with the form button —, in that
+  user's language, with the bill's company; the notes are theirs. Only the
+  queue's own bookkeeping (state, attempts) runs with superuser rights. A bill
+  that came in by e-mail is read as the sender when the sender is a user (an
+  employee forwarding it); from an unknown sender it is read as OdooBot, as
+  before, in the company's language. A bill whose user was archived or lost the
+  company is not read with other rights: it fails with that reason, and the
+  form button reads it as whoever clicks it.
 
 ### Time and size limits
 
