@@ -101,10 +101,14 @@ settings.
 
 ### LLM context limit
 
-Only the first **6000 characters** of the extracted text are sent to the LLM
-(`text[:6000]`, tunable via `INVOICE_OCR_TEXT_LIMIT`). Fields printed further
-down a very long document are never seen by the model; the regex extraction of
-printed amounts runs on the full text, so totals/dates on late pages still work.
+At most **6000 characters** of the extracted text are sent to the LLM (tunable
+via `INVOICE_OCR_TEXT_LIMIT`). A longer document is sent as its first two thirds
+and its last third of that budget, joined by a marker saying how much was left
+out, so the totals, VAT summary and payment details at the end stay in view. The
+chatter note then says that the model saw only part of the text (its lines may be
+incomplete), and the reliability re-run is skipped, since it would see the same
+cut text. The regex extraction of printed amounts runs on the full text, so
+totals/dates on late pages still work.
 
 ### Environment variables
 

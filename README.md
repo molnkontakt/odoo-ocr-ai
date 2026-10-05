@@ -26,8 +26,8 @@ residency, default), Venice.ai, OpenAI, **any OpenAI-compatible endpoint**
 (Mistral, Groq, OpenRouter, Together, DeepSeek, Azure OpenAI, Anthropic's
 compatibility layer, a local vLLM or LM Studio: base URL + key + model) or a
 local **Ollama**. A *Verify provider* button shows which model actually answers.
-The text of the document, never the file, is sent to the provider — and only the
-first 6000 characters of it (`INVOICE_OCR_TEXT_LIMIT`); see the
+The text of the document, never the file, is sent to the provider — at most 6000
+characters of it, the beginning and the end of a longer one (`INVOICE_OCR_TEXT_LIMIT`); see the
 [module README](account_invoice_ocr_ai/) for the full environment-variable
 list. Keys live in Odoo system parameters. A reasoning-capable model is
 strongly recommended; the defaults were tuned with `qwen3.6:35b-a3b-thinking`.

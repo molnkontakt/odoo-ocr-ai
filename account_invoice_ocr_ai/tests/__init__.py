@@ -3,6 +3,7 @@ from . import (
     test_ocr_bulk,
     test_ocr_guards,
     test_ocr_lines,
+    test_ocr_long_text,
     test_ocr_savepoint,
     test_payment_reference,
     test_provider_settings,

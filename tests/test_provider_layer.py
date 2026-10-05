@@ -71,7 +71,10 @@ def test_chat_json_sends_schema_and_returns_meta(calls, monkeypatch):
     assert url == "http://vllm.local:8000/v1/chat/completions"
     assert "Authorization" not in kw["headers"], "no key → no header"
     assert kw["json"]["response_format"]["json_schema"]["name"] == "x"
-    assert kw["json"]["messages"][0]["content"] == "Pte", "text is capped at max_chars"
+    # text is capped at max_chars: head + marker + tail (#21)
+    content = kw["json"]["messages"][0]["content"]
+    assert content == "P" + inv.clip_text("text", 2)
+    assert content.startswith("Pt\n\n[... 2 characters") and content.endswith("...]\n\nt")
     assert data == {"ok": True} and meta["served_model"] == "served-model" and meta["completion_tokens"] == 1234
 
 
@@ -196,7 +199,10 @@ def test_ollama_reads_url_and_model_from_config(calls, env_defaults):
 
 def test_text_limit_from_config_caps_the_prompt(calls, env_defaults):
     inv._call_provider("abcdefghij", config={"text_limit": 3})
-    assert calls[0][1]["json"]["messages"][0]["content"].endswith(inv.EXTRACTION_PROMPT[-10:] + "abc")
+    content = calls[0][1]["json"]["messages"][0]["content"]
+    assert content.endswith(inv.EXTRACTION_PROMPT[-10:] + inv.clip_text("abcdefghij", 3))
+    assert inv.clip_text("abcdefghij", 3).startswith("ab\n\n[... 7 characters")
+    assert inv.clip_text("abcdefghij", 3).endswith("j")
 
 
 # ── Verify provider with the form's unsaved values ───────────────────────────

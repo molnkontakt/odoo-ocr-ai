@@ -1275,6 +1275,34 @@ def _default_timeout(cfg):
     return cfg["timeout"]
 
 
+# A text longer than the limit is sent as its head and its tail: totals, the VAT summary
+# and payment details are usually at the end of an invoice, so the tail matters (#21).
+HEAD_SHARE = 2 / 3
+TRUNCATION_MARKER = "\n\n[... {omitted} characters of the document left out here ...]\n\n"
+
+
+def clip_bounds(length, max_chars):
+    """(head, tail) characters of a `length`-character text that fit in `max_chars`.
+
+    (length, 0) when the whole text fits; otherwise about 2/3 head and 1/3 tail.
+    """
+    max_chars = max(int(max_chars or 0), 0)
+    if length <= max_chars:
+        return length, 0
+    head = int(max_chars * HEAD_SHARE)
+    return head, max_chars - head
+
+
+def clip_text(text, max_chars):
+    """`text` cut to `max_chars` as head + a clear marker + tail (see clip_bounds)."""
+    text = text or ""
+    head, tail = clip_bounds(len(text), max_chars)
+    if not tail:
+        return text[:head]
+    omitted = len(text) - head - tail
+    return text[:head] + TRUNCATION_MARKER.format(omitted=omitted) + text[len(text) - tail:]
+
+
 def chat_json(prompt, text, schema, schema_name, max_tokens=8000, max_chars=None, timeout=None,
               config=None):
     """One structured-output call to the configured provider.
@@ -1287,7 +1315,8 @@ def chat_json(prompt, text, schema, schema_name, max_tokens=8000, max_chars=None
     Provider, keys, URLs and limits are read from `config` (merged over default_config()),
     never from module globals set at run time — those are shared by every run in an Odoo
     worker. `max_chars` defaults to the config's text_limit, `timeout` to the provider's
-    per-call cap (the upload path is synchronous, so every call is bounded).
+    per-call cap (the upload path is synchronous, so every call is bounded). A longer text
+    is sent as head + tail (clip_text).
     """
     cfg = _cfg(config)
     if max_chars is None:
@@ -1301,7 +1330,7 @@ def chat_json(prompt, text, schema, schema_name, max_tokens=8000, max_chars=None
         headers["Authorization"] = f"Bearer {key}"
     body = {
         "model": model,
-        "messages": [{"role": "user", "content": prompt + text[:max_chars]}],
+        "messages": [{"role": "user", "content": prompt + clip_text(text, max_chars)}],
         "max_tokens": max_tokens,
         "temperature": 0,
         "response_format": {"type": "json_schema", "json_schema": {"name": schema_name, "schema": schema}},
@@ -1341,7 +1370,7 @@ def _ollama_chat_json(prompt, text, schema, max_chars, timeout, cfg):
         json={
             "model": model, "stream": False, "format": schema or "json",
             "options": {"temperature": 0},
-            "messages": [{"role": "user", "content": prompt + text[:max_chars]}],
+            "messages": [{"role": "user", "content": prompt + clip_text(text, max_chars)}],
         },
         timeout=timeout,
     )
@@ -1670,6 +1699,14 @@ def _extract_fields_ai(text, reference=None, config=None):
     if not problems:
         return _strip_meta(data)
 
+    if len(text or "") > cfg["text_limit"]:
+        # The retry would see the same cut text and fail the same way (#21).
+        logger.warning(
+            "AI answer looks unreliable (%s) but the text was cut to %s of %s characters — "
+            "no retry, the bill needs a manual check.",
+            "; ".join(problems), cfg["text_limit"], len(text))
+        return _strip_meta(data)
+
     if elapsed >= cfg["retry_skip_seconds"]:
         logger.warning(
             "AI-svaret ser opalitligt ut (%s) men forsta anropet tog %.0f s — "
@@ -1744,7 +1781,32 @@ def extract_invoice_data_from_text(text, own_ids=None, own_names=None, config=No
     if ai_error:
         final.setdefault("_notes", []).append(
             f"the AI step failed ({ai_error}) – only the values read by the regex were used")
+    head, tail = clip_bounds(len(text or ""), cfg["text_limit"])
+    if tail:
+        logger.warning("Invoice text cut for the AI: %s characters, sent the first %s and the last %s",
+                       len(text), head, tail)
+        final.setdefault("_notes", []).append(
+            f"the document text has {len(text)} characters; the AI saw only the first {head} and "
+            f"the last {tail} (text limit {cfg['text_limit']}) – its lines may be incomplete")
     return final
+
+
+MARKETPLACE_DECLARER_PATTERNS = [
+    r"Moms deklarerat av\s+([^\n]+?)(?:\s*Moms\s*#|$)",
+    r"VAT declared by\s+([^\n]+?)(?:\s*VAT\s*#|$)",
+    r"Tax collected by\s+([^\n]+?)(?:\s*$)",
+]
+
+
+def marketplace_vat_declarer(text):
+    """The VAT-declaring entity on a marketplace invoice ("Moms deklarerat av X"), or None."""
+    for pattern in MARKETPLACE_DECLARER_PATTERNS:
+        m = re.search(pattern, text or "", re.IGNORECASE | re.MULTILINE)
+        if m:
+            declared = m.group(1).strip().rstrip(",.")
+            if len(declared) > 3:
+                return declared
+    return None
 
 
 def _valid_field_value(key, value, fields):
@@ -1864,6 +1926,14 @@ def _merge_fields(text, regex_fields, ai_fields, own_keys):
             final.pop(key, None)
             final.setdefault("_notes", []).append(
                 f"{key} {' / '.join(dict.fromkeys(rejected))} fails the length or check-digit test – not used")
+
+    # Marketplace invoices (Amazon, eBay, …): the VAT-declaring entity is the vendor, not
+    # the merchant who "sold" the item. Searched in the full text, not a slice of it.
+    declared = marketplace_vat_declarer(text)
+    if declared:
+        final["vendor_name"] = declared
+        final.setdefault("_conflicts", []).append(
+            f"vendor_name: marketplace VAT-declarer override → {declared}")
 
     # Dras fakturan automatiskt från köparens konto? Då ska den inte betalas manuellt.
     auto_debit = detect_auto_debit(text)

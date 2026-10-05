@@ -268,23 +268,8 @@ class AccountMove(models.Model):
             return self._ocr_result(
                 "failed", _("neither a vendor name nor an invoice number was found in the PDF"))
 
-        # ---- Marketplace VAT-declarer override ----------------------
-        # For Amazon/eBay/etc. invoices, prefer "Moms deklarerat av X" /
-        # "VAT declared by X" entity as vendor over "Sold by"-merchant.
-        raw_text = data.get("raw_text") or ""
-        for pattern in [
-            r"Moms deklarerat av\s+([^\n]+?)(?:\s*Moms\s*#|$)",
-            r"VAT declared by\s+([^\n]+?)(?:\s*VAT\s*#|$)",
-            r"Tax collected by\s+([^\n]+?)(?:\s*$)",
-        ]:
-            m = re.search(pattern, raw_text, re.IGNORECASE)
-            if m:
-                declared_vendor = m.group(1).strip().rstrip(",.")
-                if declared_vendor and len(declared_vendor) > 3:
-                    data["vendor_name"] = declared_vendor
-                    data.setdefault("_conflicts", []).append(
-                        f"vendor_name: marketplace VAT-declarer override → {declared_vendor}")
-                    break
+        # The marketplace VAT-declarer override ("Moms deklarerat av X" is the vendor, not
+        # the "Sold by" merchant) runs in the library, on the full text.
 
         # ---- Resolve partner from OCR --------------------------------
         notes = []  # kontroller som ska synas i chattern

@@ -628,3 +628,51 @@ def test_merge_drops_invalid_values_with_a_note():
     assert _merge_giro({}, {"ocr_number": "RF18 5390 0754 7034"})["ocr_number"] == "RF18 5390 0754 7034"
     out = _merge_giro({"ocr_number": "123456789711123", "invoice_number": "1234567897"}, {})
     assert out["ocr_number"] == "123456789711123"
+
+
+# ── Long documents: head + tail, no retry, a note (#21) ───────────────────────
+
+def test_clip_text_keeps_head_and_tail():
+    text = "HEAD " + "x" * 9000 + " TOTAL 1 250,00"
+    clipped = inv.clip_text(text, 6000)
+    assert clipped.startswith("HEAD ") and clipped.endswith("TOTAL 1 250,00")
+    assert inv.clip_bounds(len(text), 6000) == (4000, 2000)
+    assert "characters of the document left out here" in clipped
+    assert len(clipped) < 6000 + 100
+    assert inv.clip_text("short", 6000) == "short"
+    assert inv.clip_text("anything", 0) == ""
+
+
+def test_truncated_text_gets_no_retry_and_a_note(monkeypatch):
+    calls = []
+
+    def provider(text, cfg=None):
+        calls.append(text)
+        return {"vendor_name": "Test AB", "total_amount": 100, "subtotal": 90,
+                "vat_amount": 0, "lines": [{"amount": 90}]}   # 90 + 0 != 100: suspect
+
+    monkeypatch.setattr(inv, "_call_provider", provider)
+    text = "Fakturanummer: 4711\n" + "rad\n" * 3000 + "Att betala: 100,00\n"
+    out = inv.extract_invoice_data_from_text(text, config={"text_limit": 6000,
+                                                           "retry_skip_seconds": 60})
+    assert len(calls) == 1, "the retry would see the same cut text"
+    assert any("the AI saw only the first 4000 and the last 2000" in n for n in out["_notes"])
+    # the regex read the full text, the totals at the end included
+    assert out["total_amount"] == 100.0 and out["invoice_number"] == "4711"
+    # not cut: the suspect answer is retried as before
+    calls.clear()
+    inv.extract_invoice_data_from_text("Fakturanummer: 4711\nAtt betala: 100,00\n",
+                                       config={"retry_skip_seconds": 60})
+    assert len(calls) == 2
+
+
+def test_marketplace_declarer_is_found_in_the_full_text(monkeypatch):
+    monkeypatch.setattr(inv, "_extract_fields_ai", lambda text, reference=None, config=None: {
+        "vendor_name": "Some Merchant"})
+    text = "Faktura\n" + "rad\n" * 1000 + "Såld av Some Merchant\nMoms deklarerat av Example Marketplace S.a.r.l.\n"
+    out = inv.extract_invoice_data_from_text(text)
+    assert out["vendor_name"] == "Example Marketplace S.a.r.l"
+    assert any("marketplace VAT-declarer" in c for c in out["_conflicts"])
+    assert inv.marketplace_vat_declarer("VAT declared by Example Marketplace S.a.r.l. VAT # LU1") == \
+        "Example Marketplace S.a.r.l"
+    assert inv.marketplace_vat_declarer("Sold by Foo") is None
