@@ -142,3 +142,20 @@ class TestReceiptQueue(TransactionCase):
         bodies = self._bodies(expense)
         self.assertIn("the time for reading the image was used up", bodies)
         self.assertNotIn("OCR could not read this document", bodies, "one note is enough")
+
+    def test_receipt_with_everything_set_is_read_not_skipped(self):
+        """The list action on an expense filled in by hand: the job reads the receipt, notes
+        what it says and fills nothing; it is "Read", not "OCR did not read"."""
+        product = self.env["product.product"].create({"name": "Meals", "can_be_expensed": True})
+        expense = self._expense(product_id=product.id, total_amount_currency=50.0,
+                                name="Lunch with a customer")
+        self._attachment(expense.id)
+        expense.action_read_receipt_bulk()
+        self.assertEqual(expense.ocr_state, "pending")
+        with mock.patch.object(receipt_ocr, "extract_receipt_data", return_value=_result()):
+            run_ocr_cron(self.env)
+        self.assertEqual(expense.ocr_state, "done")
+        self.assertEqual((expense.total_amount_currency, expense.name), (50.0, "Lunch with a customer"))
+        bodies = self._bodies(expense)
+        self.assertIn("Kvitto-OCR", bodies)
+        self.assertNotIn("OCR did not read this document", bodies)

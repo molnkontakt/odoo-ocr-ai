@@ -171,7 +171,10 @@ class HrExpense(models.Model):
                                                 "from the text were filled in", ai_error),
                                     noted=True)
         if not filled:
-            return self._ocr_result("skipped", _("nothing was filled (see the chatter note)"))
+            # Read, but every field was already set: a read like any other (the chatter
+            # note lists what the receipt says), not a document OCR left alone.
+            return self._ocr_result("filled", _("nothing was filled: the fields were already "
+                                                "set (see the chatter note)"))
         return self._ocr_result("filled")
 
     def _expense_ocr_apply(self, result, by_code, att, force=False):
