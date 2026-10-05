@@ -103,7 +103,8 @@ class TestOcrVat(OcrBillCase):
         self.assertEqual(move.amount_total, 107.0)
         bodies = self._bodies(move)
         self.assertIn("foreign VAT (7.00)", bodies)
-        self.assertNotIn("raderna stämmer inte", bodies, "the totals check knows about it")
+        self.assertNotIn("the lines do not match the bill", bodies,
+                         "the totals check knows about it")
 
     def test_foreign_vat_spread_over_the_taxed_lines(self):
         move = self._bill(self.us_vendor, [

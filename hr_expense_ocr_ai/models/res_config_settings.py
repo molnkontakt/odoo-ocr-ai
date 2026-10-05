@@ -5,11 +5,11 @@ class ResConfigSettings(models.TransientModel):
     _inherit = "res.config.settings"
 
     expense_ocr_enabled = fields.Boolean(
-        string="Kvitto-OCR på utlägg",
+        string="Expense receipt OCR",
         config_parameter="expense_ocr.enabled",
         default=True,
-        help="Läser kvittofoton på inmailade utlägg och på utkast som får en huvudbilaga. "
-             "Använder samma AI-leverantör och nycklar som faktura-OCR:en.",
+        help="Reads receipt photos and PDFs on e-mailed expenses and on drafts that get a main "
+             "attachment. Uses the same AI provider and keys as the invoice OCR.",
     )
 
     expense_ocr_placeholder_name_prefixes = fields.Char(

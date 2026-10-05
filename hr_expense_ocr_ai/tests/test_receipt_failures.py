@@ -145,7 +145,7 @@ class TestReceiptBulk(TransactionCase):
         self.assertEqual(params["type"], "success")
         message = params["message"]
         self.assertTrue(message.startswith("2 queued for OCR"), message)
-        self.assertIn(f"{none.display_name}: Ingen bild- eller PDF-bilaga", message)
+        self.assertIn(f"{none.display_name}: The expense has no image or PDF attachment", message)
         self.assertEqual((good | bad).mapped("ocr_state"), ["pending", "pending"])
         with mock.patch.object(receipt_ocr, "extract_receipt_data", side_effect=self._read), \
                 mute_logger(QUEUE_LOGGER):

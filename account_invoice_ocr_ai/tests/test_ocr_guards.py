@@ -74,7 +74,7 @@ class TestOcrGuards(OcrBillCase):
         self.assertEqual(move.partner_id, self.vendor)
         self.assertFalse(move.partner_bank_id)
         self.assertEqual(self.env["res.partner.bank"].search_count([]), before)
-        self.assertIn("bolagets eget konto", self._bodies(move))
+        self.assertIn("is the company's own account", self._bodies(move))
 
     def test_resolve_never_returns_own_company(self):
         before = self.env["res.partner"].search_count([])
@@ -91,7 +91,7 @@ class TestOcrGuards(OcrBillCase):
         partner, notes = self._resolve({"org_number": fx.OWN_VAT,
                                         "vendor_name": "Example Bank"})
         self.assertEqual(partner, self.vendor)
-        self.assertTrue(any("eget" in n for n in notes))
+        self.assertTrue(any("the company's own" in n for n in notes))
 
     def test_resolve_by_own_bankgiro_is_skipped(self):
         partner, _notes = self._resolve({"bankgiro": fx.OWN_BANKGIRO})
@@ -115,8 +115,8 @@ class TestOcrGuards(OcrBillCase):
         self.assertTrue(move.ocr_auto_debit)
         self.assertEqual(move.ref, fx.INVOICE_NUMBER)
         bodies = self._bodies(move)
-        self.assertIn("Dras automatiskt från kontot – ska inte betalas manuellt", bodies)
-        self.assertIn("Kontroller", bodies)
+        self.assertIn("Debited automatically from the account – not to be paid by hand", bodies)
+        self.assertIn("Checks:", bodies)
         self.assertIn(fx.VENDOR_ORG, bodies)
 
     def test_preset_own_partner_is_replaced(self):
@@ -206,7 +206,7 @@ class TestOcrGuards(OcrBillCase):
         self._run_ocr(move, text=fx.PLAIN_INVOICE_TEXT)
         self.assertFalse(move.ocr_auto_debit)
         self.assertFalse(move.ocr_auto_debit_phrase)
-        self.assertIn("flaggan togs bort", self._bodies(move))
+        self.assertIn("the flag was removed", self._bodies(move))
 
     def test_rerun_keeps_manual_flag(self):
         move = self._new_bill(partner_id=self.vendor.id)
@@ -232,7 +232,7 @@ class TestOcrGuards(OcrBillCase):
         self.assertEqual(move.partner_id, self.vendor)
         self.assertFalse(move.partner_bank_id)
         self.assertFalse(move.ocr_auto_debit)
-        self.assertIn("bolagets eget konto", self._bodies(move))
+        self.assertIn("is the company's own account", self._bodies(move))
 
     def test_drop_own_partner_bank(self):
         move = self._new_bill(partner_id=self.vendor.id)
@@ -256,7 +256,7 @@ class TestOcrGuards(OcrBillCase):
         self.assertEqual(move.partner_id, vendor)
         self.assertEqual(move.partner_bank_id, bank)
         self.assertFalse(move.ocr_auto_debit)
-        self.assertNotIn("Dras automatiskt från kontot", self._bodies(move))
+        self.assertNotIn("Debited automatically from the account", self._bodies(move))
 
     # -- already booked through the bank statement line ------------------------------------
 
@@ -271,7 +271,7 @@ class TestOcrGuards(OcrBillCase):
         st = self._st_line("Other " + fx.INVOICE_NUMBER, account=self.expense)
         move = self._run_ocr(self._new_bill())
         bodies = self._bodies(move)
-        self.assertIn("Kostnaden kan redan vara bokförd", bodies)
+        self.assertIn("The cost may already be booked through the bank", bodies)
         self.assertIn(st.move_id.name, bodies)
 
     def test_prebooked_by_amount_date_and_name(self):
@@ -281,7 +281,7 @@ class TestOcrGuards(OcrBillCase):
 
     def _assert_not_prebooked(self):
         move = self._run_ocr(self._new_bill())
-        self.assertNotIn("Kostnaden kan redan vara bokförd", self._bodies(move))
+        self.assertNotIn("The cost may already be booked through the bank", self._bodies(move))
 
     def test_not_prebooked_when_reconciled_to_payable(self):
         self._st_line("Other " + fx.INVOICE_NUMBER, account=self.payable)
@@ -324,4 +324,4 @@ class TestOcrGuards(OcrBillCase):
             "counterpart_account_id": other["default_account_expense"].id,
         })
         move = self._run_ocr(self._new_bill())
-        self.assertNotIn("Kostnaden kan redan vara bokförd", self._bodies(move))
+        self.assertNotIn("The cost may already be booked through the bank", self._bodies(move))

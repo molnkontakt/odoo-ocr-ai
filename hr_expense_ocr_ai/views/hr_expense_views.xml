@@ -6,9 +6,9 @@
         <field name="inherit_id" ref="hr_expense.hr_expense_view_form"/>
         <field name="arch" type="xml">
             <xpath expr="//header" position="inside">
-                <button name="action_read_receipt" type="object" string="Läs kvitto (OCR)"
+                <button name="action_read_receipt" type="object" string="Read receipt (OCR)"
                         class="btn-secondary" invisible="state != 'draft' or ocr_state == 'running'"
-                        help="Läser bilagan med tesseract + AI och fyller tomma fält (belopp, datum, kategori)."/>
+                        help="Reads the attachment with tesseract + AI and fills in the empty fields (amount, date, category, description)."/>
             </xpath>
             <xpath expr="/form/sheet" position="before">
                 <field name="ocr_state" invisible="1"/>

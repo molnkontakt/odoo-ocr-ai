@@ -50,13 +50,14 @@ class TestReceiptVat(TransactionCase):
         expense = self._read({"total": 112.0, "vat_amount": 12.0, "category_code": "MEAL25"})
         self.assertEqual(expense.tax_ids, self.tax25, "the tax is not changed")
         self.assertAlmostEqual(expense.tax_amount_currency, 22.40)
-        self.assertIn("the receipt shows VAT 12.00, the category's tax gives 22.40",
-                      self._bodies(expense))
+        # amounts in the expense's currency, formatted for the user's language
+        self.assertRegex(self._bodies(expense),
+                         r"the receipt shows VAT \S*12\.00, the category's tax gives \S*22\.40")
         self.assertFalse(expense.activity_ids)
 
     def test_also_for_a_category_set_by_hand(self):
         expense = self._read({"total": 112.0, "vat_amount": 12.0}, product_id=self.meals25.id)
-        self.assertIn("the receipt shows VAT 12.00", self._bodies(expense))
+        self.assertRegex(self._bodies(expense), r"the receipt shows VAT \S*12\.00")
 
     def test_no_note_when_it_matches_or_cannot_be_compared(self):
         expense = self._read({"total": 112.0, "vat_amount": 12.0, "category_code": "MEAL12"})

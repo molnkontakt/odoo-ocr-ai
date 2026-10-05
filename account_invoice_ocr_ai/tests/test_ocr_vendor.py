@@ -31,7 +31,7 @@ class TestOcrVendor(OcrBillCase):
     def test_giro_compared_digit_for_digit(self):
         partner, notes = self._resolve({"bankgiro": fx.PLAIN_VENDOR_BANKGIRO})
         self.assertEqual(partner, self.supplier, "the commercial partner, not the contact")
-        self.assertIn(f"matched on bankgiro {fx.PLAIN_VENDOR_BANKGIRO}", " ".join(notes))
+        self.assertIn(f"matched on the bankgiro {fx.PLAIN_VENDOR_BANKGIRO}", " ".join(notes))
         partner, _notes = self._resolve({"plusgiro": "12"})
         self.assertFalse(partner, "12 is in other account numbers but is none of them")
 
@@ -74,7 +74,7 @@ class TestOcrVendor(OcrBillCase):
         move = self._run_ocr(self._new_bill(), text=text, ai=ai)
         self.assertEqual(move.partner_id, self.supplier)
         self.assertEqual(move.partner_bank_id.partner_id, self.contact)
-        self.assertIn(f"matched on bankgiro {fx.PLAIN_VENDOR_BANKGIRO}", self._bodies(move))
+        self.assertIn(f"matched on the bankgiro {fx.PLAIN_VENDOR_BANKGIRO}", self._bodies(move))
 
     def test_name_only_match_fills_the_vendor_with_a_note(self):
         ai = {"vendor_name": "Example Consulting AB", "invoice_number": "4711",

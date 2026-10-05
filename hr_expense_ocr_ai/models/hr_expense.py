@@ -1,11 +1,12 @@
 import logging
 
 import psycopg2
-from markupsafe import Markup, escape
+from markupsafe import Markup
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 from odoo.tools import html2plaintext, is_html_empty
+from odoo.tools.misc import formatLang
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +33,11 @@ class HrExpense(models.Model):
         return self.env["account.move"]._invoice_ocr_config(self.company_id)
 
     def _expense_ocr_categories(self):
-        """[(kod, namn, hint)] + kod→produkt. Hinten är produktens inköpsbeskrivning, eller
-        kategorins "Guideline" (product description, an HTML field) as plain text, so the
-        administrator can steer the categorisation by describing the categories in Odoo.
-        Empty editor content ('<p><br></p>') is no hint; a hint is capped at HINT_LIMIT."""
+        """[(code, name, hint)] and code → product. The hint is the product's purchase
+        description, or the category's "Guideline" (product description, an HTML field) as
+        plain text, so the administrator can steer the categorisation by describing the
+        categories in Odoo. Empty editor content ('<p><br></p>') is no hint; a hint is capped
+        at HINT_LIMIT."""
         self.ensure_one()
         products = self.env["product.product"].sudo().search([
             ("can_be_expensed", "=", True), ("company_id", "in", [False, self.company_id.id]),
@@ -62,7 +64,8 @@ class HrExpense(models.Model):
 
     # ------------------------------------------------------------------ core
     def action_read_receipt(self, force=False):
-        """Läs kvittot och fyll tomma fält. `force` skriver över belopp/datum/kategori/namn.
+        """Read the receipt and fill the empty fields. `force` overwrites amount, date,
+        category and description.
 
         The form button: reads at once (bounded by the document deadline), and the OCR
         state shows the outcome. Every failure reaches the user as a UserError with a
@@ -126,10 +129,10 @@ class HrExpense(models.Model):
         """(attachment, None) when OCR can read this expense, else (None, the reason)."""
         self.ensure_one()
         if self.state != "draft":
-            return None, _("Kvitto-OCR kan bara köras på utkast.")
+            return None, _("Receipt OCR can only read draft expenses.")
         att = self._expense_ocr_attachment()
         if not att:
-            return None, _("Ingen bild- eller PDF-bilaga på utlägget.")
+            return None, _("The expense has no image or PDF attachment.")
         return att, None
 
     def _expense_ocr_read_or_raise(self, att, force=False, final=True):
@@ -142,7 +145,7 @@ class HrExpense(models.Model):
         except Exception as e:  # noqa: BLE001 — shown to the user, see action_read_receipt
             logger.warning("Receipt OCR failed for expense %s", self.id, exc_info=True)
             raise UserError(_("Receipt OCR failed for %(name)s: %(error)s",
-                              name=att.name, error=str(e)[:300] or type(e).__name__)) from e
+                              name=att.name, error=self._ocr_error_reason(e))) from e
 
     def _expense_ocr_read(self, att, force=False, final=True):
         """Read `att` and fill the expense. Returns the outcome (see ocr.queue.mixin._ocr_result).
@@ -158,7 +161,7 @@ class HrExpense(models.Model):
         cfg = self._expense_ocr_config()
         cats, by_code = self._expense_ocr_categories()
         result = receipt_ocr.extract_receipt_data(att.raw, att.mimetype, att.name, categories=cats, config=cfg)
-        ai_error = result.get("ai_error")
+        ai_error = self._ocr_note_text(result.get("ai_error")) or None
         if ai_error and not final:
             return self._ocr_result("failed", _("the AI step failed (%s)", ai_error), retry=True)
         filled = self._expense_ocr_apply(result, by_code, att, force=force)
@@ -182,7 +185,7 @@ class HrExpense(models.Model):
 
         self.ensure_one()
         f = result.get("fields") or {}
-        notes = list(result.get("notes") or [])
+        notes = self._ocr_notes_text(result.get("notes"))
         vals, filled = {}, []
         today = fields.Date.context_today(self)
         if f.get("date") and (force or not self.date or self.date == today):
@@ -191,7 +194,7 @@ class HrExpense(models.Model):
             day = receipt_ocr.inv.iso_date(f["date"])
             if day:
                 vals["date"] = day
-                filled.append(_("datum %s", day))
+                filled.append(_("date %s", day))
             else:
                 notes.append(_("the date %s is not a valid date – not used", f["date"]))
         placeholder = self._expense_ocr_placeholders()
@@ -199,43 +202,75 @@ class HrExpense(models.Model):
             product = by_code.get(f["category_code"])
             if product and product != self.product_id:
                 vals["product_id"] = product.id
-                filled.append(_("kategori %s", product.name))
+                filled.append(_("category %s", product.name))
         if f.get("total") is not None and (force or not self.total_amount_currency):
             self._expense_ocr_amount_vals(f, vals, filled, notes)
         merchant, items, number = f.get("merchant"), f.get("items"), f.get("receipt_number")
-        label = " ".join(x for x in (merchant, _("kvitto %s", number) if number else None) if x)
+        label = " ".join(x for x in (merchant, _("receipt %s", number) if number else None) if x)
         if items:
             label = f"{label} — {items}" if label else items
         current = (self.name or "").strip()
         if label and (force or len(current) <= 3 or placeholder["name"]):
             vals["name"] = label
-            filled.append(_("beskrivning"))
+            filled.append(_("description"))
         elif label and placeholder["name_prefix"] and label.lower() not in current.lower():
             vals["name"] = f"{current} — {label}"
-            filled.append(_("beskrivning"))
+            filled.append(_("description"))
         if vals:
             self.write(vals)
         vat_note = self._expense_ocr_vat_note(f, result.get("text") or "")
         if vat_note:
             notes.append(vat_note)
+        self.message_post(body=self._expense_ocr_note(result, att, filled, notes),
+                          message_type="comment", subtype_xmlid="mail.mt_note")
+        return filled
 
-        # chatter
+    @api.model
+    def _expense_ocr_field_labels(self):
+        """The receipt's fields in the chatter note, in order, with their labels."""
+        return {
+            "merchant": _("Merchant"), "receipt_number": _("Receipt number"), "date": _("Date"),
+            "total": _("Total"), "vat_amount": _("VAT"), "currency": _("Currency"),
+            "items": _("Items"), "card_last4": _("Card (last four digits)"),
+            "category_code": _("Category"),
+        }
+
+    def _expense_ocr_note(self, result, att, filled, notes):
+        """The chatter note: what was read, by which model, what was filled, and why not."""
+        f = result.get("fields") or {}
         if result.get("source") == "none":
-            body = Markup("<p><b>Kvitto-OCR</b>: kunde inte läsa någon text ur %s.</p>") % att.name
+            if len((result.get("text") or "").strip()) >= 15:
+                body = Markup("<p><b>%s</b>: %s</p>") % (
+                    _("Receipt OCR"), _("read the text of %s, but found nothing to fill in.",
+                                        att.name))
+            else:
+                body = Markup("<p><b>%s</b>: %s</p>") % (
+                    _("Receipt OCR"), _("could not read any text from %s.", att.name))
         else:
+            labels = self._expense_ocr_field_labels()
             rows = Markup("").join(
-                Markup("<li>%s: <code>%s</code></li>") % (k, v)
-                for k, v in f.items() if k != "confidence" and v not in (None, "")
+                Markup("<li>%s: <code>%s</code></li>") % (labels[k], f[k])
+                for k in labels if f.get(k) not in (None, "")
             )
-            conf = f.get("confidence")
-            body = Markup("<p><b>Kvitto-OCR</b> läste %s (%s%s)</p><ul>%s</ul>") % (
-                att.name, result.get("source"), Markup(", konfidens %.2f") % conf if conf is not None else "", rows)
-            body += Markup("<p>Ifyllt: %s</p>") % (", ".join(filled) if filled else _("inget (fälten var redan satta)"))
+            how = [_("AI") if result.get("source") == "ai" else _("text patterns only")]
+            if f.get("confidence") is not None:
+                how.append(_("confidence %s", f"{f['confidence']:.2f}"))
+            ai = result.get("ai") or {}
+            model = ai.get("_served_model") or ai.get("_model")
+            if model:
+                tokens = ai.get("_completion_tokens")
+                how.append(_("model %(model)s, %(tokens)s completion tokens", model=model,
+                             tokens=tokens if tokens is not None else "?"))
+            body = Markup("<p><b>%s</b>: %s</p><ul>%s</ul>") % (
+                _("Receipt OCR"), _("read %(name)s (%(how)s)", name=att.name, how="; ".join(how)),
+                rows)
+            body += Markup("<p>%s</p>") % _(
+                "Filled in: %s", ", ".join(filled) if filled
+                else _("nothing (the fields were already set)"))
         # Also when nothing was read: a budget that cut the reading (#26) says why.
         if notes:
-            body += Markup("<p><b>Anmärkningar:</b> %s</p>") % escape("; ".join(notes))
-        self.message_post(body=body, message_type="comment", subtype_xmlid="mail.mt_note")
-        return filled
+            body += Markup("<p><b>%s</b> %s</p>") % (_("Notes:"), "; ".join(notes))
+        return body
 
     def _expense_ocr_placeholders(self):
         """Which values are placeholders that the receipt may replace (#34).
@@ -292,8 +327,11 @@ class HrExpense(models.Model):
             return None
         if abs(self.tax_amount_currency - vat) <= 1.0:
             return None
-        return _("the receipt shows VAT %(printed).2f, the category's tax gives %(computed).2f – "
-                 "check the VAT rate", printed=vat, computed=self.tax_amount_currency)
+        return _("the receipt shows VAT %(printed)s, the category's tax gives %(computed)s – "
+                 "check the VAT rate",
+                 printed=formatLang(self.env, vat, currency_obj=self.currency_id),
+                 computed=formatLang(self.env, self.tax_amount_currency,
+                                     currency_obj=self.currency_id))
 
     def _expense_ocr_amount_vals(self, f, vals, filled, notes):
         """Add the receipt's total, in the receipt's currency, to `vals` (#28).
@@ -322,14 +360,15 @@ class HrExpense(models.Model):
         vals["total_amount_currency"] = currency.round(float(f["total"]))
         if currency != self.currency_id:
             vals["currency_id"] = currency.id
-        filled.append(_("belopp %s", f"{vals['total_amount_currency']} {currency.name}"
-                        if currency != self.company_currency_id else vals["total_amount_currency"]))
+        filled.append(_("amount %s", formatLang(self.env, vals["total_amount_currency"],
+                                                currency_obj=currency)))
 
     # ------------------------------------------------------------------ trigger
-    # En enda utlösare räcker för både mail och MCP: när utkastet får en (ny) huvudbilaga. Vid
-    # inmailade utlägg hängs bilagorna på EFTER message_new (mail_thread postar meddelandet
-    # efteråt och sätter då huvudbilagan), så en hook i message_new ser inga bilagor. Läsningen
-    # körs bara när det finns något att fylla i: belopp 0 eller ingen kategori.
+    # One trigger serves e-mail and the API: the draft gets a (new) main attachment. On
+    # e-mailed expenses the attachments are added AFTER message_new (mail_thread posts the
+    # message afterwards and sets the main attachment then), so a hook in message_new sees no
+    # attachments. The receipt is only read when there is something to fill: amount 0 or no
+    # category.
     #
     # The trigger only queues the expense (#29): the OCR cron reads it within seconds, so the
     # upload, the mail fetch or the API call that set the attachment returns at once.

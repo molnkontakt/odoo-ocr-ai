@@ -86,7 +86,8 @@ class TestReceiptQueue(TransactionCase):
         expense = self._expense()
         expense.message_main_attachment_id = self._attachment(expense.id)
         regex_only = {"text": TEXT, "source": "regex", "fields": {"total": 112.0},
-                      "notes": ["AI-tolkningen misslyckades; bara regex (RuntimeError: HTTP 503)"],
+                      "notes": ["the AI step failed (RuntimeError: HTTP 503); only the values "
+                                "read by the regex were used"],
                       "ai_error": "RuntimeError: HTTP 503"}
         with mock.patch.object(receipt_ocr, "extract_receipt_data", return_value=regex_only):
             run_ocr_cron(self.env)
@@ -98,7 +99,7 @@ class TestReceiptQueue(TransactionCase):
         self.assertEqual(expense.total_amount_currency, 112.0)
         self.assertIn("the AI step failed (RuntimeError: HTTP 503)", expense.ocr_error)
         bodies = self._bodies(expense)
-        self.assertIn("AI-tolkningen misslyckades", bodies)
+        self.assertIn("only the values read by the regex were used", bodies)
         self.assertNotIn("OCR could not read this document", bodies, "the read note says it")
 
     def test_expenses_no_longer_drafts_are_cleared(self):
@@ -157,5 +158,5 @@ class TestReceiptQueue(TransactionCase):
         self.assertEqual(expense.ocr_state, "done")
         self.assertEqual((expense.total_amount_currency, expense.name), (50.0, "Lunch with a customer"))
         bodies = self._bodies(expense)
-        self.assertIn("Kvitto-OCR", bodies)
+        self.assertIn("Receipt OCR", bodies)
         self.assertNotIn("OCR did not read this document", bodies)

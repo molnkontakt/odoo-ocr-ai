@@ -35,8 +35,8 @@ whole upload or hold up the mail fetch:
 | Trigger | What happens |
 |---|---|
 | **Upload** in a purchase journal, a PDF to the journal's mail alias | The new draft bill is queued (*OCR: Queued*); the background job reads it within seconds |
-| List action **Kör OCR igen** | The selected draft bills are queued; a notification says how many were queued or skipped, and why |
-| Header button **Kör OCR igen** on a draft | Reads the bill at once (within the time limit per document) and reports the result |
+| List action **Run OCR again** | The selected draft bills are queued; a notification says how many were queued or skipped, and why |
+| Header button **Run OCR again** on a draft | Reads the bill at once (within the time limit per document) and reports the result |
 | A PDF attached to an existing bill (the chatter's attachment box, a reply to the bill) | **Not read automatically**, so a supporting document never overwrites a bill someone filled in; use the header button, which reads the bill's newest PDF |
 
 A bill Odoo already imported electronically (UBL/Peppol, embedded
@@ -164,8 +164,8 @@ never used as the supplier:
   read as day/month unless the LLM read it the other way; the note shows both
   readings.
 - **Auto debit**: when the document says the amount is debited automatically
-  (autogiro, direct debit, "Dras automatiskt" …) the bill gets **Dras
-  automatiskt** (`ocr_auto_debit`), the recipient account is left empty so the
+  (autogiro, direct debit, "dras automatiskt" …) the bill gets **Debited
+  automatically** (`ocr_auto_debit`), the recipient account is left empty so the
   bill stays out of payment files, and a warning is posted. Matching is per
   sentence, so marketing, conditions ("if you pay by direct debit …") and
   lists of payment methods do not trigger it. A field `l10n_se_auto_debit` on

@@ -3,9 +3,12 @@ amounts, lines).
 
 A bill created from a PDF — the journal's Upload button, the mail alias — is queued in
 account.move._extend_with_attachments and read by the OCR cron within seconds (see
-ocr_queue.py, #9); so is a bill the list action "Kör OCR igen" is run on. The form button
+ocr_queue.py, #9); so is a bill the list action "Run OCR again" is run on. The form button
 reads the bill at once. A PDF attached later to an existing bill (the chatter, a reply to
 it) is not read automatically (#35.2): the form button reads it on request.
+
+User-facing texts are English source strings, translated through i18n/<lang>.po (#35.3);
+the library's notes are translated with ocr.queue.mixin._ocr_note_text.
 """
 
 import base64
@@ -17,6 +20,7 @@ from datetime import timedelta
 from markupsafe import Markup
 
 from odoo import _, api, fields, models
+from odoo.tools.misc import formatLang
 
 logger = logging.getLogger(__name__)
 
@@ -26,24 +30,24 @@ class AccountMove(models.Model):
     _inherit = ["account.move", "ocr.queue.mixin"]
 
     ocr_auto_debit = fields.Boolean(
-        string="Dras automatiskt",
+        string="Debited automatically",
         copy=False,
         tracking=True,
-        help="Fakturan dras automatiskt från bolagets konto (autogiro, bankavgift, "
-             "direct debit) och ska INTE betalas manuellt eller tas med i en betalfil. "
-             "Sätts av OCR-tolkningen när underlaget säger det; kan ändras för hand.",
+        help="The bill is debited automatically from the company's account (direct debit, "
+             "autogiro, a bank charge) and must NOT be paid by hand or included in a payment "
+             "file. Set by OCR when the document says so; can be changed by hand.",
     )
     ocr_auto_debit_phrase = fields.Char(
-        string="Dragning enligt OCR",
+        string="Debit phrase found by OCR",
         copy=False,
         readonly=True,
-        help="Frasen i underlaget som fick OCR:en att sätta 'Dras automatiskt'. Tom när "
-             "flaggan satts eller ändrats för hand – då rör en omkörning av OCR:en den inte.",
+        help="The phrase in the document that made OCR set 'Debited automatically'. Empty when "
+             "the flag was set or changed by hand – then running OCR again leaves it alone.",
     )
 
     def write(self, vals):
-        # Ändras flaggan för hand äger användaren den: glöm OCR-frasen så att en
-        # omkörning inte nollställer ett manuellt val.
+        # A flag changed by hand belongs to the user: forget the OCR phrase, so that running
+        # OCR again does not reset a manual choice.
         if "ocr_auto_debit" in vals and not self.env.context.get("ocr_auto_debit_write"):
             vals = dict(vals, ocr_auto_debit_phrase=False)
         return super().write(vals)
@@ -78,7 +82,7 @@ class AccountMove(models.Model):
         return self._ocr_notification(_("Invoice OCR"), results)
 
     def action_queue_ocr(self):
-        """Queue the selected draft vendor bills for OCR: the list action "Kör OCR igen".
+        """Queue the selected draft vendor bills for OCR: the list action "Run OCR again".
 
         Nothing is read in the request (a worker would hit Odoo's time limit after a few
         bills, #9): the OCR cron reads the bills within seconds, one by one, and the outcome
@@ -381,12 +385,12 @@ class AccountMove(models.Model):
         except Exception as e:
             logger.warning("invoice_ocr.extract_invoice_data failed: %s", e)
             return self._ocr_result(
-                "failed", _("the PDF could not be read (%s)", str(e)[:300] or type(e).__name__),
+                "failed", _("the PDF could not be read (%s)", self._ocr_error_reason(e)),
                 retry=True)
 
         # The AI step failed (provider down, time limit): try again later before filling in
         # only what the regex read.
-        ai_error = (data or {}).get("_ai_error")
+        ai_error = self._ocr_note_text((data or {}).get("_ai_error")) or None
         if ai_error and not final:
             return self._ocr_result("failed", _("the AI step failed (%s)", ai_error), retry=True)
 
@@ -399,20 +403,21 @@ class AccountMove(models.Model):
                 reason = _("neither a vendor name nor an invoice number was found in the PDF")
             # A budget that cut the reading (#26) is part of the reason.
             cuts = [note for note in (data or {}).get("_notes") or []
-                    if not str(note).startswith("the AI step failed")]
+                    if not getattr(note, "msgid", str(note)).startswith("the AI step failed")]
             if cuts:
-                reason = f"{reason} ({'; '.join(cuts)})"
+                reason = _("%(reason)s (%(details)s)", reason=reason,
+                           details="; ".join(self._ocr_notes_text(cuts)))
             return self._ocr_result("failed", reason)
 
         # The marketplace VAT-declarer override ("Moms deklarerat av X" is the vendor, not
         # the "Sold by" merchant) runs in the library, on the full text.
 
         # ---- Resolve partner from OCR --------------------------------
-        notes = []  # kontroller som ska synas i chattern
+        notes = []  # checks the reviewer sees in the chatter
         for own_nr in data.get("_own_ids_skipped") or []:
-            notes.append(_("Org.nr %s på fakturan är bolagets eget (köparen) – "
-                           "användes inte som leverantörens.") % own_nr)
-        notes += data.get("_notes") or []
+            notes.append(_("The org number %s on the bill is the company's own (the buyer's) – "
+                           "not used as the vendor's.", own_nr))
+        notes += self._ocr_notes_text(data.get("_notes"))
         # Only real calendar dates are written: a value the ORM cannot read would make the
         # write raise and lose the whole fill. The library already validates; this guards
         # against anything else (another library version, a patched extraction).
@@ -437,56 +442,51 @@ class AccountMove(models.Model):
         if partner_id:
             vals["partner_id"] = partner_id
             if current_is_own:
-                notes.append(_("Leverantören var satt till det egna bolaget (%s) – "
-                               "ersatt med leverantören från underlaget.")
-                             % move.partner_id.display_name)
+                notes.append(_("The vendor was set to the company itself (%s) – replaced by the "
+                               "vendor from the document.", move.partner_id.display_name))
         elif current_is_own:
-            notes.append(_("Leverantören är det egna bolaget (%s) och ingen annan "
-                           "leverantör kunde hittas – välj leverantör för hand.")
-                         % move.partner_id.display_name)
+            notes.append(_("The vendor is the company itself (%s) and no other vendor could be "
+                           "found – choose the vendor by hand.", move.partner_id.display_name))
         if data.get("invoice_number") and not move.ref:
             vals["ref"] = data["invoice_number"]
         if data.get("invoice_date") and not move.invoice_date:
             vals["invoice_date"] = data["invoice_date"]
-            # Bokföringsdatum ska följa fakturadatum, inte den dag underlaget laddades upp.
-            # Undantag: aldrig in i en låst period — då behåller vi Odoos default. Odoo's
-            # own lock rules decide (#35): the purchase lock date, the parent companies'
-            # locks, the hard lock and the user's lock exceptions. has_tax=True: the lines
-            # are created after this write, so the tax lock date applies as well.
+            # The accounting date follows the invoice date, not the day the document was
+            # uploaded — never into a locked period, though: then Odoo's default is kept.
+            # Odoo's own lock rules decide (#35): the purchase lock date, the parent
+            # companies' locks, the hard lock and the user's lock exceptions. has_tax=True:
+            # the lines are created after this write, so the tax lock date applies as well.
             inv_date = fields.Date.to_date(data["invoice_date"])
             locks = move._get_violated_lock_dates(inv_date, True)
             if not locks:
                 vals["date"] = inv_date
             else:
-                logger.info(
-                    "OCR: fakturadatum %s ligger i låst period (lås %s) — "
-                    "behåller bokföringsdatum", inv_date, locks)
+                logger.info("OCR: the invoice date %s is in a locked period (locks %s) — the "
+                            "accounting date is kept", inv_date, locks)
                 notes.append(_(
                     "The invoice date %(date)s is in a locked period (%(locks)s): the "
                     "accounting date was left as Odoo set it.", date=inv_date,
                     locks=self.env["res.company"]._format_lock_dates(locks)))
         if data.get("due_date"):
-            # Fakturans tryckta forfallodatum vinner alltid over ett berak-
-            # nat. Betalningsvillkoret pa leverantorskortet ar ofta en
-            # import-default ("40 dagar netto") som inte har med verkligheten
-            # att gora, och sa lange invoice_payment_term_id star kvar raknar
-            # Odoo om invoice_date_due vid varje sparning och skriver over
-            # datumet vi satter har.
+            # The due date printed on the bill always wins over a computed one. The payment
+            # term on the vendor is often an import default ("40 days net") that has nothing
+            # to do with reality, and as long as invoice_payment_term_id is set, Odoo
+            # recomputes invoice_date_due on every save and overwrites the date set here.
             if move.invoice_payment_term_id:
                 vals["invoice_payment_term_id"] = False
             if str(move.invoice_date_due or "") != str(data["due_date"]):
-                logger.info("OCR: forfallodatum %s -> %s (fran fakturan)",
+                logger.info("OCR: due date %s -> %s (from the bill)",
                             move.invoice_date_due, data["due_date"])
             vals["invoice_date_due"] = data["due_date"]
-        # OCR/payment reference. Bara giltiga OCR-nummer: AI:n har klistrat ihop fakturanumret
-        # med köparens postnummer och ibland tagit postnumret ensamt. Se
+        # OCR/payment reference. Only valid OCR numbers: the AI has glued the invoice number
+        # to the buyer's postal code, and sometimes taken the postal code alone. See
         # _ocr_valid_payment_reference.
         if data.get("ocr_number") and not move.payment_reference:
             ref = self._ocr_valid_payment_reference(data["ocr_number"], data.get("invoice_number"))
             if ref:
                 vals["payment_reference"] = ref
             else:
-                logger.info("OCR: betalreferensen %r är inget giltigt OCR-nummer, sparas inte",
+                logger.info("OCR: the payment reference %r is no valid OCR number, not stored",
                             data["ocr_number"])
 
         # Currency (#5): the bill is in the document's currency, before any line is created.
@@ -519,17 +519,17 @@ class AccountMove(models.Model):
         else:
             self._create_lines_from_ocr(move, data, notes)
 
-        # Extraherat bankgiro/plusgiro/konto som är bolagets eget
+        # An extracted bankgiro/plusgiro/account that is the company's own
         own_numbers = set()
         for field in ("plusgiro", "bankgiro"):
             if self._ocr_is_own_bank_number(data.get(field), own):
                 own_numbers.add(field)
-                notes.append(_("%(field)s %(nr)s på fakturan är bolagets eget konto – "
-                               "används inte som mottagarkonto.")
-                             % {"field": field, "nr": data.get(field)})
+                notes.append(_("%(field)s %(number)s on the bill is the company's own account – "
+                               "not used as the recipient account.",
+                               field=field, number=data.get(field)))
 
         # Resolve partner_bank_id (Bankgiro / Plusgiro)
-        # Mjuk koppling till en lokaliseringsmodul som har ett eget autogirofält
+        # A soft link to a localisation module with its own auto-debit field
         has_l10n_flag = "l10n_se_auto_debit" in move._fields
         if auto_debit:
             upd = {"ocr_auto_debit": True, "ocr_auto_debit_phrase": auto_debit}
@@ -539,12 +539,12 @@ class AccountMove(models.Model):
                 upd["partner_bank_id"] = False
             move.with_context(ocr_auto_debit_write=True).write(upd)
         elif move.ocr_auto_debit and move.ocr_auto_debit_phrase:
-            # Flaggan sattes av en tidigare OCR-körning men underlaget ger ingen
-            # dragning längre (t.ex. skärpta mönster) — ta bort den. En flagga som
-            # satts för hand saknar frasen och lämnas orörd.
-            notes.append(_("\"Dras automatiskt\" var satt av OCR (%s) men underlaget "
-                           "anger ingen dragning längre – flaggan togs bort.")
-                         % move.ocr_auto_debit_phrase)
+            # The flag was set by an earlier OCR run but the document no longer gives a debit
+            # (e.g. stricter patterns): remove it. A flag set by hand has no phrase and is
+            # left alone.
+            notes.append(_("\"Debited automatically\" was set by OCR (%s), but the document no "
+                           "longer says it is debited – the flag was removed.",
+                           move.ocr_auto_debit_phrase))
             upd = {"ocr_auto_debit": False, "ocr_auto_debit_phrase": False}
             if has_l10n_flag:
                 upd["l10n_se_auto_debit"] = False
@@ -554,46 +554,43 @@ class AccountMove(models.Model):
                                        skip_fields=own_numbers, own=own)
         self._ocr_drop_own_partner_bank(move, own, notes)
 
-        # Redan bokförd via bankraden?
+        # Already booked through the bank statement line?
         prebooked = self._ocr_find_prebooked_statement_lines(move, data)
 
-        # Log a chatter note with confidence info. Values come straight out of
-        # OCR/LLM output and may contain arbitrary characters, so escape them —
-        # same reasoning as _check_ocr_totals, which uses Markup.
-        conflicts = data.get("_conflicts") or []
+        # Log a chatter note with what was read. Values come straight out of OCR/LLM output
+        # and may contain arbitrary characters, so they are escaped (Markup).
+        conflicts = self._ocr_notes_text(data.get("_conflicts"))
+        labels = self._ocr_field_labels()
         items = [
-            Markup("<li>%s: <code>%s</code></li>") % (k, data[k])
-            for k in ("vendor_name", "invoice_number", "invoice_date", "due_date",
-                      "total_amount", "subtotal", "vat_amount", "ocr_number", "plusgiro",
-                      "bankgiro", "org_number", "currency", "auto_debit")
-            if data.get(k) is not None
+            Markup("<li>%s: <code>%s</code></li>") % (labels[k], data[k])
+            for k in labels if data.get(k) is not None
         ]
         if conflicts:
-            items.append(Markup("<li><b>Konflikter regex/AI:</b><br/>%s</li>") % Markup(
-                "<br/>").join(Markup("<code>%s</code>") % c for c in conflicts))
+            items.append(Markup("<li><b>%s</b><br/>%s</li>") % (
+                _("Regex/AI conflicts:"),
+                Markup("<br/>").join(Markup("<code>%s</code>") % c for c in conflicts)))
         if notes:
-            items.append(Markup("<li><b>Kontroller:</b><br/>%s</li>") % Markup(
-                "<br/>").join(notes))
-        body = (Markup("<p><b>OCR + AI har fyllt i fakturan</b></p><ul>%s</ul>")
-                % Markup("").join(items))
+            items.append(Markup("<li><b>%s</b><br/>%s</li>") % (
+                _("Checks:"), Markup("<br/>").join(notes)))
+        body = (Markup("<p><b>%s</b></p><ul>%s</ul>")
+                % (_("OCR + AI filled in this bill"), Markup("").join(items)))
         self.env["mail.message"].create({
             "model": "account.move",
             "res_id": move.id,
             "body": body,
-            "subject": "OCR-fyllning",
+            "subject": _("OCR fill"),
             "message_type": "comment",
             "author_id": self.env.user.partner_id.id,
         })
 
         if auto_debit:
             move.message_post(
-                body=Markup(
-                    "<p><b>⚠ Dras automatiskt från kontot – ska inte betalas manuellt</b></p>"
-                    "<p>Underlaget anger att beloppet dras från bolagets konto "
-                    "(<code>%s</code>). Mottagarkontot har lämnats tomt så att fakturan "
-                    "inte hamnar i en betalfil. Stäm av fakturan mot bankraden när "
-                    "dragningen syns i stället för att betala den.</p>"
-                ) % auto_debit,
+                body=Markup("<p><b>⚠ %s</b></p><p>%s</p>") % (
+                    _("Debited automatically from the account – not to be paid by hand"),
+                    _("The document says the amount is debited from the company's account "
+                      "(\"%s\"). The recipient account was left empty, so the bill does not end "
+                      "up in a payment file. Reconcile the bill with the bank statement line "
+                      "once the debit shows, instead of paying it.", auto_debit)),
                 message_type="comment",
             )
         if prebooked:
@@ -603,6 +600,18 @@ class AccountMove(models.Model):
                 "failed", _("the AI step failed (%s); only the values read from the text were "
                             "filled in", ai_error), noted=True)
         return self._ocr_result("filled")
+
+    @api.model
+    def _ocr_field_labels(self):
+        """The fields of the fill note, in order, with their labels."""
+        return {
+            "vendor_name": _("Vendor"), "invoice_number": _("Invoice number"),
+            "invoice_date": _("Invoice date"), "due_date": _("Due date"),
+            "total_amount": _("Total"), "subtotal": _("Net"), "vat_amount": _("VAT"),
+            "ocr_number": _("OCR reference"), "plusgiro": _("Plusgiro"),
+            "bankgiro": _("Bankgiro"), "org_number": _("Org/VAT number"),
+            "currency": _("Currency"), "auto_debit": _("Debited automatically"),
+        }
 
     # ------------------------------------------------------------------
     # The receiving company (never the vendor)
@@ -700,8 +709,8 @@ class AccountMove(models.Model):
             return
         bank = move.partner_bank_id
         if bank and self._ocr_is_own_partner(bank.partner_id, own):
-            notes.append(_("Mottagarkontot %s tillhör det egna bolaget – togs bort.")
-                         % bank.display_name)
+            notes.append(_("The recipient account %s belongs to the company itself – removed.",
+                           bank.display_name))
             move.partner_bank_id = False
 
     def _ocr_partner_search(self, domain, own, notes, how, limit=1, company=None):
@@ -717,7 +726,7 @@ class AccountMove(models.Model):
         found = Partner.search(domain + excl, limit=limit)
         if not found and Partner.search_count(
                 domain + [("commercial_partner_id", "in", own["partner_ids"])], limit=1):
-            notes.append(_("%s pekade på det egna bolaget – hoppades över.") % how)
+            notes.append(_("%s pointed to the company itself – skipped.", how))
         return found
 
     # ------------------------------------------------------------------
@@ -850,7 +859,8 @@ class AccountMove(models.Model):
         4. the name, among the company's vendors only: the same name apart from legal form
         and punctuation, else every distinctive word of the name (not 'AB', 'Sverige' …).
         More than one partner on a rule is no match. 5. Otherwise a vendor with a name and
-        an org/VAT number or giro number is created.
+        an org/VAT number or giro number is created — when the user may create contacts (and
+        bank accounts); otherwise a note says so and the vendor is left empty.
         """
         from ..lib import invoice_ocr
 
@@ -870,20 +880,20 @@ class AccountMove(models.Model):
         # 1. VAT (any country prefix already in OCR, or Swedish org number)
         org_raw = (data.get("org_number") or "").strip()
         if org_raw and invoice_ocr.is_own_id(org_raw, own_keys):
-            # Lib:en filtrerar redan bort egna nummer; detta är ett extra skydd
-            notes.append(_("Org.nr %s är bolagets eget – användes inte.") % org_raw)
+            # The library already filters the own numbers out; this is a second guard
+            notes.append(_("The org number %s is the company's own – not used.", org_raw))
             org_raw = ""
         # If looks like a VAT number with letter prefix (e.g. LU20260743, SE556...)
         if org_raw and re.match(r"^[A-Z]{2}\d", org_raw):
             p = self._ocr_partner_search([("vat", "=", org_raw)], own, notes,
-                                         _("Momsreg.nr %s") % org_raw, company=company)
+                                         _("The VAT number %s", org_raw), company=company)
             if p:
                 return matched(p, _("the VAT number %s", org_raw))
 
         # 2. Swedish org number — multiple variants
         org_clean = re.sub(r"[^0-9]", "", org_raw)
         if org_clean:
-            how = _("Org.nr %s") % org_raw
+            how = _("The org number %s", org_raw)
             for v in [f"SE{org_clean}01", f"SE{org_clean}", org_clean]:
                 p = self._ocr_partner_search([("vat", "=", v)], own, [], how, company=company)
                 if p:
@@ -898,11 +908,11 @@ class AccountMove(models.Model):
             bg = (data.get(field) or "").strip()
             bg_clean = invoice_ocr.giro_digits(bg)
             if not bg_clean or self._ocr_is_own_bank_number(bg_clean, own):
-                continue  # det egna kontot säger inget om leverantören
+                continue  # the company's own account says nothing about the vendor
             partners = self._ocr_giro_accounts(bg_clean, company, own).partner_id
             partners = partners.commercial_partner_id
             if len(partners) == 1:
-                return matched(partners, f"{field} {bg}")
+                return matched(partners, _("the %(field)s %(number)s", field=field, number=bg))
             if partners:
                 notes.append(_("%(field)s %(number)s belongs to several partners (%(names)s) – "
                                "none was chosen.", field=field, number=bg,
@@ -915,8 +925,7 @@ class AccountMove(models.Model):
             name = re.sub(r"^(services from|invoice from|faktura från|leverant.+? från)\s+",
                           "", name, flags=re.IGNORECASE).strip()
         if name and invoice_ocr._name_key(name) in own_names:
-            notes.append(_("Leverantörsnamnet \"%s\" är det egna bolaget – "
-                           "användes inte.") % name)
+            notes.append(_("The vendor name \"%s\" is the company itself – not used.", name))
             name = ""
         if name:
             partner = self._ocr_partner_by_name(name, own, notes, company)
@@ -927,14 +936,24 @@ class AccountMove(models.Model):
                 return partner.id
 
         # 5. Auto-create partner if we have a name + org/VAT
-        # Ett autogiro-underlag trycker KÖPARENS konto, inte leverantörens — lägg
-        # inte upp det som leverantörens bankkonto.
+        # A direct-debit document prints the BUYER's account, not the vendor's — it is not
+        # created as the vendor's bank account.
         banks = []
         if not data.get("auto_debit"):
             for field, label in [("plusgiro", "PG"), ("bankgiro", "BG")]:
                 bg = (data.get(field) or "").strip()
                 if bg and not self._ocr_is_own_bank_number(bg, own):
                     banks.append(f"{label} {bg}")
+        if name and (org_raw or banks) and not Partner.has_access("create"):
+            # The user the bill is read as may not create contacts: no vendor is created
+            # (the background job reads as the user who queued the bill, not as OdooBot).
+            notes.append(_("Vendor %s: not found, and you may not create contacts – choose the "
+                           "vendor by hand.", name))
+            return None
+        if banks and not self.env["res.partner.bank"].has_access("create"):
+            notes.append(_("The vendor's bank accounts (%s) were not created: you may not create "
+                           "bank accounts.", ", ".join(banks)))
+            banks = []
         if name and (org_raw or banks):
             vals = {"name": name, "is_company": True, "supplier_rank": 1}
             # VAT
@@ -988,7 +1007,7 @@ class AccountMove(models.Model):
             return self.env["res.partner"]
         found = self._ocr_partner_search(
             [("name", "ilike", max(tokens, key=len)), ("supplier_rank", ">", 0)], own, notes,
-            _("Namnet \"%s\"") % name, limit=100, company=company)
+            _("The name \"%s\"", name), limit=100, company=company)
         for rule in ("full", "tokens"):
             partners = found.filtered(
                 lambda p, rule=rule: invoice_ocr.name_match(name, p.name) == rule
@@ -1065,10 +1084,10 @@ class AccountMove(models.Model):
             pct = round(vat / subtotal * 100)
             rate = min((25, 12, 6), key=lambda r: abs(r - pct))
             if abs(rate - pct) > 2:
-                logger.warning("OCR: moms %.2f på netto %.2f ger %s%%, ingen giltig sats matchar",
+                logger.warning("OCR: VAT %.2f on a net of %.2f is %s%%, no valid rate matches",
                                vat, subtotal, pct)
                 rate = None
-        return [{"description": data.get("invoice_number") or "Faktura", "amount": subtotal,
+        return [{"description": data.get("invoice_number") or _("Invoice"), "amount": subtotal,
                  "vat_rate": rate}]
 
     def _create_lines_from_ocr(self, move, data, notes=None):
@@ -1129,7 +1148,7 @@ class AccountMove(models.Model):
             account = self._ocr_line_account(move, line.get("account_code"), region, rate,
                                              treatment, notes)
             lv = {
-                "name": description or data.get("invoice_number") or "Faktura",
+                "name": description or data.get("invoice_number") or _("Invoice"),
                 "quantity": quantity,
                 "price_unit": price_unit,
                 "account_id": account.id,
@@ -1204,12 +1223,12 @@ class AccountMove(models.Model):
         return fallback
 
     def _ocr_apply_total_adjustments(self, move, data):
-        """Rätta öresavrundning och justeringar utanför moms mot fakturans tryckta belopp.
+        """Correct öre rounding and adjustments outside VAT against the bill's printed amounts.
 
-        Se invoice_ocr.plan_total_adjustments (ex: tillgodo −0,25 utanför moms och
-        öresavrundning −1,00 – AI:n gav en momsrad på nettot och totalen blev 2 575,94 i
-        stället för 2 575,00). Bara svenska leverantörer och vanliga procentsatser;
-        omvänd skattskyldighet och blandade momskoder lämnas orörda.
+        See invoice_ocr.plan_total_adjustments (e.g. a credit of −0.25 outside VAT and a
+        rounding of −1.00: the AI gave one VAT line on the net and the total came to 2 575.94
+        instead of 2 575.00). Only Swedish vendors and plain percentage taxes; reverse charge
+        and mixed tax codes are left alone.
         """
         from ..lib import invoice_ocr
 
@@ -1236,7 +1255,7 @@ class AccountMove(models.Model):
             return
         account = self._ocr_account(move.company_id, "3740")
         if not account:
-            logger.warning("OCR: konto 3740 saknas – öresavrundning läggs inte till på move %s", move.id)
+            logger.warning("OCR: no account 3740 – no rounding added to move %s", move.id)
             return
         commands, notes = [], []
         if plan["base_shift"]:
@@ -1246,24 +1265,28 @@ class AccountMove(models.Model):
             if target:
                 commands.append((1, target.id, {"price_unit": round(target.price_unit + delta, 2)}))
             else:
-                commands.append((0, 0, {"name": "Justering av momsunderlag", "quantity": 1, "price_unit": delta,
+                commands.append((0, 0, {"name": _("VAT base adjustment"), "quantity": 1, "price_unit": delta,
                                         "account_id": lines.filtered("tax_ids")[:1].account_id.id,
                                         "tax_ids": [(6, 0, lines.filtered("tax_ids")[:1].tax_ids.ids)]}))
-            commands.append((0, 0, {"name": "Justering utanför moms (t.ex. tillgodo)", "quantity": 1,
+            commands.append((0, 0, {"name": _("Adjustment outside VAT (e.g. a credit)"), "quantity": 1,
                                     "price_unit": -delta, "account_id": account.id, "tax_ids": [(5, 0, 0)]}))
-            notes.append(f"momsunderlaget {delta:+.2f} enligt fakturans moms {printed.get('vat_amount'):.2f}, "
-                         f"motsvarande {-delta:+.2f} utanför moms på 3740")
+            notes.append(_("VAT base %(delta)s to match the bill's VAT of %(vat)s, and %(opposite)s "
+                           "outside VAT on account %(account)s", delta=f"{delta:+.2f}",
+                           vat=f"{printed.get('vat_amount'):.2f}", opposite=f"{-delta:+.2f}",
+                           account=account.code))
         if plan["rounding"]:
-            commands.append((0, 0, {"name": "Öresavrundning", "quantity": 1, "price_unit": plan["rounding"],
+            commands.append((0, 0, {"name": _("Rounding"), "quantity": 1, "price_unit": plan["rounding"],
                                     "account_id": account.id, "tax_ids": [(5, 0, 0)]}))
-            notes.append(f"öresavrundning {plan['rounding']:+.2f} på 3740 så att totalen blir "
-                         f"fakturans {printed.get('total_amount'):.2f}")
-            # Kontrollen nedan jämför nettot med fakturans "exkl. moms", som är före avrundningen.
+            notes.append(_("rounding %(amount)s on account %(account)s, so that the total is the "
+                           "bill's %(total)s", amount=f"{plan['rounding']:+.2f}",
+                           account=account.code, total=f"{printed.get('total_amount'):.2f}"))
+            # The check below compares the net with the bill's "excl. VAT", which is before the
+            # rounding.
             data["_rounding_adjust"] = plan["rounding"]
         move.write({"invoice_line_ids": commands})
         move.message_post(
-            body=Markup("<p><b>OCR: justerat mot fakturans tryckta belopp</b></p><p>%s</p>")
-            % Markup("<br/>").join(notes),
+            body=Markup("<p><b>%s</b></p><p>%s</p>") % (
+                _("OCR: adjusted to the amounts printed on the bill"), Markup("<br/>").join(notes)),
             message_type="comment",
         )
 
@@ -1284,18 +1307,18 @@ class AccountMove(models.Model):
         )
 
     def _check_ocr_totals(self, move, data):
-        """Varna om de skapade raderna inte summerar till fakturans tryckta belopp.
+        """Warn when the lines created do not add up to the amounts printed on the bill.
 
-        AI:n tappar rader pa langa specifikationer och lagger ibland rabatter
-        utanfor momsen. Bada ger en faktura som ser komplett ut men ar fel, och
-        utan den har kontrollen bokfors den utan att nagon marker det.
+        The AI drops lines on long specifications and sometimes puts discounts outside VAT.
+        Both give a bill that looks complete but is wrong, and without this check it would be
+        posted without anyone noticing.
         """
         move.invalidate_recordset()
-        tol = 1.0  # oresavrundning och enstaka oren ar inte varda en varning
+        tol = 1.0  # öre rounding and the odd öre are not worth a warning
 
-        # Fakturans TRYCKTA belopp, inte de mergade. Efter sammanslagningen vinner
-        # regex pa siffrorna, sa de sammanfaller oftast — men saknar regex ett falt
-        # star AI:ns varde kvar i data, och da vore kontrollen sjalvbekraftande.
+        # The bill's PRINTED amounts, not the merged ones. After the merge the regex wins on
+        # the numbers, so they mostly coincide — but where the regex found no value the AI's
+        # stays in data, and the check would confirm itself.
         from ..lib import invoice_ocr
 
         printed = data.get("_printed") or {}
@@ -1309,36 +1332,38 @@ class AccountMove(models.Model):
             problems.append(_("the bill is in %(bill)s, the document in %(document)s",
                               bill=move.currency_id.name, document=document_currency))
         if not printed and not problems:
-            logger.info("OCR: inga tryckta belopp lasta ur PDF:en — "
-                        "radsumman kan inte kontrolleras mot fakturan")
+            logger.info("OCR: no printed amounts read from the PDF — the lines cannot be "
+                        "checked against the bill")
             return
+
+        def amount(value):
+            return formatLang(self.env, value, currency_obj=move.currency_id)
 
         net = move.amount_untaxed - (data.get("_rounding_adjust") or 0.0)
         # Foreign VAT booked as cost (#22) is in the net and not in the tax.
         foreign_vat = data.get("_foreign_vat") or 0.0
         if printed_net is not None and abs(net - printed_net - foreign_vat) > tol:
-            problems.append(
-                f"netto {net:.2f} mot fakturans {printed_net + foreign_vat:.2f}")
+            problems.append(_("net %(lines)s against the bill's %(printed)s", lines=amount(net),
+                              printed=amount(printed_net + foreign_vat)))
         if printed_vat is not None and abs(move.amount_tax - printed_vat + foreign_vat) > tol:
-            problems.append(
-                f"moms {move.amount_tax:.2f} mot fakturans {printed_vat - foreign_vat:.2f}")
+            problems.append(_("VAT %(lines)s against the bill's %(printed)s",
+                              lines=amount(move.amount_tax),
+                              printed=amount(printed_vat - foreign_vat)))
         if printed_total is not None and abs(move.amount_total - printed_total) > tol:
-            problems.append(
-                f"totalt {move.amount_total:.2f} mot fakturans {printed_total:.2f}")
+            problems.append(_("total %(lines)s against the bill's %(printed)s",
+                              lines=amount(move.amount_total), printed=amount(printed_total)))
         if not problems:
             return
 
-        logger.warning("OCR: radsumman avviker pa move %s: %s",
+        logger.warning("OCR: the lines of move %s do not add up: %s",
                        move.id, "; ".join(problems))
         move.message_post(
-            body=Markup(
-                "<p><b>⚠ OCR: raderna stämmer inte med fakturan</b></p>"
-                "<p>%s</p>"
-                "<p>Raderna är skapade av AI-tolkningen och summerar inte till "
-                "beloppen som står tryckta på underlaget — troligen har en rad "
-                "fallit bort eller fått fel momssats. Kontrollera mot PDF:en "
-                "innan fakturan bokförs.</p>"
-            ) % Markup("<br/>").join(problems),
+            body=Markup("<p><b>⚠ %s</b></p><p>%s</p><p>%s</p>") % (
+                _("OCR: the lines do not match the bill"),
+                Markup("<br/>").join(problems),
+                _("The lines come from the AI's reading and do not add up to the amounts printed "
+                  "on the document — probably a line was dropped or has the wrong VAT rate. "
+                  "Check them against the PDF before you post the bill.")),
             message_type="comment",
         )
 
@@ -1354,10 +1379,11 @@ class AccountMove(models.Model):
         lines of the same company whose text contains the invoice number/payment
         reference, or that have the same amount within ±window_days of the due date and
         a word from the vendor's name in the text. Only lines whose counterpart is NOT a
-        payable/receivable account (and not the suspense account) count.
+        payable/receivable account (and not the suspense account) count. Skipped for a user
+        who may not read bank statement lines (the bill is read as the user who queued it).
         """
         SL = self.env["account.bank.statement.line"]
-        if move.move_type not in ("in_invoice", "in_receipt"):
+        if move.move_type not in ("in_invoice", "in_receipt") or not SL.has_access("read"):
             return SL
         base = [("company_id", "=", move.company_id.id),
                 ("move_id.state", "=", "posted")]
@@ -1366,7 +1392,7 @@ class AccountMove(models.Model):
         for r in (data.get("invoice_number"), move.ref, move.payment_reference,
                   data.get("ocr_number")):
             r = re.sub(r"\s+", "", str(r or ""))
-            # korta referenser ('08635') träffar för mycket
+            # short references ('08635') match too much
             if len(r) >= 6 and r not in refs:
                 refs.append(r)
         candidates = SL
@@ -1399,12 +1425,12 @@ class AccountMove(models.Model):
         for st in candidates:
             liquidity, suspense, other = st._seek_for_lines()
             if suspense or not other:
-                continue  # inte avstämd än — inget är bokfört
+                continue  # not reconciled yet — nothing is booked
             direct = other.filtered(lambda line: line.account_id.account_type
                                     not in ("liability_payable", "asset_receivable"))
-            # Avstämd mot reskontran plus en liten avgifts-/kursdifferensrad är en
-            # vanlig betalning, inte en direktbokad kostnad: kräv att merparten av
-            # bankradens belopp gått direkt mot andra konton.
+            # Reconciled with the payable plus a small fee or exchange-difference line is an
+            # ordinary payment, not a cost booked directly: most of the statement line's
+            # amount must have gone straight to other accounts.
             bank_amount = abs(sum(liquidity.mapped("balance")))
             if direct and sum(abs(b) for b in direct.mapped("balance")) * 2 >= bank_amount:
                 prebooked |= st
@@ -1412,7 +1438,7 @@ class AccountMove(models.Model):
 
     @staticmethod
     def _ocr_name_tokens(*names):
-        # Ord i leverantörsnamn som inte säger något om vem bankraden gäller
+        # Words of vendor names that say nothing about whom a statement line concerns
         # (invoice_ocr.NAME_STOPWORDS, shared with the receipt module's merchant check)
         from ..lib import invoice_ocr
 
@@ -1430,20 +1456,21 @@ class AccountMove(models.Model):
             accounts = ", ".join(sorted({
                 line.account_id.display_name for line in other
                 if line.account_id.account_type not in ("liability_payable", "asset_receivable")}))
-            rows.append(Markup("<li>%s – %s, %s %s (%s) – motkonto: <b>%s</b></li>") % (
+            rows.append(Markup("<li>%s – %s, %s %s (%s) – %s <b>%s</b></li>") % (
                 st.move_id.name, st.date, st.payment_ref or "",
-                st.amount, st.journal_id.name, accounts))
+                formatLang(self.env, st.amount, currency_obj=st.currency_id), st.journal_id.name,
+                _("counterpart account:"), accounts))
         logger.warning("OCR: move %s may already be booked through statement line(s) %s",
                        move.id, statement_lines.ids)
         move.message_post(
-            body=Markup(
-                "<p><b>⚠ Kostnaden kan redan vara bokförd via banken</b></p>"
-                "<p>Följande bankrad(er) är redan avstämda direkt mot ett kostnads- "
-                "eller annat konto, inte mot leverantörsskulden:</p><ul>%s</ul>"
-                "<p>Bokförs fakturan ovanpå blir kostnaden dubbel. Gör om avstämningen "
-                "av bankraden så att den matchar den här fakturan, eller släng "
-                "utkastet om underlaget redan är bokfört.</p>"
-            ) % Markup("").join(rows),
+            body=Markup("<p><b>⚠ %s</b></p><p>%s</p><ul>%s</ul><p>%s</p>") % (
+                _("The cost may already be booked through the bank"),
+                _("These bank statement lines are already reconciled directly with an expense or "
+                  "another account, not with the vendor payable:"),
+                Markup("").join(rows),
+                _("Posting this bill as well would book the cost twice. Redo the reconciliation of "
+                  "the statement line so that it matches this bill, or discard the draft if the "
+                  "document is already booked.")),
             message_type="comment",
         )
 
@@ -1451,7 +1478,7 @@ class AccountMove(models.Model):
         """Pick a recipient bank account on the partner that matches OCR plusgiro/bankgiro."""
         own = own if own is not None else self._ocr_own_context(move.company_id)
         if move.move_type in ("in_invoice", "in_receipt") and partner_id in own["partner_ids"]:
-            return  # betala aldrig till det egna bolaget
+            return  # never pay the company itself
         for field in ("plusgiro", "bankgiro"):
             if field in skip_fields:
                 continue

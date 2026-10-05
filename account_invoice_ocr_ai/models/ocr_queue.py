@@ -32,6 +32,7 @@ from datetime import timedelta
 from odoo import _, api, fields, models, modules
 from odoo.exceptions import UserError
 from odoo.tools import config as odoo_config
+from odoo.tools.translate import get_translation
 
 try:  # the cron runner's minimum loop time; the job's start is cron_end_time minus it
     from odoo.addons.base.models.ir_cron import MIN_TIME_PER_JOB
@@ -118,10 +119,43 @@ class OcrQueueMixin(models.AbstractModel):
 
     @api.model
     def _ocr_error_reason(self, error):
-        """The readable text of an exception (a UserError's message as it is)."""
+        """The readable text of an exception, in the user's language: a UserError's message
+        as it is, a library error's note translated (_ocr_note_text)."""
+        from ..lib import invoice_ocr
+
+        if error.args and isinstance(error.args[0], invoice_ocr.Note):
+            return self._ocr_note_text(error.args[0])[:300]
         if isinstance(error, UserError) and error.args:
             return str(error.args[0])[:300]
         return str(error)[:300] or type(error).__name__
+
+    # ------------------------------------------------------------------
+    # The libraries' notes, in the user's language (#35.3, #36.12)
+    # ------------------------------------------------------------------
+
+    @api.model
+    def _ocr_note_text(self, note):
+        """`note` in the user's language (self.env.lang).
+
+        The OCR libraries cannot import Odoo, so what they tell the reviewer is an
+        invoice_ocr.Note: a str with the English text that also keeps its source text
+        (msgid), its parameters and the module whose .po files translate it (the source
+        texts are marked with _() in the libraries, so they are in the modules' .pot). It
+        is translated here like any _() string of that module; a parameter that is a Note
+        itself is translated first. Anything else (plain text, None) is returned as text.
+        """
+        from ..lib import invoice_ocr
+
+        if not isinstance(note, invoice_ocr.Note):
+            return "" if note is None else str(note)
+        params = {key: self._ocr_note_text(value) if isinstance(value, invoice_ocr.Note)
+                  else value for key, value in note.params.items()}
+        return get_translation(note.addon, self.env.lang or "en_US", note.msgid, params)
+
+    @api.model
+    def _ocr_notes_text(self, notes):
+        """_ocr_note_text of every note in `notes`."""
+        return [self._ocr_note_text(note) for note in notes or ()]
 
     # ------------------------------------------------------------------
     # Limits

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
     <record id="action_run_ocr_server" model="ir.actions.server">
-        <field name="name">Kör OCR igen</field>
+        <field name="name">Run OCR again</field>
         <field name="model_id" ref="account.model_account_move"/>
         <field name="binding_model_id" ref="account.model_account_move"/>
         <field name="binding_view_types">list</field>

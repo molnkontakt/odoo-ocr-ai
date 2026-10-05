@@ -167,7 +167,8 @@ class ResConfigSettings(models.TransientModel):
                     provider=provider, tokens=tokens)}
             return {"type": "danger", "message": _(
                 "%(provider)s failed: %(error)s", provider=provider,
-                error=res.get("error") or _("no valid answer"))}
+                error=self.env["ocr.queue.mixin"]._ocr_note_text(res.get("error"))
+                or _("no valid answer"))}
         served = res.get("model_served") or "?"
         requested = res.get("model_requested") or "?"
         message = _("%(provider)s answered in %(seconds)s s with model %(served)s "

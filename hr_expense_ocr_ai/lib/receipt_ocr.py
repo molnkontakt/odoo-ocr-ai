@@ -27,6 +27,15 @@ except ImportError:  # fristående test: båda filerna på sys.path
 
 logger = logging.getLogger(__name__)
 
+# The Odoo module whose translations have this library's notes (see invoice_ocr.Note).
+ADDON = "hr_expense_ocr_ai"
+
+
+def _(msgid, /, **params):
+    """A translatable note: `msgid` (a literal, so Odoo's exporter finds it) with `params`."""
+    return inv.Note(msgid, params, ADDON)
+
+
 try:
     import pytesseract
     from PIL import Image, ImageOps
@@ -56,8 +65,8 @@ def _prepare_image(raw, max_pixels=None, run=None):
     if max_pixels and w * h > max_pixels:
         factor = (max_pixels / (w * h)) ** 0.5
         img.draft("L", (int(w * factor), int(h * factor)))  # JPEG: decode smaller
-        note = (f"the image ({w}×{h}) was scaled down to {max_pixels / 1e6:.0f} megapixels "
-                f"for OCR")
+        note = _("the image (%(width)s×%(height)s) was scaled down to %(megapixels)s megapixels "
+                 "for OCR", width=w, height=h, megapixels=f"{max_pixels / 1e6:.0f}")
         logger.info("Receipt OCR: %s", note)
         if run:
             run.note(note)
@@ -98,9 +107,10 @@ def extract_text(raw, mimetype=None, filename=None, config=None):
         return ""
     limit = cfg["max_image_bytes"]
     if limit and len(raw) > limit:
-        raise ReceiptReadError(
-            f"{filename or 'the image'} is {len(raw) / 1e6:.1f} MB, more than the "
-            f"{limit / 1e6:.0f} MB a receipt image may have – it was not read")
+        raise ReceiptReadError(_(
+            "%(name)s is %(size)s MB, more than the %(limit)s MB a receipt image may have – it "
+            "was not read", name=filename or _("the image"), size=f"{len(raw) / 1e6:.1f}",
+            limit=f"{limit / 1e6:.0f}"))
     stop_at = inv._clock() + min(float(cfg["extract_time_budget"]), max(run.remaining(), 0))
     img = _prepare_image(raw, cfg["max_page_pixels"], run)
 
@@ -108,7 +118,7 @@ def extract_text(raw, mimetype=None, filename=None, config=None):
         left = stop_at - inv._clock()
         if left < 1:
             if psm == 4:  # the second pass (psm 6) only improves a poor first reading
-                run.note("the time for reading the image was used up – it was not read")
+                run.note(_("the time for reading the image was used up – it was not read"))
             return None
         timeout = min(float(cfg["tesseract_timeout"] or left), left)
         try:
@@ -117,7 +127,8 @@ def extract_text(raw, mimetype=None, filename=None, config=None):
         except RuntimeError as e:
             if not inv._is_tesseract_timeout(e):
                 raise
-            note = f"tesseract took longer than {timeout:.0f} s on the image – stopped"
+            note = _("tesseract took longer than %(seconds)s s on the image – stopped",
+                     seconds=f"{timeout:.0f}")
             logger.warning("Receipt OCR: %s", note)
             run.note(note)
             return None
@@ -135,11 +146,11 @@ def extract_text(raw, mimetype=None, filename=None, config=None):
 
 def _describe_read_error(e):
     if HAS_TESSERACT and isinstance(e, getattr(pytesseract, "TesseractNotFoundError", ())):
-        return "tesseract is not installed on the server"
+        return _("tesseract is not installed on the server")
     if HAS_TESSERACT and isinstance(e, getattr(pytesseract, "TesseractError", ())):
-        return f"tesseract failed ({e})"
+        return _("tesseract failed (%(error)s)", error=str(e))
     if isinstance(e, getattr(Image, "UnidentifiedImageError", ()) if HAS_TESSERACT else ()):
-        return "the file is not an image that can be read"
+        return _("the file is not an image that can be read")
     return f"{type(e).__name__}: {e}"
 
 
@@ -150,8 +161,9 @@ def read_text(raw, mimetype=None, filename=None, config=None):
     except ReceiptReadError:
         raise
     except Exception as e:  # noqa: BLE001 — re-raised with a readable message
-        raise ReceiptReadError(
-            f"the text of {filename or 'the attachment'} could not be read: {_describe_read_error(e)}") from e
+        raise ReceiptReadError(_(
+            "the text of %(name)s could not be read: %(error)s",
+            name=filename or _("the attachment"), error=_describe_read_error(e))) from e
 
 
 # ── Regex-fallback ────────────────────────────────────────────────────────────
@@ -366,8 +378,9 @@ def _read_with_ai(prompt, text, categories, cfg):
                 return retry, list(retry.get("_ai_notes") or [])
     notes = list(ai.get("_ai_notes") or [])
     if problem == "reasoning":
-        notes.append(f"the AI model answered with only {inv._num(ai.get('_completion_tokens')):.0f} "
-                     f"completion tokens: it skipped its reasoning, so check what it filled in")
+        notes.append(_("the AI model answered with only %(tokens)s completion tokens: it skipped "
+                       "its reasoning, so check what it filled in",
+                       tokens=f"{inv._num(ai.get('_completion_tokens')):.0f}"))
     return ai, notes
 
 
@@ -450,32 +463,37 @@ def _apply_guards(fields, text, regex=None):
     regex = regex or {}
     conf = fields.get("confidence")
     if fields.get("merchant") and not _merchant_in_text(fields["merchant"], text):
-        notes.append(f"butiksnamnet \"{fields['merchant']}\" finns inte i kvittotexten — ignorerat")
+        notes.append(_("the merchant name \"%(merchant)s\" is not printed on the receipt — ignored",
+                       merchant=fields["merchant"]))
         fields.pop("merchant")
     if fields.get("date") and not _date_in_text(fields["date"], text):
         printed = regex.get("date")
         if printed and printed != fields["date"] and _date_in_text(printed, text):
-            notes.append(f"the date {fields['date']} is not printed on the receipt — "
-                         f"used the receipt's date {printed}")
+            notes.append(_("the date %(date)s is not printed on the receipt — used the "
+                           "receipt's date %(printed)s", date=fields["date"], printed=printed))
             fields["date"] = printed
         else:
-            notes.append(f"the date {fields['date']} is not printed on the receipt — ignored")
+            notes.append(_("the date %(date)s is not printed on the receipt — ignored",
+                           date=fields["date"]))
             fields.pop("date")
     if fields.get("total") is not None and not _total_in_text(fields["total"], text):
         printed = regex.get("total")
         if printed is not None and _total_in_text(printed, text):
-            notes.append(f"the amount {fields['total']:.2f} is not printed on the receipt — "
-                         f"used the receipt's total {printed:.2f}")
+            notes.append(_("the amount %(amount)s is not printed on the receipt — used the "
+                           "receipt's total %(printed)s", amount=f"{fields['total']:.2f}",
+                           printed=f"{printed:.2f}"))
             fields["total"] = printed
         else:
-            notes.append(f"beloppet {fields['total']:.2f} står inte i kvittotexten — ignorerat")
+            notes.append(_("the amount %(amount)s is not printed on the receipt — ignored",
+                           amount=f"{fields['total']:.2f}"))
             fields.pop("total")
     # Low confidence (or none at all) leaves amount and date empty; merchant, description
     # and category may still be filled. The prompt asks the confidence for total and date.
     if conf is None:
-        notes.append("no confidence given — amount and date are not filled")
+        notes.append(_("no confidence given — amount and date are not filled"))
     elif conf < MIN_CONFIDENCE:
-        notes.append(f"låg konfidens ({conf:.2f}) — belopp och datum fylls inte i")
+        notes.append(_("low confidence (%(confidence)s) — amount and date are not filled",
+                       confidence=f"{conf:.2f}"))
     if conf is None or conf < MIN_CONFIDENCE:
         fields.pop("total", None)
         fields.pop("date", None)
@@ -517,18 +535,20 @@ def extract_receipt_data(raw, mimetype=None, filename=None, categories=None, con
         fields.update(ai)
         fields, notes = _apply_guards(fields, text, regex)
         if bad_date:
-            notes.insert(0, f"the model's date {bad_date!r} is not a valid date — ignored")
+            notes.insert(0, _("the model's date %(date)r is not a valid date — ignored",
+                              date=bad_date))
         result.update(fields=fields, source="ai")
     elif regex:
         if result.get("ai_error"):
-            notes.append(f"the AI step failed ({result['ai_error']}); only the values read by the "
-                         f"regex were used")
+            notes.append(_("the AI step failed (%(error)s); only the values read by the regex "
+                           "were used", error=result["ai_error"]))
         else:
-            notes.append("the AI gave no usable answer; only the values read by the regex were used")
+            notes.append(_("the AI gave no usable answer; only the values read by the regex were "
+                           "used"))
         result.update(fields=regex, source="regex")
     if skipped and "total" not in result["fields"]:
-        notes.append(f"the total is in {skipped} – a foreign amount is not read "
-                     "without the AI, the amount stays empty")
+        notes.append(_("the total is in %(currency)s – a foreign amount is not read without the "
+                       "AI, the amount stays empty", currency=skipped))
     # The reading's notes (a budget that cut it), then the answer's, then the guards'
     result["notes"] = list(dict.fromkeys([*run.notes, *ai_notes, *notes]))
     return result

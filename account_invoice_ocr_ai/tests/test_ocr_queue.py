@@ -164,7 +164,7 @@ class TestOcrQueue(OcrBillCase):
         self.assertEqual(move.ref, "4711")
         self.assertEqual(move.partner_id.name, fx.PLAIN_VENDOR_NAME)
         self.assertTrue(move.invoice_line_ids)
-        self.assertIn("OCR + AI har fyllt i fakturan", self._bodies(move))
+        self.assertIn("OCR + AI filled in this bill", self._bodies(move))
         self.assertIn(mock.call(remaining=1), progress.call_args_list)
         self.assertIn(mock.call(1), progress.call_args_list)
         # nothing left: a second run reads nothing

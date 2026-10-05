@@ -52,6 +52,40 @@ MAX_OCR_PAGES = int(os.environ.get("INVOICE_OCR_MAX_PAGES", "10"))
 # Render scale for tesseract OCR (2 ≈ 144 dpi — good compromise).
 OCR_SCALE = float(os.environ.get("INVOICE_OCR_SCALE", "2"))
 
+# ── Notes for the reviewer, translatable in Odoo (#35.3, #36.12) ─────────────
+# Everything this library tells the reviewer — notes on the document, the messages of its
+# own errors — is a Note: a str with the English text (logs, standalone use, tests), which
+# also keeps its English source text (msgid), its parameters and the Odoo module whose
+# translations have it. The source texts are marked with _() below, so Odoo's exporter puts
+# them in the module's .pot like any other code string; the Odoo modules show a Note in the
+# user's language (ocr.queue.mixin._ocr_note_text, through odoo.tools.translate). The
+# library itself never imports Odoo.
+
+ADDON = "account_invoice_ocr_ai"
+
+
+class Note(str):
+    """A note for the reviewer: its English text, plus msgid, params and addon to translate it.
+
+    `msgid` is the English source with %(name)s placeholders, `params` their values (a value
+    may be a Note itself), `addon` the Odoo module whose translations have the msgid.
+    """
+
+    def __new__(cls, msgid, params=None, addon=ADDON):
+        params = dict(params or {})
+        note = super().__new__(cls, msgid % params if params else msgid)
+        note.msgid, note.params, note.addon = msgid, params, addon
+        return note
+
+    def __reduce__(self):
+        return (Note, (self.msgid, self.params, self.addon))
+
+
+def _(msgid, /, **params):
+    """A translatable note: `msgid` (a literal, so Odoo's exporter finds it) with `params`."""
+    return Note(msgid, params)
+
+
 # ── Time and size budgets (#9, #26) ─────────────────────────────────────────
 # One document — the text extraction and every provider call for it (retries, the 429
 # wait, the schema fallback, the reliability re-run) — must be done within this many
@@ -120,9 +154,9 @@ def call_timeout(run, timeout):
     has left; DeadlineExceeded when that is less than MIN_CALL_SECONDS."""
     left = run.remaining()
     if left < MIN_CALL_SECONDS:
-        raise DeadlineExceeded(
-            f"no time left for a call to the AI provider (time limit per document "
-            f"{run.total:.0f} s)")
+        raise DeadlineExceeded(_(
+            "no time left for a call to the AI provider (time limit per document %(seconds)s s)",
+            seconds=f"{run.total:.0f}"))
     return min(float(timeout), left)
 
 
@@ -820,9 +854,21 @@ def pages_to_read(total, cap):
     return [*range(1, cap), total] if cap > 1 else [total]
 
 
-def _pages_note(kind, total, pages, cap):
-    shown = f"1–{pages[-2]} and {pages[-1]}" if len(pages) > 1 else f"{pages[-1]}"
-    return f"the PDF has {total} pages; {kind} only pages {shown} (page limit {cap})"
+def _pages_note(ocr, total, pages, cap):
+    """The note that only `pages` of a `total`-page PDF were read (`ocr`: by tesseract)."""
+    if len(pages) > 1:
+        params = {"total": total, "first": pages[-2], "last": pages[-1], "limit": cap}
+        if ocr:
+            return _("the PDF has %(total)s pages; OCR read only pages 1–%(first)s and %(last)s "
+                     "(page limit %(limit)s)", **params)
+        return _("the PDF has %(total)s pages; the text was read from only pages 1–%(first)s "
+                 "and %(last)s (page limit %(limit)s)", **params)
+    params = {"total": total, "last": pages[-1], "limit": cap}
+    if ocr:
+        return _("the PDF has %(total)s pages; OCR read only page %(last)s (page limit %(limit)s)",
+                 **params)
+    return _("the PDF has %(total)s pages; the text was read from only page %(last)s (page "
+             "limit %(limit)s)", **params)
 
 
 def _pdf_page_count(pdf_bytes):
@@ -839,8 +885,9 @@ def _pdf_page_count(pdf_bytes):
 
 
 def _budget_note(run, done, total, budget):
-    note = (f"reading the document text stopped after {done} of {total} pages: the time for "
-            f"reading it ({budget:.0f} s) was used up – the rest was not read")
+    note = _("reading the document text stopped after %(done)s of %(total)s pages: the time for "
+             "reading it (%(seconds)s s) was used up – the rest was not read",
+             done=done, total=total, seconds=f"{budget:.0f}")
     logger.warning("OCR: %s", note)
     if run:
         run.note(note)
@@ -856,7 +903,7 @@ def _extract_text_pdfplumber(pdf_bytes, max_pages=None, stop_at=None, run=None, 
     total = _pdf_page_count(pdf_bytes)
     wanted = pages_to_read(total, max_pages)
     if total and wanted and len(wanted) < total:
-        note = _pages_note("the text was read from", total, wanted, max_pages)
+        note = _pages_note(False, total, wanted, max_pages)
         logger.warning("OCR: %s", note)
         if run:
             run.note(note)
@@ -926,7 +973,7 @@ def _extract_text_tesseract(pdf_bytes, max_pages=None, scale=None, max_pixels=No
         total = len(pdf_doc)
         wanted = pages_to_read(total, max_pages) or []
         if len(wanted) < total:
-            note(_pages_note("OCR read", total, wanted, max_pages))
+            note(_pages_note(True, total, wanted, max_pages))
         pages = []
         for done, number in enumerate(wanted):
             timeout = page_timeout
@@ -941,8 +988,9 @@ def _extract_text_tesseract(pdf_bytes, max_pages=None, scale=None, max_pixels=No
                 width, height = page.get_size()
                 page_scale = fit_scale(width, height, scale, max_pixels)
                 if page_scale < scale:
-                    note(f"page {number} is very large: it was scaled down to "
-                         f"{max_pixels / 1e6:.0f} megapixels for OCR")
+                    note(_("page %(page)s is very large: it was scaled down to %(megapixels)s "
+                           "megapixels for OCR", page=number,
+                           megapixels=f"{max_pixels / 1e6:.0f}"))
                 pil_image = page.render(scale=page_scale).to_pil()
             finally:
                 page.close()
@@ -952,8 +1000,8 @@ def _extract_text_tesseract(pdf_bytes, max_pages=None, scale=None, max_pixels=No
             except RuntimeError as e:
                 if not _is_tesseract_timeout(e):
                     raise
-                note(f"tesseract took longer than {timeout:.0f} s on page {number} – that "
-                     f"page was not read")
+                note(_("tesseract took longer than %(seconds)s s on page %(page)s – that page "
+                       "was not read", seconds=f"{timeout:.0f}", page=number))
                 continue
             if text.strip():
                 pages.append(text)
@@ -1519,8 +1567,9 @@ def check_account_codes(data, accounts):
         if code and code not in codes:
             line.pop("account_code")
             if codes:
-                notes.append(f"line '{line.get('description') or line.get('amount')}': account "
-                             f"{code} is not in the account list – the default account is used")
+                notes.append(_("line '%(line)s': account %(code)s is not in the account list – "
+                               "the default account is used",
+                               line=line.get("description") or line.get("amount"), code=code))
     return data, notes
 
 
@@ -1632,8 +1681,8 @@ def _cut_connection(response, fired):
 
 
 def _transfer_too_slow():
-    return DeadlineExceeded(
-        "the AI provider's answer was still arriving when the time limit per document ran out")
+    return DeadlineExceeded(_(
+        "the AI provider's answer was still arriving when the time limit per document ran out"))
 
 
 def _read_within(response, deadline):
@@ -1702,9 +1751,10 @@ class ProviderError(RuntimeError):
         self.status = status
         self.detail = detail
         if detail:
-            message = f"HTTP {status} from the AI provider: {detail}"
+            message = _("HTTP %(status)s from the AI provider: %(detail)s", status=status,
+                        detail=detail)
         else:
-            message = f"HTTP {status} from the AI provider"
+            message = _("HTTP %(status)s from the AI provider", status=status)
         super().__init__(message)
 
 
@@ -1879,9 +1929,10 @@ def _send(url, run, timeout, state, **kwargs):
     if wait is None:
         wait = RATE_LIMIT_WAIT
     if run.remaining() - wait < MIN_CALL_SECONDS:
-        raise DeadlineExceeded(
-            f"the AI provider is rate limiting (HTTP 429) and asks to wait {wait:.0f} s; the "
-            f"time limit per document ({run.total:.0f} s) leaves no time to wait and retry")
+        raise DeadlineExceeded(_(
+            "the AI provider is rate limiting (HTTP 429) and asks to wait %(wait)s s; the time "
+            "limit per document (%(seconds)s s) leaves no time to wait and retry",
+            wait=f"{wait:.0f}", seconds=f"{run.total:.0f}"))
     logger.info("AI provider rate limited (HTTP 429): retrying in %.0f s", wait)
     time.sleep(wait)
     return _post(url, timeout=call_timeout(run, timeout), deadline=run.deadline, **kwargs)
@@ -1912,12 +1963,12 @@ def resolve_endpoint(config=None):
     elif p in ("openai_compatible", "custom"):
         base, key, model = cfg["base_url"], cfg["api_key"], cfg["model"]
     else:
-        raise ValueError(f"unknown AI provider {cfg['provider']!r}")
+        raise ValueError(_("unknown AI provider %(provider)r", provider=cfg["provider"]))
     base = (base or "").rstrip("/")
     if not base:
-        raise ValueError(f"AI provider {p!r}: no base URL configured")
+        raise ValueError(_("AI provider %(provider)r: no base URL configured", provider=p))
     if not model:
-        raise ValueError(f"AI provider {p!r}: no model configured")
+        raise ValueError(_("AI provider %(provider)r: no model configured", provider=p))
     return base, key or "", model
 
 
@@ -2093,22 +2144,22 @@ def answer_notes(meta, max_tokens=None):
     num_ctx, prompt_tokens = meta.get("num_ctx"), _num(meta.get("prompt_tokens"))
     if finish == "length":
         if meta.get("ollama"):
-            notes.append(
-                f"the AI's answer was cut off: it reached its token limit ({max_tokens}) or "
-                f"filled the model's context ({num_ctx} tokens) – raise the limit or the "
-                f"Ollama context size")
+            notes.append(_(
+                "the AI's answer was cut off: it reached its token limit (%(tokens)s) or filled "
+                "the model's context (%(num_ctx)s tokens) – raise the limit or the Ollama "
+                "context size", tokens=max_tokens, num_ctx=num_ctx))
         else:
-            notes.append(
-                f"the AI's answer was cut off at its token limit ({max_tokens} tokens) and "
-                f"is incomplete – raise the token limit (invoice_ocr.max_tokens)")
+            notes.append(_(
+                "the AI's answer was cut off at its token limit (%(tokens)s tokens) and is "
+                "incomplete – raise the token limit (invoice_ocr.max_tokens)", tokens=max_tokens))
     elif "trunc" in finish:
-        notes.append(f"the AI provider cut the prompt ({meta.get('finish_reason')}) – the "
-                     f"model may not have seen all instructions")
+        notes.append(_("the AI provider cut the prompt (%(reason)s) – the model may not have seen "
+                       "all instructions", reason=meta.get("finish_reason")))
     if num_ctx and prompt_tokens and prompt_tokens >= OLLAMA_CONTEXT_FULL * num_ctx:
-        notes.append(
-            f"the prompt filled the model's context ({prompt_tokens:.0f} of {num_ctx} "
-            f"tokens): Ollama may have cut it, so the model may not have seen the "
-            f"instructions – raise the Ollama context size")
+        notes.append(_(
+            "the prompt filled the model's context (%(tokens)s of %(num_ctx)s tokens): Ollama may "
+            "have cut it, so the model may not have seen the instructions – raise the Ollama "
+            "context size", tokens=f"{prompt_tokens:.0f}", num_ctx=num_ctx))
     for note in notes:
         logger.warning("AI answer from %s: %s", meta.get("model"), note)
     return notes
@@ -2211,10 +2262,11 @@ def verify_provider(config=None):
 
 
 def error_message(error, limit=ERROR_DETAIL_CHARS):
-    """The readable message of an exception: the library's own message as it is, anything
-    else as 'Type: message', at most `limit` characters."""
-    if isinstance(error, (ProviderError, DeadlineExceeded, ValueError)) and error.args:
-        return str(error.args[0])[:limit]
+    """The readable message of an exception: the library's own (a Note) as it is, so the
+    Odoo module can translate it; anything else as 'Type: message', at most `limit`
+    characters."""
+    if error.args and isinstance(error.args[0], Note):
+        return error.args[0]
     return f"{type(error).__name__}: {error}"[:limit]
 
 
@@ -2255,7 +2307,7 @@ def _parse_ai_json(content):
         # Remove null values
         return {k: v for k, v in data.items() if v is not None}
     except json.JSONDecodeError as e:
-        logger.warning("Kunde inte tolka AI-svaret som JSON (%s). Forsta 200 tecken: %s",
+        logger.warning("Could not read the AI's answer as JSON (%s). First 200 characters: %s",
                        e, json_str[:200].replace("\n", " "))
         return {}
 
@@ -2629,23 +2681,23 @@ def _ai_answer_problems_unsafe(data, reference, cfg):
         problems.append(f"only {_num(data.get('_completion_tokens')):.0f} completion tokens "
                         f"(the reasoning was skipped)")
 
-    # 1. Mot fakturans tryckta belopp
-    for key, label in (("total_amount", "total"), ("subtotal", "netto"),
-                       ("vat_amount", "moms")):
+    # 1. Against the amounts printed on the invoice (problems are logged, not shown)
+    for key, label in (("total_amount", "total"), ("subtotal", "net"),
+                       ("vat_amount", "VAT")):
         ref, got = _num(reference.get(key)), _num(data.get(key))
         if ref is None:
             continue
         if got is None:
-            problems.append(f"{label} saknas (fakturan visar {ref:.2f})")
+            problems.append(f"{label} missing (the invoice shows {ref:.2f})")
         elif abs(got - ref) > 1:
-            problems.append(f"{label} {got:.2f} mot fakturans {ref:.2f}")
+            problems.append(f"{label} {got:.2f} against the invoice's {ref:.2f}")
 
-    # 2. Internt: subtotal + moms ska bli total
+    # 2. Internally: subtotal + VAT must make the total
     sub, vat, tot = (_num(data.get(k)) for k in ("subtotal", "vat_amount", "total_amount"))
     if None not in (sub, vat, tot) and abs(sub + vat - tot) > 1:
         problems.append(f"{sub:.2f} + {vat:.2f} != {tot:.2f}")
 
-    # 3. Raderna ska summera till nettot — fakturans om det finns, annars AI:ns
+    # 3. The lines must add up to the net — the invoice's if printed, else the AI's
     lines = data.get("lines") or []
     if not isinstance(lines, list):
         problems.append("lines is not a list")
@@ -2655,11 +2707,11 @@ def _ai_answer_problems_unsafe(data, reference, cfg):
     if net is None:
         net = sub
     if not lines:
-        problems.append("inga rader")
+        problems.append("no lines")
     elif net is not None:
         linesum = sum(_to_number(ln.get("amount")) or 0.0 for ln in lines)
         if abs(linesum - net) > 1:
-            problems.append(f"radsumma {linesum:.2f} mot netto {net:.2f}")
+            problems.append(f"lines add up to {linesum:.2f} against the net {net:.2f}")
     return problems
 
 
@@ -2775,9 +2827,9 @@ def _kept_answer(data, cfg):
     a reasoning model skipped its reasoning (reasoning_skipped)."""
     notes = list((data or {}).get("_ai_notes") or [])
     if reasoning_skipped(data, cfg["staik_min_completion_tokens"]):
-        notes.append(
-            f"the AI model answered with only {_num(data.get('_completion_tokens')):.0f} "
-            f"completion tokens: it skipped its reasoning, so its lines may be wrong")
+        notes.append(_(
+            "the AI model answered with only %(tokens)s completion tokens: it skipped its "
+            "reasoning, so its lines may be wrong", tokens=f"{_num(data.get('_completion_tokens')):.0f}"))
     out = _strip_meta(data)
     out.pop("_ai_notes", None)
     if notes and _has_fields(out):
@@ -2847,15 +2899,17 @@ def extract_invoice_data_from_text(text, own_ids=None, own_names=None, config=No
         final.setdefault("_notes", []).extend(notes)
     if ai_error:
         final["_ai_error"] = ai_error
-        final.setdefault("_notes", []).append(
-            f"the AI step failed ({ai_error}) – only the values read by the regex were used")
+        final.setdefault("_notes", []).append(_(
+            "the AI step failed (%(error)s) – only the values read by the regex were used",
+            error=ai_error))
     head, tail = clip_bounds(len(text or ""), cfg["text_limit"])
     if tail:
         logger.warning("Invoice text cut for the AI: %s characters, sent the first %s and the last %s",
                        len(text), head, tail)
-        final.setdefault("_notes", []).append(
-            f"the document text has {len(text)} characters; the AI saw only the first {head} and "
-            f"the last {tail} (text limit {cfg['text_limit']}) – its lines may be incomplete")
+        final.setdefault("_notes", []).append(_(
+            "the document text has %(length)s characters; the AI saw only the first %(head)s and "
+            "the last %(tail)s (text limit %(limit)s) – its lines may be incomplete",
+            length=len(text), head=head, tail=tail, limit=cfg["text_limit"]))
     return final
 
 
@@ -2916,18 +2970,21 @@ def _merge_fields(text, regex_fields, ai_fields, own_keys):
             # Only real calendar dates take part (the regex only keeps valid ones).
             ai_date = iso_date(ai_val) if ai_has else None
             if ai_has and not ai_date:
-                notes.append(f"{key}: the AI's {ai_val!r} is not a valid date – not used")
+                notes.append(_("%(field)s: the AI's %(value)r is not a valid date – not used",
+                               field=key, value=ai_val))
             readings = ambiguous.get(key) or []
             if regex_has and ai_date and ai_date in readings:
                 # NN/NN/YYYY with both parts <= 12: the AI's reading decides
                 if ai_date != regex_val:
-                    notes.append(f"{key}: the printed date can be read as {' or '.join(readings)} – "
-                                 f"used {ai_date}, as the AI read it")
+                    notes.append(_("%(field)s: the printed date can be read as %(first)s or "
+                                   "%(second)s – used %(date)s, as the AI read it", field=key,
+                                   first=readings[0], second=readings[-1], date=ai_date))
                 final[key] = ai_date
                 continue
             if readings:
-                notes.append(f"{key}: the printed date can be read as {' or '.join(readings)} – "
-                             f"used {readings[0]} (day/month)")
+                notes.append(_("%(field)s: the printed date can be read as %(first)s or %(second)s – "
+                               "used %(date)s (day/month)", field=key, first=readings[0],
+                               second=readings[-1], date=readings[0]))
             if regex_has and ai_date and ai_date != regex_val:
                 conflicts.append(f"{key}: regex={regex_val} ai={ai_date}")
             if regex_has and (key in REGEX_WINS or not ai_date):
@@ -2987,21 +3044,22 @@ def _merge_fields(text, regex_fields, ai_fields, own_keys):
             src, val = valid[0]
             final[key] = val
             if rejected and src == "AI":
-                final.setdefault("_notes", []).append(
-                    f"{key} {', '.join(rejected)} from the document fails the length or check-digit "
-                    f"test – used the AI's {val}")
+                final.setdefault("_notes", []).append(_(
+                    "%(field)s %(values)s from the document fails the length or check-digit test – "
+                    "used the AI's %(value)s", field=key, values=", ".join(rejected), value=val))
         else:
             final.pop(key, None)
-            final.setdefault("_notes", []).append(
-                f"{key} {' / '.join(dict.fromkeys(rejected))} fails the length or check-digit test – not used")
+            final.setdefault("_notes", []).append(_(
+                "%(field)s %(values)s fails the length or check-digit test – not used",
+                field=key, values=" / ".join(dict.fromkeys(rejected))))
 
     # Marketplace invoices (Amazon, eBay, …): the VAT-declaring entity is the vendor, not
     # the merchant who "sold" the item. Searched in the full text, not a slice of it.
     declared = marketplace_vat_declarer(text)
     if declared:
         final["vendor_name"] = declared
-        final.setdefault("_conflicts", []).append(
-            f"vendor_name: marketplace VAT-declarer override → {declared}")
+        final.setdefault("_conflicts", []).append(_(
+            "vendor_name: marketplace VAT-declarer override → %(vendor)s", vendor=declared))
 
     # Swedish VAT numbers on the document other than the buyer's: a foreign supplier that
     # shows one is registered for VAT in Sweden, so VAT it charges is Swedish VAT (#22).

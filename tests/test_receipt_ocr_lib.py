@@ -38,7 +38,7 @@ def test_low_confidence_leaves_amount_and_date_empty():
     assert "total" not in kept and "date" not in kept
     # the documented behaviour (#36.6): description and category may still be filled
     assert kept["items"] == "Alkylatbensin" and kept["category_code"] == "MASKIN"
-    assert any("konfidens" in n for n in notes)
+    assert any("low confidence (0.30)" in n for n in notes)
 
 
 def test_missing_confidence_counts_as_low():

@@ -212,7 +212,7 @@ def test_ai_answer_problems_reference_comparison():
         reference={"total_amount": 2636.00, "subtotal": 2121.00, "vat_amount": 515.00},
     )
     assert any(p.startswith("total ") for p in problems)
-    assert any(p.startswith("moms ") for p in problems)
+    assert any(p.startswith("VAT ") for p in problems)
     # Internt stämmer 2121 + 530.25 = 2651.25 → inget internt problem
     assert not any("!= " in p for p in problems)
 
@@ -222,7 +222,7 @@ def test_ai_answer_problems_missing_field_against_reference():
         {"subtotal": 100, "vat_amount": 25, "lines": [{"amount": 100}]},
         reference={"total_amount": 125.00, "subtotal": 100.00, "vat_amount": 25.00},
     )
-    assert any(p.startswith("total saknas") for p in problems)
+    assert any(p.startswith("total missing") for p in problems)
 
 
 # ── Mergen i extract_invoice_data (REGEX_WINS / conflicts) ────────────────────

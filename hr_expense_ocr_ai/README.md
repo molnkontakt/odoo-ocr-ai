@@ -51,8 +51,9 @@ is unknown, inactive or has no exchange rate on or before the receipt date
 leaves the amount empty with a note, and so does a category with a fixed cost
 (its amount is quantity × cost, in the company's currency). Without the AI, a
 total printed in a foreign currency (`EUR 12,50`, `€ 12,50`) is not read.
-Everything read, what was filled and which guards fired is posted as a chatter
-note, so the reviewer sees the model's reading next to the receipt.
+Everything read, what was filled, which guards fired and which model answered
+(with its completion tokens) is posted as a chatter note, so the reviewer sees
+the model's reading next to the receipt.
 
 ## Guards against model guesses
 
