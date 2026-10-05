@@ -4,6 +4,7 @@ from . import (
     test_ocr_companies,
     test_ocr_guards,
     test_ocr_lines,
+    test_ocr_lock_dates,
     test_ocr_long_text,
     test_ocr_savepoint,
     test_ocr_vat,

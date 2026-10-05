@@ -343,18 +343,22 @@ class AccountMove(models.Model):
         if data.get("invoice_date") and not move.invoice_date:
             vals["invoice_date"] = data["invoice_date"]
             # Bokföringsdatum ska följa fakturadatum, inte den dag underlaget laddades upp.
-            # Undantag: aldrig in i en låst period — då behåller vi Odoos default.
-            company = move.company_id
-            locks = [company.fiscalyear_lock_date, company.tax_lock_date,
-                     getattr(company, "hard_lock_date", False)]
-            lock = max([d for d in locks if d], default=None)
+            # Undantag: aldrig in i en låst period — då behåller vi Odoos default. Odoo's
+            # own lock rules decide (#35): the purchase lock date, the parent companies'
+            # locks, the hard lock and the user's lock exceptions. has_tax=True: the lines
+            # are created after this write, so the tax lock date applies as well.
             inv_date = fields.Date.to_date(data["invoice_date"])
-            if not lock or inv_date > lock:
+            locks = move._get_violated_lock_dates(inv_date, True)
+            if not locks:
                 vals["date"] = inv_date
             else:
                 logger.info(
                     "OCR: fakturadatum %s ligger i låst period (lås %s) — "
-                    "behåller bokföringsdatum", inv_date, lock)
+                    "behåller bokföringsdatum", inv_date, locks)
+                notes.append(_(
+                    "The invoice date %(date)s is in a locked period (%(locks)s): the "
+                    "accounting date was left as Odoo set it.", date=inv_date,
+                    locks=self.env["res.company"]._format_lock_dates(locks)))
         if data.get("due_date"):
             # Fakturans tryckta forfallodatum vinner alltid over ett berak-
             # nat. Betalningsvillkoret pa leverantorskortet ar ofta en
