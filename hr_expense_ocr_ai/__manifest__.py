@@ -13,9 +13,10 @@ settings) on hr.expense:
 - the button "Read receipt (OCR)" on the expense and the list action re-run it.
 
 Only empty fields are filled (amount 0, today's date, no category, empty name); everything read and
-every guard that fired is written to the chatter. Guards against model guesses: the merchant and the
-amount must appear in the OCR text, confidence below 0.6 fills nothing, the category must be one of
-the company's expensable products (their purchase description is sent to the model as a hint).
+every guard that fired is written to the chatter. Guards against model guesses: the merchant, the
+amount and the date must appear in the OCR text, a confidence below 0.6 (or none) leaves amount and
+date empty (merchant, description and category may still be filled), the category must be one of
+the company's expensable products (their description is sent to the model as a hint).
     """,
     "author": "Molnkontakt AB",
     "license": "LGPL-3",

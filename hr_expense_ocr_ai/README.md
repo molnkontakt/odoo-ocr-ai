@@ -33,9 +33,14 @@ Measured on real receipts before release:
 - The merchant name must occur in the OCR text; the model otherwise guesses a
   chain from the products. Its distinctive words (not legal forms, countries or
   words like "store") must be printed together, as whole words.
-- The amount must occur in the text.
-- Confidence below 0.6 fills nothing (typically a downscaled, unreadable photo
-  that was read as 339 instead of 389).
+- The amount and the date must be printed on the receipt, as a whole amount
+  and a date (18 is not found in 418,00, nor 17 in a date). When the model's
+  value is not, the value read from the receipt text is used instead, or the
+  field stays empty; either way a note says so.
+- Confidence below 0.6, or no confidence at all, leaves amount and date empty
+  (typically a downscaled, unreadable photo that was read as 339 instead of
+  389). Merchant, description and category may still be filled; the note says
+  what was left out.
 - The category must be one of the company's expensable products. Their
   *purchase description*, or else the category's *Guideline* as plain text (at
   most 200 characters), is sent as a hint, so describe your categories in Odoo

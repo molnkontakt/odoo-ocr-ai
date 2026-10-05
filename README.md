@@ -14,7 +14,7 @@ Sister repositories: [odoo-l10n-se](https://github.com/molnkontakt/odoo-l10n-se)
 | Module | Description |
 |--------|-------------|
 | [`account_invoice_ocr_ai`](account_invoice_ocr_ai/) | Vendor bill PDFs uploaded through *Upload* or attached to a draft bill: text via pdfplumber (tesseract fallback for scans), regex field extraction, then an LLM fills partner, dates, references, bank details and invoice lines with BAS account and VAT rate. Auto-creates the vendor, handles EU reverse charge and marketplace VAT declarers |
-| [`hr_expense_ocr_ai`](hr_expense_ocr_ai/) | Receipt photos and PDFs on expense claims: EXIF-rotated, upscaled and OCR'd with tesseract, then the LLM fills amount, date, merchant and expense category. Runs when a claim arrives by e-mail or gets its main attachment, and on demand. Guards against model guesses: merchant and amount must appear in the OCR text, low confidence fills nothing |
+| [`hr_expense_ocr_ai`](hr_expense_ocr_ai/) | Receipt photos and PDFs on expense claims: EXIF-rotated, upscaled and OCR'd with tesseract, then the LLM fills amount, date, merchant and expense category. Runs when a claim arrives by e-mail or gets its main attachment, and on demand. Guards against model guesses: merchant, amount and date must appear in the OCR text, low confidence leaves amount and date empty |
 
 `hr_expense_ocr_ai` depends on `account_invoice_ocr_ai` (shared OCR/LLM library
 and settings).

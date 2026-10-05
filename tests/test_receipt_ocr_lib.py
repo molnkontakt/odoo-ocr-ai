@@ -31,11 +31,22 @@ def test_guards_drop_guessed_merchant_and_unseen_total():
     assert len(notes) == 2
 
 
-def test_low_confidence_fills_nothing():
-    fields = {"total": 418.0, "date": "2026-09-17", "confidence": 0.3}
+def test_low_confidence_leaves_amount_and_date_empty():
+    fields = {"total": 418.0, "date": "2026-09-17", "confidence": 0.3,
+              "items": "Alkylatbensin", "category_code": "MASKIN"}
     kept, notes = r._apply_guards(fields, TEXT)
     assert "total" not in kept and "date" not in kept
+    # the documented behaviour (#36.6): description and category may still be filled
+    assert kept["items"] == "Alkylatbensin" and kept["category_code"] == "MASKIN"
     assert any("konfidens" in n for n in notes)
+
+
+def test_missing_confidence_counts_as_low():
+    kept, notes = r._apply_guards({"total": 418.0, "date": "2026-09-17"}, TEXT)
+    assert "total" not in kept and "date" not in kept
+    assert any("no confidence" in n for n in notes)
+    kept, notes = r._apply_guards({"total": 418.0, "date": "2026-09-17", "confidence": 0.9}, TEXT)
+    assert kept["total"] == 418.0 and kept["date"] == "2026-09-17" and not notes
 
 
 def test_clean_keeps_only_known_categories():

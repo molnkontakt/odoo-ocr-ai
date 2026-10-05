@@ -329,8 +329,13 @@ def _apply_guards(fields, text, regex=None):
         else:
             notes.append(f"beloppet {fields['total']:.2f} står inte i kvittotexten — ignorerat")
             fields.pop("total")
-    if conf is not None and conf < MIN_CONFIDENCE:
+    # Low confidence (or none at all) leaves amount and date empty; merchant, description
+    # and category may still be filled. The prompt asks the confidence for total and date.
+    if conf is None:
+        notes.append("no confidence given — amount and date are not filled")
+    elif conf < MIN_CONFIDENCE:
         notes.append(f"låg konfidens ({conf:.2f}) — belopp och datum fylls inte i")
+    if conf is None or conf < MIN_CONFIDENCE:
         fields.pop("total", None)
         fields.pop("date", None)
     return fields, notes
