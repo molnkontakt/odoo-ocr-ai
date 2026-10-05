@@ -7,8 +7,8 @@
         <field name="binding_view_types">list</field>
         <field name="state">code</field>
         <field name="code">
-# Per expense: savepoint, chatter note on failure, commit when done; a summary comes back.
-action = records.with_context(expense_ocr_commit=True).action_read_receipt_bulk()
+# Queues the receipts; the OCR cron reads them within seconds. A summary comes back.
+action = records.action_read_receipt_bulk()
         </field>
     </record>
 </odoo>

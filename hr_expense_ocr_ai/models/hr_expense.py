@@ -3,7 +3,7 @@ import logging
 import psycopg2
 from markupsafe import Markup, escape
 
-from odoo import _, api, fields, models, modules
+from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 from odoo.tools import html2plaintext, is_html_empty
 
@@ -16,7 +16,8 @@ VIEWABLE = ("image/jpeg", "image/jpg", "image/png", "image/webp", "image/tiff", 
 
 
 class HrExpense(models.Model):
-    _inherit = "hr.expense"
+    _name = "hr.expense"
+    _inherit = ["hr.expense", "ocr.queue.mixin"]
 
     # ------------------------------------------------------------------ helpers
     @api.model
@@ -63,28 +64,63 @@ class HrExpense(models.Model):
     def action_read_receipt(self, force=False):
         """Läs kvittot och fyll tomma fält. `force` skriver över belopp/datum/kategori/namn.
 
-        Every failure reaches the user as a UserError with a readable message (unreadable
-        image or PDF, tesseract missing, a value the write rejects), not as a server error.
+        The form button: reads at once (bounded by the document deadline), and the OCR
+        state shows the outcome. Every failure reaches the user as a UserError with a
+        readable message (unreadable image or PDF, tesseract missing, a value the write
+        rejects), not as a server error. A receipt the background job is reading is not
+        read twice.
         """
         for expense in self:
+            if expense.ocr_state == "running":
+                raise UserError(_("OCR is already reading this receipt in the background. "
+                                  "Wait a moment and reload the page."))
             att, why_not = expense._expense_ocr_target()
             if not att:
                 raise UserError(why_not)
-            expense._expense_ocr_read_or_raise(att, force=force)
+            outcome = expense._expense_ocr_read_or_raise(att, force=force)
+            expense._ocr_queue_record_sync(outcome)
         return True
 
     def action_read_receipt_bulk(self):
-        """The list action: read every selected receipt and say how it went.
+        """The list action: queue the selected receipts for OCR and say so.
 
-        Each expense is read in its own savepoint (see _expense_ocr_try), so one failure
-        neither stops nor undoes the others, and a failed expense gets a chatter note.
-        With the context key expense_ocr_commit (the list action) every expense is
-        committed when done, so a worker timeout does not lose finished ones. Returns a
-        notification that says how many were filled, failed or skipped, and why.
+        Nothing is read in the request (a worker would hit Odoo's time limit after a few
+        receipts, #29): the OCR cron reads them within seconds, one by one, and the outcome
+        shows in the OCR state, the "OCR failed" filter and the chatter. Returns a
+        notification with how many were queued or skipped, and why.
         """
-        commit = self.env.context.get("expense_ocr_commit") and not modules.module.current_test
-        results = self._expense_ocr_try("bulk", commit=commit)
+        results = []
+        queued = self.browse()
+        for expense in self:
+            att, why_not = expense._expense_ocr_target()
+            if expense.ocr_state == "running":
+                results.append((expense, self._ocr_result(
+                    "skipped", _("OCR is already reading it in the background"))))
+            elif not att:
+                results.append((expense, self._ocr_result("skipped", why_not)))
+            else:
+                expense._ocr_enqueue(att)
+                queued |= expense
+                results.append((expense, self._ocr_result("queued")))
+        if queued:
+            self._ocr_queue_trigger()
         return self.env["account.move"]._ocr_notification(_("Receipt OCR"), results)
+
+    # The queue (ocr.queue.mixin)
+
+    def _ocr_queue_skip_reason(self):
+        if self.state != "draft":
+            return _("not a draft expense")
+        return None
+
+    def _ocr_queue_read(self, final=True):
+        att = self.ocr_attachment_id
+        if not (att and att.res_model == "hr.expense" and att.res_id == self.id
+                and (att.mimetype or "").lower() in VIEWABLE):
+            att = self._expense_ocr_attachment()
+        if not att:
+            return self._ocr_result("skipped", _("no image or PDF attachment"))
+        return self._expense_ocr_read_or_raise(att, final=final)
 
     def _expense_ocr_target(self):
         """(attachment, None) when OCR can read this expense, else (None, the reason)."""
@@ -96,11 +132,11 @@ class HrExpense(models.Model):
             return None, _("Ingen bild- eller PDF-bilaga på utlägget.")
         return att, None
 
-    def _expense_ocr_read_or_raise(self, att, force=False):
+    def _expense_ocr_read_or_raise(self, att, force=False, final=True):
         """_expense_ocr_read with every failure turned into a readable UserError."""
         self.ensure_one()
         try:
-            return self._expense_ocr_read(att, force=force)
+            return self._expense_ocr_read(att, force=force, final=final)
         except (UserError, psycopg2.Error):
             raise  # database errors stay as they are (Odoo's retry loop needs them)
         except Exception as e:  # noqa: BLE001 — shown to the user, see action_read_receipt
@@ -108,21 +144,33 @@ class HrExpense(models.Model):
             raise UserError(_("Receipt OCR failed for %(name)s: %(error)s",
                               name=att.name, error=str(e)[:300] or type(e).__name__)) from e
 
-    def _expense_ocr_read(self, att, force=False):
-        """Read `att` and fill the expense. Returns the outcome (see account.move._ocr_result)."""
+    def _expense_ocr_read(self, att, force=False, final=True):
+        """Read `att` and fill the expense. Returns the outcome (see ocr.queue.mixin._ocr_result).
+
+        When the AI call failed (provider down, time limit) and this is not the `final`
+        attempt of the background job, nothing is written and the outcome asks for a retry;
+        otherwise what the regex read is filled in, the note says that the AI failed and
+        the outcome is "failed".
+        """
         from ..lib import receipt_ocr
 
         self.ensure_one()
-        Move = self.env["account.move"]
         cfg = self._expense_ocr_config()
         cats, by_code = self._expense_ocr_categories()
         result = receipt_ocr.extract_receipt_data(att.raw, att.mimetype, att.name, categories=cats, config=cfg)
+        ai_error = result.get("ai_error")
+        if ai_error and not final:
+            return self._ocr_result("failed", _("the AI step failed (%s)", ai_error), retry=True)
         filled = self._expense_ocr_apply(result, by_code, att, force=force)
         if result.get("source") == "none":
-            return Move._ocr_result("failed", _("nothing could be read from %s", att.name))
+            return self._ocr_result("failed", _("nothing could be read from %s", att.name))
+        if ai_error:
+            return self._ocr_result("failed", _("the AI step failed (%s); only the values read "
+                                                "from the text were filled in", ai_error),
+                                    noted=True)
         if not filled:
-            return Move._ocr_result("skipped", _("nothing was filled (see the chatter note)"))
-        return Move._ocr_result("filled")
+            return self._ocr_result("skipped", _("nothing was filled (see the chatter note)"))
+        return self._ocr_result("filled")
 
     def _expense_ocr_apply(self, result, by_code, att, force=False):
         from ..lib import receipt_ocr
@@ -268,56 +316,50 @@ class HrExpense(models.Model):
         filled.append(_("belopp %s", f"{vals['total_amount_currency']} {currency.name}"
                         if currency != self.company_currency_id else vals["total_amount_currency"]))
 
-    def _expense_ocr_try(self, reason, commit=False):
-        """OCR får aldrig fälla det som utlöste den (mailhämtning, uppladdning).
-
-        Each expense is read in its own savepoint: a failure (an SQL error included) rolls
-        back only that read, in the database and in the ORM cache, leaves the caller's
-        transaction usable and is noted in the expense's chatter. The caller's pending
-        writes are flushed first, outside the try, so a concurrency error on them still
-        reaches Odoo's retry loop instead of being swallowed here. `commit` commits after
-        each expense (the list action only). Returns [(expense, outcome)].
-        """
-        Move = self.env["account.move"]
-        self.env.flush_all()
-        results = []
-        for expense in self:
-            att, why_not = expense._expense_ocr_target()
-            if not att:
-                results.append((expense, Move._ocr_result("skipped", why_not)))
-                continue
-            try:
-                with self.env.cr.savepoint():
-                    outcome = expense._expense_ocr_read_or_raise(att)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Kvitto-OCR (%s) misslyckades för utlägg %s: %s", reason, expense.id, e)
-                message = expense._expense_ocr_error_message(e)
-                expense.message_post(body=message, message_type="comment", subtype_xmlid="mail.mt_note")
-                outcome = Move._ocr_result("failed", message)
-            results.append((expense, outcome))
-            if commit:
-                self.env.cr.commit()
-        return results
-
-    @api.model
-    def _expense_ocr_error_message(self, error):
-        """The user-facing text of a failed read (UserError text as is)."""
-        if isinstance(error, UserError) and error.args:
-            return error.args[0]
-        return _("Receipt OCR failed: %s", str(error)[:300] or type(error).__name__)
-
     # ------------------------------------------------------------------ trigger
     # En enda utlösare räcker för både mail och MCP: när utkastet får en (ny) huvudbilaga. Vid
     # inmailade utlägg hängs bilagorna på EFTER message_new (mail_thread postar meddelandet
     # efteråt och sätter då huvudbilagan), så en hook i message_new ser inga bilagor. Läsningen
     # körs bara när det finns något att fylla i: belopp 0 eller ingen kategori.
+    #
+    # The trigger only queues the expense (#29): the OCR cron reads it within seconds, so the
+    # upload, the mail fetch or the API call that set the attachment returns at once.
+    @api.model
+    def _expense_ocr_wanted(self, state, total, product, att):
+        """Whether a receipt that just became the main attachment is to be read."""
+        return (state == "draft" and (not total or not product) and bool(att)
+                and (att.mimetype or "").lower() in VIEWABLE)
+
     def write(self, vals):
         before = {e.id: (e.state, e.total_amount_currency, e.product_id.id, e.message_main_attachment_id.id) for e in self} if "message_main_attachment_id" in vals else {}
         res = super().write(vals)
-        if before and self._expense_ocr_enabled() and not self.env.context.get("expense_ocr_skip"):
+        if before and not self.env.context.get("expense_ocr_skip") and self._expense_ocr_enabled():
+            queued = self.browse()
             for expense in self:
                 state, total, product, old_att = before[expense.id]
                 att = expense.message_main_attachment_id
-                if state == "draft" and (not total or not product) and att and att.id != old_att and (att.mimetype or "").lower() in VIEWABLE:
-                    expense.with_context(expense_ocr_skip=True)._expense_ocr_try("bilaga")
+                if att.id != old_att and self._expense_ocr_wanted(state, total, product, att):
+                    expense._ocr_enqueue(att)
+                    queued |= expense
+            if queued:
+                self._ocr_queue_trigger()
         return res
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        """A receipt set as the main attachment at creation is queued too (#36.3), like one
+        set by a later write."""
+        expenses = super().create(vals_list)
+        if not self.env.context.get("expense_ocr_skip") and any(
+                vals.get("message_main_attachment_id") for vals in vals_list) \
+                and self._expense_ocr_enabled():
+            queued = self.browse()
+            for expense, vals in zip(expenses, vals_list, strict=True):
+                att = expense.message_main_attachment_id
+                if vals.get("message_main_attachment_id") and self._expense_ocr_wanted(
+                        expense.state, expense.total_amount_currency, expense.product_id, att):
+                    expense._ocr_enqueue(att)
+                    queued |= expense
+            if queued:
+                self._ocr_queue_trigger()
+        return expenses

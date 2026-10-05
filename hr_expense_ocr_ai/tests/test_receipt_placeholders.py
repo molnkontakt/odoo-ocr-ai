@@ -1,7 +1,9 @@
 """Upload's placeholders count as empty, so the receipt fills category and description
-(#34); a configured name prefix gets the description appended."""
+(#34); a configured name prefix gets the description appended. The receipt is read by the
+OCR cron (#29), run here after the upload."""
 from unittest import mock
 
+from odoo.addons.account_invoice_ocr_ai.tests.common import run_ocr_cron
 from odoo.addons.hr_expense_ocr_ai.lib import receipt_ocr
 from odoo.tests import TransactionCase, tagged
 
@@ -37,7 +39,10 @@ class TestReceiptPlaceholders(TransactionCase):
         Expense = self.env["hr.expense"]
         with self._patched():
             ids = Expense.create_expense_from_attachments(attachment_ids=self._attachment().ids)
-        expense = Expense.browse(ids)
+            expense = Expense.browse(ids)
+            self.assertEqual(expense.ocr_state, "pending", "Upload only queues the receipt")
+            run_ocr_cron(self.env)
+        self.assertEqual(expense.ocr_state, "done")
         self.assertEqual(expense.product_id, self.meal, "EXP_GEN is a placeholder")
         self.assertEqual(expense.name, "Example Restaurant — Lunch")
         self.assertEqual(expense.total_amount_currency, 112.0)
@@ -52,6 +57,7 @@ class TestReceiptPlaceholders(TransactionCase):
         fields = dict(FIELDS, category_code="TRAVEL" if first == self.meal else "MEAL")
         with self._patched(fields):
             expense.message_main_attachment_id = self._attachment(res_id=expense.id)
+            run_ocr_cron(self.env)
         self.assertNotEqual(expense.product_id, first)
         self.assertEqual(expense.name, "Example Restaurant — Lunch")
 
@@ -61,6 +67,7 @@ class TestReceiptPlaceholders(TransactionCase):
             "product_id": self.travel.id})
         with self._patched():
             expense.message_main_attachment_id = self._attachment(res_id=expense.id)
+            run_ocr_cron(self.env)
         self.assertEqual(expense.product_id, self.travel)
         self.assertEqual(expense.name, "Lunch with a customer")
         self.assertEqual(expense.total_amount_currency, 112.0)
@@ -71,6 +78,7 @@ class TestReceiptPlaceholders(TransactionCase):
                 {"name": name, "employee_id": self.employee.id, "product_id": self.travel.id})
             with self._patched():
                 expense.message_main_attachment_id = self._attachment(res_id=expense.id)
+                run_ocr_cron(self.env)
             return expense
 
         self.assertEqual(read("Unknown sender: receipt").name, "Unknown sender: receipt",
