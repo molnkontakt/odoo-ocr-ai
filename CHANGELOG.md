@@ -2,6 +2,73 @@
 
 ## Unreleased
 
+- `account_invoice_ocr_ai` 19.0.1.13.0, `hr_expense_ocr_ai` 19.0.1.3.0: accounting
+  correctness. **Several behaviour changes** — review the first bills and receipts after
+  upgrading.
+  - **The bill's company (#7).** Accounts, taxes, partners and bank accounts are looked up
+    in the bill's company, also when another company is active or several are ticked.
+    Before, the lines got another company's account or tax, Odoo refused them and the
+    bill was left without lines. Taxes are l10n_se's, found by template id for the bill's
+    company; other charts fall back to a search by rate (a reverse-charge tax only by its
+    l10n_se-style name, never guessed).
+  - **A purchase tax per line (#8, #22) — behaviour change.** Each line gets its own tax
+    once its account is known. Goods or services follows the account (BAS: goods
+    4000–4499, 4510–4529, 4540–4549; services 4530–4539 and the 5xxx–7xxx cost
+    accounts). Foreign vendor without VAT on the document: reverse charge per line — EU
+    goods `EU G` (box 20) instead of `EU S`, import of goods `EX G` (box 50/60, with a
+    note that the customs value is the VAT base), EU services `EU S`, services from
+    outside the EU `EX S`. Swedish vendors get `G` or `S` taxes per line. A 0 % line on
+    an account for exempt or out-of-scope costs (63xx, 657x, 699x, 75xx, 8xxx — reminder
+    fees, bank charges) is never reverse-charged at 25 %. A foreign vendor charging
+    Swedish VAT (a Swedish VAT number on the document or the partner) gets Swedish input
+    VAT. **Foreign VAT** printed on the document (a hotel abroad) is added to the cost of
+    the lines, which get no tax and no reverse charge, and a note says so. Greek (`EL`)
+    and Northern Irish (`XI`) VAT numbers give the countries GR and GB. The account remap
+    keeps EU goods on 4515–4517 (it was swallowed into 4535) and picks the BAS account
+    for the region and rate (#35).
+  - **Account list setting (#24) — behaviour change.** The model only gets accounts that
+    exist in the bill company's chart (6231 is in none of l10n_se's charts, nine more
+    codes of the built-in list are not in its base chart), the answer's schema allows
+    only those codes, and
+    another code is noted and gets the fallback account: the purchase journal's default
+    account instead of a hard-coded 4000/4515/4545. The list is the new setting *Accounts
+    for invoice lines* (`invoice_ocr.account_list`, one `code: hint` per line); empty
+    means the built-in Swedish BAS list. Dead code removed and the README no longer
+    points to `ACCOUNT_FALLBACKS` (#35).
+  - **Currency (#5, #28) — behaviour change.** A bill gets the document's currency before
+    its lines are created, when that currency is active and has an exchange rate on or
+    before the invoice date; otherwise a warning is posted and **no lines are created**
+    (the bill stays in the company's currency). The totals check warns when the
+    currencies differ. A receipt's amount is written in the receipt's currency, rounded
+    like it; a currency that cannot be used leaves the amount empty with a note, and a
+    category with a fixed cost keeps its quantity × cost amount. Without the AI a total
+    printed in a foreign currency is not read. Before, EUR 104.64 became 104.64 SEK.
+  - **Stricter vendor matching (#13) — behaviour change.** Bankgiro/plusgiro must equal
+    an account's number digit for digit (no substring of an IBAN or another account).
+    Names match only among the company's vendors (`supplier_rank` > 0), on the whole name
+    apart from legal form or on every distinctive word, so "Acme Sverige AB" no longer
+    picks "Other Sverige AB". Several partners on a rule: none. The commercial partner is
+    used, the chatter note says which rule matched, a name-only match is flagged for
+    checking, and a vendor already on the bill is kept without a lookup (no partner is
+    created for it).
+  - **Lock dates (#35).** The accounting date follows the invoice date unless Odoo's own
+    lock rules forbid it: purchase lock date, parent company locks, the hard lock and
+    the user's lock exceptions now count. A locked date is noted.
+  - **Receipt VAT (#33).** A note when the VAT printed on the receipt and the category's
+    tax differ by more than 1 (e.g. a 12 % restaurant receipt in a 25 % category). The
+    tax is never changed.
+  - **Upload placeholders (#34) — behaviour change.** Odoo's *Upload* button puts the
+    generic `EXP_GEN` category and "Untitled Expense <date>" on every expense; these now
+    count as empty, so the receipt fills category and description too. The hard-coded
+    `OKÄND AVSÄNDARE` name prefix is replaced by the system parameter
+    `expense_ocr.placeholder_name_prefixes` (comma-separated, empty by default; also in
+    the settings): a description starting with one of them gets the receipt's
+    description appended.
+  - The Odoo tests run on l10n_se's Swedish chart (CI installs `l10n_se`), with a case
+    per VAT treatment and their tax report tags, two companies, currencies, lock dates
+    and vendor matching. `hr_expense_ocr_ai` 19.0.1.3.0 needs `account_invoice_ocr_ai`
+    19.0.1.13.0 (`account.move._ocr_currency`).
+
 - `account_invoice_ocr_ai` 19.0.1.12.0, `hr_expense_ocr_ai` 19.0.1.2.0: failures are
   contained and visible, and the parsing is stricter.
   - **Failures.** OCR on upload runs in a savepoint: a failure rolls back only its own
