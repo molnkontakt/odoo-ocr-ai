@@ -46,9 +46,10 @@ OCR_SCALE = float(os.environ.get("INVOICE_OCR_SCALE", "2"))
 # ── Time and size budgets (#9, #26) ─────────────────────────────────────────
 # One document — the text extraction and every provider call for it (retries, the 429
 # wait, the schema fallback, the reliability re-run) — must be done within this many
-# seconds. 90 s keeps the synchronous "Run OCR" button under Odoo's default 120 s
-# request limit (limit_time_real), with room for the writes to the record.
-TOTAL_DEADLINE = float(os.environ.get("INVOICE_OCR_DEADLINE", "90"))
+# seconds. 80 s keeps the synchronous "Run OCR" button under Odoo's default 120 s
+# request limit (limit_time_real), with room for the writes to the record, and one
+# background run (document, writes, start-up) within 90 s.
+TOTAL_DEADLINE = float(os.environ.get("INVOICE_OCR_DEADLINE", "80"))
 # The share of it the text extraction (pdfplumber, tesseract) may use at most (#26).
 EXTRACT_TIME_BUDGET = float(os.environ.get("INVOICE_OCR_EXTRACT_BUDGET", "30"))
 # pdfplumber reads at most this many pages of a PDF: the first ones and the last one.

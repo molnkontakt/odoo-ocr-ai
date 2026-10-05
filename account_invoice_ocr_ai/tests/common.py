@@ -4,10 +4,45 @@ from unittest import mock
 
 from odoo.addons.account_invoice_ocr_ai.lib import invoice_ocr
 from odoo.tests import TransactionCase
+from odoo.tools import SQL
 
 from . import ocr_fixtures as fx
 
 PDF = [{"filename": "invoice.pdf", "mimetype": "application/pdf", "raw": b"%PDF-1.4 test"}]
+
+
+def run_ocr_cron(env):
+    """Run the OCR cron once, in the test's transaction.
+
+    ir.cron._commit_progress commits (also outside a cron job), which a test must not do:
+    it is replaced by a mock, returned so a test can look at the progress reported.
+    """
+    with mock.patch.object(env.registry["ir.cron"], "_commit_progress",
+                           return_value=float("inf")) as progress:
+        env["ocr.queue.mixin"]._ocr_cron_process()
+    return progress
+
+
+def _shift(records, sql):
+    records.flush_recordset()
+    records.env.cr.execute(SQL(sql, SQL.identifier(records._table), tuple(records.ids)))
+    records.invalidate_recordset()
+
+
+def make_due(records):
+    """Move the queue times of `records` an hour back, as if their retry delay had passed.
+
+    write_date moves along: in one test transaction every write has the same timestamp, so
+    the queue's "changed by someone after it was queued" check would fire otherwise.
+    """
+    _shift(records, "UPDATE %s SET ocr_requested_at = ocr_requested_at - interval '1 hour', "
+                    "write_date = write_date - interval '1 hour' WHERE id IN %s")
+
+
+def changed_by_someone_else(records):
+    """Make `records` look changed after they were queued (write_date after the queue time)."""
+    _shift(records, "UPDATE %s SET ocr_requested_at = ocr_requested_at - interval '1 minute' "
+                    "WHERE id IN %s")
 
 
 class OcrBillCase(TransactionCase):
@@ -54,6 +89,23 @@ class OcrBillCase(TransactionCase):
 
     def _new_bill(self, **vals):
         return self.env["account.move"].create({"move_type": "in_invoice", **vals})
+
+    def _attach_pdf(self, move, name="invoice.pdf", raw=b"%PDF-1.4 test"):
+        return self.env["ir.attachment"].create({
+            "name": name, "res_model": "account.move", "res_id": move.id, "raw": raw,
+            "mimetype": "application/pdf"})
+
+    def _upload(self, move, attachment=None):
+        """The upload path on `move`: core found no decoder for the plain PDF (returns None),
+        then the module's hook queues the bill."""
+        Move = type(self.env["account.move"])
+        base = next(c for c in Move.__mro__ if c.__dict__.get("_extend_with_attachments")
+                    and "account_invoice_ocr_ai" not in c.__module__)
+        attachment = attachment or self._attach_pdf(move)
+        files_data = [{"name": attachment.name, "mimetype": attachment.mimetype,
+                       "raw": attachment.raw, "attachment": attachment}]
+        with mock.patch.object(base, "_extend_with_attachments", return_value=None):
+            return move._extend_with_attachments(files_data, new=True)
 
     def _tax(self, company, xmlid):
         """l10n_se's tax `xmlid` as created for `company`."""

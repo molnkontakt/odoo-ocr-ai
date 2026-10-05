@@ -21,6 +21,7 @@ a draft for human review.
         "views/res_config_settings_views.xml",
         "views/account_move_views.xml",
         "data/server_actions.xml",
+        "data/ir_cron.xml",
     ],
     "installable": True,
 }

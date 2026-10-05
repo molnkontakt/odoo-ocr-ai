@@ -7,7 +7,7 @@
         <field name="arch" type="xml">
             <xpath expr="//app[@name='account']" position="inside">
                 <block title="Invoice OCR" id="invoice_ocr_settings">
-                    <setting string="Invoice OCR on upload" help="Read PDFs uploaded through the Upload button or attached to a draft vendor bill with OCR + an LLM.">
+                    <setting string="Invoice OCR on upload" help="Read PDFs uploaded through the Upload button or received by the journal's mail alias with OCR + an LLM, in a background job within seconds.">
                         <field name="invoice_ocr_enabled"/>
                     </setting>
                     <setting string="AI provider" help="The text of the document (never the file) is sent to this provider. staik keeps data in Sweden; Venice and OpenAI are in the USA; Ollama and a custom endpoint can be on your own hardware.">
@@ -48,6 +48,22 @@
                     </setting>
                     <setting string="Ollama model" invisible="invoice_ocr_provider != 'ollama'">
                         <field name="invoice_ocr_ollama_model"/>
+                    </setting>
+                    <setting string="Time limits" help="OCR on uploaded and e-mailed documents runs in a background job, within seconds; the OCR button on the form reads at once.">
+                        <div class="content-group">
+                            <div class="row mt-2">
+                                <label for="invoice_ocr_total_deadline" class="col-lg-6 o_light_label"/>
+                                <field name="invoice_ocr_total_deadline" class="col-lg-3"/>
+                            </div>
+                            <div class="row">
+                                <label for="invoice_ocr_call_timeout" class="col-lg-6 o_light_label"/>
+                                <field name="invoice_ocr_call_timeout" class="col-lg-3"/>
+                            </div>
+                            <div class="row">
+                                <label for="invoice_ocr_cron_time_budget" class="col-lg-6 o_light_label"/>
+                                <field name="invoice_ocr_cron_time_budget" class="col-lg-3"/>
+                            </div>
+                        </div>
                     </setting>
                     <setting string="Accounts for invoice lines" help="The account codes the AI may choose, one per line as 'code: hint'. Empty: the built-in Swedish BAS list. Only accounts that exist in the bill company's chart are offered.">
                         <field name="invoice_ocr_account_list" widget="text" placeholder="6540: IT services (consulting, managed services)"/>

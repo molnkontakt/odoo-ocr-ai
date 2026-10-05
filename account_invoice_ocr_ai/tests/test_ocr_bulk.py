@@ -1,16 +1,18 @@
 """The form button and the list action say what happened (#35.1).
 
-Every bill runs in its own savepoint; the result is a notification counting filled, failed
-and skipped bills with the reasons, and a failed bill gets a chatter note. The list action
-returns that notification instead of writing an ir.logging row that its own rollback
-discarded.
+The form button reads at once; every bill runs in its own savepoint and the result is a
+notification counting filled, failed and skipped bills with the reasons, and a failed bill
+gets a chatter note. The list action queues the bills (#9) and says so; the OCR cron reads
+them and a bill that keeps failing ends up "failed" with a note. Nothing is written to an
+ir.logging row that a rollback discards.
 """
 from unittest import mock
 
 from odoo.tests import tagged
+from odoo.tools import mute_logger
 
 from . import ocr_fixtures as fx
-from .common import OcrBillCase
+from .common import OcrBillCase, run_ocr_cron
 
 AI = {
     "vendor_name": fx.PLAIN_VENDOR_NAME, "invoice_number": "4711",
@@ -78,11 +80,20 @@ class TestOcrBulk(OcrBillCase):
         good, bad, no_pdf, _customer = self._bills()
         server_action = self.env.ref("account_invoice_ocr_ai.action_run_ocr_server")
         records = good | bad | no_pdf
-        with self._patch_ocr(fx.PLAIN_INVOICE_TEXT, AI), self._fail_for(bad):
-            action = server_action.with_context(
-                active_model="account.move", active_ids=records.ids, active_id=good.id).run()
+        action = server_action.with_context(
+            active_model="account.move", active_ids=records.ids, active_id=good.id).run()
         self.assertEqual(action["tag"], "display_notification")
-        self.assertTrue(action["params"]["message"].startswith("1 filled, 1 failed, 1 skipped"))
-        self.assertEqual(good.ref, "4711")
+        self.assertTrue(action["params"]["message"].startswith("2 queued for OCR"),
+                        action["params"]["message"])
+        self.assertIn(f"{no_pdf.display_name}: no PDF attachment", action["params"]["message"])
+        # the cron reads them; the failing bill is failed at once when one attempt is allowed
+        self.env["ir.config_parameter"].sudo().set_param("invoice_ocr.max_attempts", "1")
+        with self._patch_ocr(fx.PLAIN_INVOICE_TEXT, AI), self._fail_for(bad), \
+                mute_logger("odoo.addons.account_invoice_ocr_ai.models.ocr_queue"):
+            run_ocr_cron(self.env)
+        self.assertEqual((good.ocr_state, good.ref), ("done", "4711"))
+        self.assertEqual((bad.ocr_state, bad.ocr_error), ("failed", "boom"))
+        self.assertFalse(bad.ref)
+        self.assertIn("OCR could not read this document (attempts: 1): boom", self._bodies(bad))
         self.assertFalse(self.env["ir.logging"].search_count(
             [("path", "=", "action_run_ocr_server")]))

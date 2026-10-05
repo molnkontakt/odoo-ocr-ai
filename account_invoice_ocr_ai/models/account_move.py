@@ -1,9 +1,10 @@
-"""Run OCR + AI on PDFs uploaded via the 'Ladda upp'-button to pre-fill
-vendor bill fields (invoice_date, ref, partner, amounts, lines).
+"""Read vendor bill PDFs with OCR + AI and pre-fill the bill (invoice_date, ref, partner,
+amounts, lines).
 
-Hooks into account.move._extend_with_attachments which is called both when:
-  - User uploads via the journal's "Ladda upp"-button
-  - PDF is attached to a draft vendor bill via chatter
+A bill created from a PDF — the journal's Upload button, the mail alias — is queued in
+account.move._extend_with_attachments and read by the OCR cron within seconds (see
+ocr_queue.py, #9); so is a bill the list action "Kör OCR igen" is run on. The form button
+reads the bill at once.
 """
 
 import base64
@@ -14,13 +15,14 @@ from datetime import timedelta
 
 from markupsafe import Markup
 
-from odoo import _, api, fields, models, modules
+from odoo import _, api, fields, models
 
 logger = logging.getLogger(__name__)
 
 
 class AccountMove(models.Model):
-    _inherit = "account.move"
+    _name = "account.move"
+    _inherit = ["account.move", "ocr.queue.mixin"]
 
     ocr_auto_debit = fields.Boolean(
         string="Dras automatiskt",
@@ -46,55 +48,124 @@ class AccountMove(models.Model):
         return super().write(vals)
 
     def action_run_ocr(self):
-        """Re-run OCR + AI on the latest PDF attachment of each selected draft vendor bill.
+        """Read the latest PDF attachment of each draft vendor bill now: the form button.
 
-        The form button and the list action ("Kör OCR igen"). Each bill runs in its own
-        savepoint (_invoice_ocr_extend_safe), so one failure neither stops nor undoes the
-        others; a failed bill gets a chatter note. With the context key invoice_ocr_commit
-        (the list action) every bill is committed when done, so a worker timeout does not
-        lose finished bills. Returns a notification that says how many bills were filled,
-        failed or skipped, and why.
+        Synchronous (bounded by the document deadline, see _ocr_document_deadline), so the
+        user sees the result at once. Each bill runs in its own savepoint
+        (_invoice_ocr_extend_safe), so one failure neither stops nor undoes the others; a
+        failed bill gets a chatter note and the OCR state "failed". A bill the background
+        job is reading is skipped. Returns a notification that says how many bills were
+        filled, failed or skipped, and why. The list action queues instead
+        (action_queue_ocr).
         """
         results = []
-        commit = self.env.context.get("invoice_ocr_commit") and not modules.module.current_test
         for move in self:
             if move.state != "draft" or move.move_type != "in_invoice":
                 results.append((move, self._ocr_result("skipped", _("not a draft vendor bill"))))
                 continue
-            atts = self.env["ir.attachment"].search([
-                ("res_model", "=", "account.move"),
-                ("res_id", "=", move.id),
-                ("mimetype", "=", "application/pdf"),
-            ], order="id desc", limit=1)
-            if not atts:
+            if move.ocr_state == "running":
+                results.append((move, self._ocr_result(
+                    "skipped", _("OCR is already reading it in the background"))))
+                continue
+            att = move._ocr_newest_pdf()
+            if not att:
                 results.append((move, self._ocr_result("skipped", _("no PDF attachment"))))
                 continue
-            # Use the most recent PDF attachment
-            files_data = [{
-                "filename": atts.name,
-                "mimetype": atts.mimetype,
-                "raw": atts.raw,
-            }]
-            results.append((move, self._invoice_ocr_extend_safe(move, files_data)))
-            if commit:
-                self.env.cr.commit()
+            result = self._invoice_ocr_extend_safe(move, self._ocr_files_data(att))
+            move._ocr_queue_record_sync(result)
+            results.append((move, result))
         return self._ocr_notification(_("Invoice OCR"), results)
+
+    def action_queue_ocr(self):
+        """Queue the selected draft vendor bills for OCR: the list action "Kör OCR igen".
+
+        Nothing is read in the request (a worker would hit Odoo's time limit after a few
+        bills, #9): the OCR cron reads the bills within seconds, one by one, and the outcome
+        shows in the OCR state, the "OCR failed" filter and the chatter. Returns a
+        notification with how many bills were queued or skipped, and why.
+        """
+        results = []
+        queued = self.browse()
+        enabled = self._invoice_ocr_enabled()
+        for move in self:
+            if move.state != "draft" or move.move_type != "in_invoice":
+                results.append((move, self._ocr_result("skipped", _("not a draft vendor bill"))))
+                continue
+            if not enabled:
+                results.append((move, self._ocr_result(
+                    "skipped", _("OCR is turned off in the settings"))))
+                continue
+            if move.ocr_state == "running":
+                results.append((move, self._ocr_result(
+                    "skipped", _("OCR is already reading it in the background"))))
+                continue
+            att = move._ocr_newest_pdf()
+            if not att:
+                results.append((move, self._ocr_result("skipped", _("no PDF attachment"))))
+                continue
+            move._ocr_enqueue(att)
+            queued |= move
+            results.append((move, self._ocr_result("queued")))
+        if queued:
+            self._ocr_queue_trigger()
+        return self._ocr_notification(_("Invoice OCR"), results)
+
+    def _ocr_newest_pdf(self):
+        """The bill's most recent PDF attachment."""
+        self.ensure_one()
+        return self.env["ir.attachment"].search([
+            ("res_model", "=", "account.move"),
+            ("res_id", "=", self.id),
+            ("mimetype", "=", "application/pdf"),
+        ], order="id desc", limit=1)
+
+    def _ocr_queue_pdf(self):
+        """The PDF the queued read takes: the one it was queued with, if it is still the
+        bill's, else the bill's main attachment (the uploaded or e-mailed PDF, as core sets
+        it), else its most recent PDF."""
+        self.ensure_one()
+        for att in (self.ocr_attachment_id, self.message_main_attachment_id):
+            if (att and att.res_model == "account.move" and att.res_id == self.id
+                    and att.mimetype == "application/pdf"):
+                return att
+        return self._ocr_newest_pdf()
+
+    @api.model
+    def _ocr_files_data(self, att):
+        return [{"name": att.name, "filename": att.name, "mimetype": att.mimetype,
+                 "raw": att.raw, "attachment": att}]
+
+    # The queue (ocr.queue.mixin)
+
+    def _ocr_queue_skip_reason(self):
+        if self.state != "draft" or self.move_type != "in_invoice":
+            return _("not a draft vendor bill")
+        return None
+
+    def _ocr_queue_read(self, final=True):
+        att = self._ocr_queue_pdf()
+        if not att:
+            return self._ocr_result("skipped", _("no PDF attachment"))
+        return self._invoice_ocr_extend(self, self._ocr_files_data(att), final=final)
 
     @api.model
     def _ocr_notification(self, title, results):
         """A display_notification summarising [(record, outcome)] (see _ocr_result).
 
         Shared with hr_expense_ocr_ai. Failed and skipped records are listed with the
-        reason; the current view is reloaded afterwards so filled values show.
+        reason; the current view is reloaded afterwards so filled values and the OCR state
+        show.
         """
         counts = Counter(outcome["status"] for _rec, outcome in results)
         parts = [label for label in (
             counts["filled"] and _("%s filled", counts["filled"]),
+            counts["queued"] and _("%s queued for OCR, read in the background within a "
+                                   "minute or so", counts["queued"]),
             counts["failed"] and _("%s failed", counts["failed"]),
             counts["skipped"] and _("%s skipped", counts["skipped"]),
         ) if label] or [_("nothing selected")]
         details = [f"{rec.display_name}: {outcome['reason']}" for rec, outcome in results
-                   if outcome["status"] != "filled" and outcome["reason"]]
+                   if outcome["status"] not in ("filled", "queued") and outcome["reason"]]
         shown = 10
         if len(details) > shown:
             details = [*details[:shown], _("… and %s more", len(details) - shown)]
@@ -102,7 +173,7 @@ class AccountMove(models.Model):
         message = ", ".join(parts) + (". " + "; ".join(details) if details else "")
         if counts["failed"]:
             kind = "warning"
-        elif counts["filled"]:
+        elif counts["filled"] or counts["queued"]:
             kind = "success"
         else:
             kind = "info"
@@ -119,32 +190,40 @@ class AccountMove(models.Model):
         }
 
     def _extend_with_attachments(self, files_data, new=False):
-        res = super()._extend_with_attachments(files_data, new)
+        """Queue a new draft vendor bill created from a PDF for OCR (#9).
 
-        # Only run on draft vendor bills (and only when invoked at create time)
-        if not new:
+        Called at creation (new=True) by the journal's Upload button and the mail alias.
+        Nothing is read here: the request (or the mail fetch) returns at once and the OCR
+        cron reads the bill within seconds. A bill Odoo already imported electronically
+        (UBL/Peppol, embedded Factur-X/ZUGFeRD: super() returns a truthy value) is left
+        alone (#18), as is a bill when OCR is off.
+
+        Returns True for a queued bill. Core's only use of the value on this path
+        (_create_records_from_attachments) is to post "There was an error while importing
+        the bill, you can find attached the incoming XML" when it is falsy — wrong for a PDF
+        that is about to be read; the bill's OCR state and chatter tell the real outcome.
+        Bills that are not queued return core's value unchanged.
+        """
+        res = super()._extend_with_attachments(files_data, new)
+        if not new or res:
             return res
-        # Odoo already imported an electronic invoice (UBL/Peppol, embedded
-        # Factur-X/ZUGFeRD): lines, due date and payment terms come from it, and OCR would
-        # only overwrite them with a worse reading of the PDF. A plain PDF has no decoder in
-        # CE and gives res = None, so OCR runs as before.
-        if res:
-            return res
-        filled = False
+        queued = False
         for move in self:
-            if move.move_type != "in_invoice":
+            if move.move_type != "in_invoice" or move.state != "draft":
                 continue
-            if move.state != "draft":
+            if not self._invoice_ocr_enabled():
                 continue
-            # No commit here: _extend_with_attachments runs inside the create
-            # transaction, so committing would also flush super()'s work and the
-            # create itself. A failure rolls back only the OCR's own writes (savepoint).
-            result = self._invoice_ocr_extend_safe(move, files_data)
-            filled = filled or result["status"] == "filled"
-        # Core's _create_records_from_attachments posts "There was an error while
-        # importing the bill" when this returns a falsy value: only say "imported"
-        # when OCR actually filled the bill.
-        return True if filled else res
+            pdfs = [fd for fd in files_data
+                    if fd.get("mimetype") == "application/pdf"
+                    or (fd.get("name") or fd.get("filename") or "").lower().endswith(".pdf")]
+            if not pdfs:
+                continue
+            attachment = next((fd["attachment"] for fd in pdfs if fd.get("attachment")), None)
+            move._ocr_enqueue(attachment)
+            queued = True
+        if queued:
+            self._ocr_queue_trigger()
+        return True if queued else res
 
     # ------------------------------------------------------------------
     # OCR + AI fill
@@ -169,6 +248,8 @@ class AccountMove(models.Model):
 
         ICP = self.env["ir.config_parameter"].sudo()
         cfg = invoice_ocr.config_from_settings(lambda key: ICP.get_param(f"invoice_ocr.{key}"))
+        # One document's time, within Odoo's time limits (#9).
+        cfg["total_deadline"] = self.env["ocr.queue.mixin"]._ocr_document_deadline()
         # Org/VAT numbers are normalized inside the library (invoice_ocr.build_own_ids),
         # so no need to pre-clean here.
         own = self._ocr_own_context(company or self.env.company)
@@ -218,17 +299,18 @@ class AccountMove(models.Model):
                                "%(date)s", currency=iso, date=date)
         return currency, None
 
-    @staticmethod
-    def _ocr_result(status, reason=None):
-        """Outcome of one OCR run: status "filled", "skipped" or "failed", and why."""
-        return {"status": status, "reason": reason or ""}
+    @api.model
+    def _invoice_ocr_enabled(self):
+        ICP = self.env["ir.config_parameter"].sudo()
+        return ICP.get_param("invoice_ocr.enabled", "True").lower() not in ("false", "0", "")
 
     def _invoice_ocr_extend_safe(self, move, files_data):
         """_invoice_ocr_extend in a savepoint: a failure rolls back only the OCR's writes.
 
         An exception (an SQL error included) no longer leaves half-written partners or
         lines behind, nor an aborted transaction for the caller. A failed run is noted in
-        the bill's chatter. Returns the run's outcome (see _ocr_result).
+        the bill's chatter (unless the fill note already says it). Returns the run's
+        outcome (see _ocr_result).
         """
         # The caller's own pending writes are flushed outside the try: an error there
         # belongs to the caller (and Odoo's retry loop), it must not be swallowed here.
@@ -236,10 +318,10 @@ class AccountMove(models.Model):
         try:
             with self.env.cr.savepoint():
                 result = self._invoice_ocr_extend(move, files_data) or self._ocr_result("filled")
-        except Exception as e:  # noqa: BLE001 — OCR must never break the upload
+        except Exception as e:  # noqa: BLE001 — OCR must never break the caller
             logger.warning("OCR failed for move %s", move.id, exc_info=True)
-            result = self._ocr_result("failed", str(e)[:300] or type(e).__name__)
-        if result["status"] == "failed":
+            result = self._ocr_result("failed", self._ocr_error_reason(e))
+        if result["status"] == "failed" and not result.get("noted"):
             move.message_post(
                 body=_("OCR could not fill in this bill: %(reason)s. Fill it in by hand "
                        "or run OCR again.", reason=result["reason"]),
@@ -247,11 +329,16 @@ class AccountMove(models.Model):
             )
         return result
 
-    def _invoice_ocr_extend(self, move, files_data):
+    def _invoice_ocr_extend(self, move, files_data, final=True):
         """Read the bill's PDF with OCR + AI and pre-fill it.
 
         Returns the outcome (see _ocr_result): "filled", or "skipped"/"failed" with the
-        reason. Exceptions are left to the caller (_invoice_ocr_extend_safe).
+        reason. Exceptions are left to the caller (_invoice_ocr_extend_safe, the cron).
+
+        When the AI step fails (provider down, time limit) and this is not the `final`
+        attempt, nothing is written and the outcome asks for a retry; on the final attempt
+        (and on the form button) the values read from the text are filled in, the note says
+        that the AI failed and the outcome is "failed".
 
         Runs in the bill's company (#7): the upload path and the list action run in the
         user's active company, and with several companies ticked every company's taxes are
@@ -260,9 +347,9 @@ class AccountMove(models.Model):
         """
         company = move.company_id
         if self.env.company != company or move.env.company != company:
-            return self.with_company(company)._invoice_ocr_extend(move.with_company(company), files_data)
-        ICP = self.env["ir.config_parameter"].sudo()
-        if ICP.get_param("invoice_ocr.enabled", "True").lower() in ("false", "0", ""):
+            return self.with_company(company)._invoice_ocr_extend(
+                move.with_company(company), files_data, final=final)
+        if not self._invoice_ocr_enabled():
             return self._ocr_result("skipped", _("OCR is turned off in the settings"))
 
         # Find the first PDF attachment in the file group
@@ -291,10 +378,21 @@ class AccountMove(models.Model):
         except Exception as e:
             logger.warning("invoice_ocr.extract_invoice_data failed: %s", e)
             return self._ocr_result(
-                "failed", _("the PDF could not be read (%s)", str(e)[:300] or type(e).__name__))
+                "failed", _("the PDF could not be read (%s)", str(e)[:300] or type(e).__name__),
+                retry=True)
+
+        # The AI step failed (provider down, time limit): try again later before filling in
+        # only what the regex read.
+        ai_error = (data or {}).get("_ai_error")
+        if ai_error and not final:
+            return self._ocr_result("failed", _("the AI step failed (%s)", ai_error), retry=True)
 
         # If no useful data extracted, abort
         if not data or not (data.get("vendor_name") or data.get("invoice_number")):
+            if ai_error:
+                return self._ocr_result("failed", _(
+                    "the AI step failed (%s) and the text alone gives neither a vendor name nor "
+                    "an invoice number", ai_error))
             return self._ocr_result(
                 "failed", _("neither a vendor name nor an invoice number was found in the PDF"))
 
@@ -492,6 +590,10 @@ class AccountMove(models.Model):
             )
         if prebooked:
             self._ocr_post_prebooked_warning(move, prebooked)
+        if ai_error:
+            return self._ocr_result(
+                "failed", _("the AI step failed (%s); only the values read from the text were "
+                            "filled in", ai_error), noted=True)
         return self._ocr_result("filled")
 
     # ------------------------------------------------------------------

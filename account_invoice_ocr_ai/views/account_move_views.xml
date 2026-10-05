@@ -10,7 +10,18 @@
                         type="object"
                         string="Kör OCR igen"
                         class="btn-secondary"
-                        invisible="state != 'draft' or move_type != 'in_invoice'"/>
+                        invisible="state != 'draft' or move_type != 'in_invoice' or ocr_state == 'running'"/>
+            </xpath>
+            <xpath expr="/form/sheet" position="before">
+                <field name="ocr_state" invisible="1"/>
+                <div class="alert alert-info" role="alert"
+                     invisible="ocr_state not in ('pending', 'running') or state != 'draft'">
+                    OCR reads this bill in the background, within a minute or so. Reload the page to see what it filled in.
+                </div>
+                <div class="alert alert-warning" role="alert"
+                     invisible="ocr_state != 'failed' or state != 'draft'">
+                    OCR could not read this bill: <field name="ocr_error" class="d-inline"/>. Fill it in by hand or run OCR again.
+                </div>
             </xpath>
             <!-- The vendor bill's recipient account (not the customer invoice's) -->
             <xpath expr="//field[@name='partner_bank_id'][contains(@invisible, 'in_invoice')]"
@@ -19,6 +30,35 @@
                        invisible="move_type not in ('in_invoice', 'in_receipt')"/>
                 <field name="ocr_auto_debit_phrase"
                        invisible="move_type not in ('in_invoice', 'in_receipt') or not ocr_auto_debit_phrase"/>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="view_invoice_tree_inherit_ocr" model="ir.ui.view">
+        <field name="name">account.invoice.list.ocr</field>
+        <field name="model">account.move</field>
+        <field name="inherit_id" ref="account.view_invoice_tree"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='status_in_payment']" position="after">
+                <field name="ocr_state" optional="hide" widget="badge"
+                       decoration-info="ocr_state in ('pending', 'running')"
+                       decoration-danger="ocr_state == 'failed'"
+                       decoration-success="ocr_state == 'done'"/>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="view_account_invoice_filter_inherit_ocr" model="ir.ui.view">
+        <field name="name">account.invoice.select.ocr</field>
+        <field name="model">account.move</field>
+        <field name="inherit_id" ref="account.view_account_invoice_filter"/>
+        <field name="arch" type="xml">
+            <xpath expr="//filter[@name='cancel']" position="after">
+                <separator/>
+                <filter name="ocr_pending" string="OCR pending"
+                        domain="[('ocr_state', 'in', ('pending', 'running'))]"/>
+                <filter name="ocr_failed" string="OCR failed"
+                        domain="[('ocr_state', '=', 'failed')]"/>
             </xpath>
         </field>
     </record>

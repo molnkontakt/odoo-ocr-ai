@@ -30,7 +30,10 @@ class TestEnableToggleAndEdi(TransactionCase):
                 mock.patch.object(Move, "_invoice_ocr_extend") as ocr:
             move._extend_with_attachments(PDF, new=True)
         ocr.assert_not_called()
+        self.assertFalse(move.ocr_state)
+        # a plain PDF is queued for the OCR cron, not read in the upload
         with mock.patch.object(base, "_extend_with_attachments", return_value=None), \
                 mock.patch.object(Move, "_invoice_ocr_extend") as ocr:
             move._extend_with_attachments(PDF, new=True)
-        ocr.assert_called_once()
+        ocr.assert_not_called()
+        self.assertEqual(move.ocr_state, "pending")

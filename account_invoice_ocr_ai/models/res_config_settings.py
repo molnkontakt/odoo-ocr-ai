@@ -32,6 +32,34 @@ class ResConfigSettings(models.TransientModel):
              "company's chart are sent; a line with another code gets the purchase journal's "
              "default account.",
     )
+    # Time limits (#9)
+    invoice_ocr_call_timeout = fields.Integer(
+        string="AI call timeout (s)",
+        config_parameter="invoice_ocr.call_timeout",
+        help="Longest wait for one answer from the AI provider, for every provider. 0: the "
+             "provider's default (120 s, or INVOICE_AI_TIMEOUT / STAIK_TIMEOUT). Every call is "
+             "also cut to what is left of the time limit per document.",
+    )
+    invoice_ocr_total_deadline = fields.Integer(
+        string="Time limit per document (s)",
+        config_parameter="invoice_ocr.total_deadline",
+        default=80,
+        help="Reading one bill or receipt — the text and every call to the AI provider, its "
+             "retries included — ends within this many seconds. Never more than three "
+             "quarters of Odoo's request and cron time limits (limit_time_real, "
+             "limit_time_real_cron: 90 s with Odoo's default 120 s), so the OCR button on "
+             "the form returns before Odoo stops the request.",
+    )
+    invoice_ocr_cron_time_budget = fields.Integer(
+        string="Background OCR time per run (s)",
+        config_parameter="invoice_ocr.cron_time_budget",
+        help="Uploaded and e-mailed documents are read by a background job within seconds. "
+             "One run of it reads documents for at most this many seconds (a document is "
+             "only started when its time limit still fits), then leaves the rest to the next "
+             "run, which starts at once. 0: three quarters of Odoo's cron time limit "
+             "(limit_time_real_cron, else limit_time_real: 90 s with Odoo's defaults). Keep "
+             "it well under that limit: Odoo stops a worker that exceeds it.",
+    )
     # staik
     invoice_ocr_staik_api_key = fields.Char(string="staik API key", config_parameter="invoice_ocr.staik_api_key")
     invoice_ocr_staik_model = fields.Char(
@@ -82,7 +110,14 @@ class ResConfigSettings(models.TransientModel):
         self.ensure_one()
         from ..lib import invoice_ocr
 
-        return invoice_ocr.config_from_settings(lambda key: self[f"invoice_ocr_{key}"])
+        ICP = self.env["ir.config_parameter"].sudo()
+
+        def get(key):
+            # A limit without a field on the form: its saved system parameter.
+            name = f"invoice_ocr_{key}"
+            return self[name] if name in self._fields else ICP.get_param(f"invoice_ocr.{key}")
+
+        return invoice_ocr.config_from_settings(get)
 
     def action_invoice_ocr_verify_provider(self):
         """Round-trip with the values on the form (saved or not) and report which model answered."""
