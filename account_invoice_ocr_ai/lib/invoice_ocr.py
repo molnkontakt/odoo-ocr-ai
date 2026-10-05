@@ -769,10 +769,12 @@ def extract_fields(text, own_ids=None, own_names=None, config=None):
         non_se = [v for v in non_own if not v.upper().startswith("SE")]
         if non_se:
             result["org_number"] = non_se[-1]
-        # elif non_own: only SE candidates left — another Swedish party (or the
-        # customer block on a foreign invoice). We cannot tell supplier from
-        # customer here, so do NOT overwrite org_number with a guess; keep
-        # whatever the regex extraction found (e.g. "Organisationsnummer").
+        elif non_own and "org_number" not in result:
+            # Only Swedish candidates left and nothing else found. Our own numbers
+            # are already filtered out (own_ids), so the remaining one is the
+            # supplier's. When the regex extraction already found a number (e.g.
+            # "Organisationsnummer") keep it rather than guess between parties.
+            result["org_number"] = non_own[-1]
         # else: only own VAT found — leave any prior org_number value alone
 
     # Inget org.nr alls: svenskt momsreg.nr ("Momsreg.nr.: SE556000000001")

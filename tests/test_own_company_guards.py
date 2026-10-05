@@ -247,3 +247,10 @@ def test_numbers_from_json():
 def test_mod10():
     assert inv.ocr_mod10("1234567897")
     assert not inv.ocr_mod10("1234567890")
+
+
+def test_only_swedish_vat_reg_no_is_used_when_nothing_else_found():
+    text = ("Invoice\nVAT Reg. No.: SE999999000601\nFoo AB\n"
+            "VAT Reg. No.: SE999999001401\nTotal 10.00\n")
+    res = inv.extract_fields(text, own_ids=OWN_IDS, own_names=OWN_NAMES)
+    assert res["org_number"] == fx.VENDOR_VAT
