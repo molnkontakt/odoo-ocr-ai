@@ -1,12 +1,13 @@
 {
     "name": "Invoice OCR + AI",
-    "version": "19.0.1.13.0",
+    "version": "19.0.1.14.0",
     "category": "Accounting",
     "summary": "Read uploaded vendor bill PDFs with OCR + an LLM and pre-fill partner, dates, references and lines",
     "depends": ["account"],
     "description": """
-Runs when a PDF is uploaded through the journal's *Upload* button or attached to a draft
-vendor bill: text via pdfplumber (tesseract fallback for scans), regex extraction, then an LLM
+A PDF uploaded through the journal's *Upload* button or received by its mail alias is read by
+a background job within seconds (the form button reads at once, every document has a time
+limit): text via pdfplumber (tesseract fallback for scans), regex extraction, then an LLM
 (staik by default, Swedish data residency; Venice, OpenAI or a local Ollama also supported)
 fills partner (auto-created if unknown), invoice/due dates, invoice number, OCR/Bankgiro/Plusgiro
 references, the currency and invoice lines with a BAS account from the company's chart and a

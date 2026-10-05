@@ -4,11 +4,12 @@ OCR + LLM pre-fill of vendor bills in Odoo 19 Community.
 
 ## What it does
 
-1. Hooks `account.move._extend_with_attachments`, so it runs whenever a PDF is
-   uploaded through the journal's **Upload** button or attached to a draft
-   vendor bill (including bills created from an incoming e-mail alias).
+1. A vendor bill created from a PDF — the journal's **Upload** button or its
+   e-mail alias — is queued in `account.move._extend_with_attachments`, and a
+   background job reads it within seconds (see *When OCR runs*). The form
+   button reads a draft bill at once.
 2. Extracts text with **pdfplumber**; image-only PDFs fall back to **tesseract**
-   (`swe+eng`) via pypdfium2.
+   (`swe+eng`) via pypdfium2, within page, pixel and time limits.
 3. Regex extraction of the common Swedish fields (dates, amounts, OCR number,
    Bankgiro/Plusgiro, org number, VAT number).
 4. Sends the text (never the file) to the configured LLM with a JSON schema and
@@ -22,6 +23,72 @@ OCR + LLM pre-fill of vendor bills in Odoo 19 Community.
    entity as vendor.
 6. Posts a chatter note with everything it read, any regex/AI conflicts and the
    checks below.
+
+## When OCR runs
+
+Reading a document takes OCR plus a call to an LLM, often half a minute. That no
+longer happens inside the request that brought the document in, where it could
+make Odoo stop the worker (`limit_time_real`, 120 s by default) and lose the
+whole upload or hold up the mail fetch:
+
+| Trigger | What happens |
+|---|---|
+| **Upload** in a purchase journal, a PDF to the journal's mail alias | The new draft bill is queued (*OCR: Queued*); the background job reads it within seconds |
+| List action **Kör OCR igen** | The selected draft bills are queued; a notification says how many were queued or skipped, and why |
+| Header button **Kör OCR igen** on a draft | Reads the bill at once (within the time limit per document) and reports the result |
+
+A bill Odoo already imported electronically (UBL/Peppol, embedded
+Factur-X/ZUGFeRD) is left alone, as is everything when *Invoice OCR on upload*
+is off. A queued bill is reported to Odoo as imported, so the upload no longer
+posts "There was an error while importing the bill": Odoo only uses that value
+for this message, and the bill's OCR state and chatter say how the reading went.
+
+**The background job** (*OCR: read queued bills and receipts*, shared with
+`hr_expense_ocr_ai`) is woken at once by every upload and reads the queued
+documents oldest first, one at a time, each committed on its own:
+
+- **States**: *Queued* → *Reading* → *Read*, or *Failed* with the error. The
+  form shows a banner while a bill is queued or failed; the search has *OCR
+  pending* and *OCR failed* filters and the list an optional *OCR* column. The
+  chatter gets the usual fill note, or a note saying why OCR gave up.
+- **Time budget per run** (*Background OCR time per run*,
+  `invoice_ocr.cron_time_budget`): by default three quarters of Odoo's cron time
+  limit (`limit_time_real_cron`, else `limit_time_real`: 90 s with Odoo's
+  defaults). A document is only started when its whole time limit still fits in
+  what is left of the run; the rest stays queued and the next run starts at once.
+  Odoo runs all ready cron jobs of a database under one time limit, so keep the
+  budget well under it.
+- **Retries**: a failed attempt (an error, the provider down, the time limit) is
+  tried again after 1 and 5 minutes; after `invoice_ocr.max_attempts` attempts
+  (default 3) the bill is *Failed* and a note says why. While the AI step fails,
+  nothing is written; the last attempt fills in what the text gave and notes
+  that the AI failed. An attempt that kills the worker still counts, so a file
+  that cannot be read cannot block the queue.
+- **Your changes win**: a bill that is no longer a draft is taken off the queue.
+  A bill someone changed after it was queued (a vendor, a line, a date — any
+  save) is not read at all, so nothing entered by hand is overwritten; a note
+  says so, and the form button still reads it on request (filling only what is
+  empty).
+- The job reads the PDF the bill was queued with, else the bill's main
+  attachment.
+
+### Time and size limits
+
+| Setting / system parameter | Default | Limits |
+|---|---|---|
+| *Time limit per document* `invoice_ocr.total_deadline` | 80 s | Reading the text and every call to the provider for one document — the 429 wait and retry, the schema fallback, the reliability re-run — end within it; never more than three quarters of Odoo's request and cron time limits, so the form button returns in time |
+| *AI call timeout* `invoice_ocr.call_timeout` | 0 = 120 s | One call to the provider, any provider (`INVOICE_AI_TIMEOUT`, `STAIK_TIMEOUT`); also cut to what the document has left |
+| *Background OCR time per run* `invoice_ocr.cron_time_budget` | 0 = automatic | See above |
+| `invoice_ocr.max_attempts` | 3 | Attempts per queued document |
+| `invoice_ocr.extract_time_budget` | 30 s | Reading the text (pdfplumber, tesseract) in all |
+| `invoice_ocr.max_text_pages` | 20 | Pages pdfplumber reads: the first ones and the last |
+| `invoice_ocr.max_ocr_pages` | 10 | Pages rendered for tesseract: the first ones and the last |
+| `invoice_ocr.max_page_pixels` | 12000000 | Pixels of a rendered page or a receipt photo; larger ones are scaled down |
+| `invoice_ocr.tesseract_timeout` | 20 s | One tesseract run (a page or a photo); that page is skipped |
+| `invoice_ocr.max_image_bytes` | 20971520 | Receipt images larger than this are not read |
+
+A limit that cut the reading (pages left out, a page scaled down or skipped,
+the time used up) is noted in the chatter.
 
 ### Currency
 
@@ -117,12 +184,9 @@ use of `lib/invoice_ocr.py` set `INVOICE_OCR_OWN_COMPANY` and
 `extract_invoice_data` (as arguments or in its `config`).
 
 Long invoices (20+ lines) are aggregated by the model into at most six summary
-lines to stay within token limits. **Run OCR again** is available as a header
-button on a draft and as a list action for batches; batches commit per bill so
-a timeout does not lose finished work. Each bill is read in its own savepoint, so
-a failure rolls back only that bill's OCR changes and leaves a chatter note, and
-both report how many bills were filled, failed or skipped, and why. On upload a
-failed OCR run is noted the same way.
+lines to stay within token limits. Each bill is read in its own savepoint, so a
+failure rolls back only that bill's OCR changes and leaves a chatter note; the
+form button reports how many bills were filled, failed or skipped, and why.
 
 ## Configuration
 
@@ -138,6 +202,7 @@ failed OCR run is noted the same way.
 | `invoice_ocr.base_url`, `invoice_ocr.api_key`, `invoice_ocr.model` | any other endpoint speaking OpenAI's `/chat/completions`: Mistral, Groq, OpenRouter, Together, DeepSeek, Azure OpenAI, Anthropic's compatibility layer, vLLM, LM Studio … Base URL up to the API version |
 | `invoice_ocr.ollama_url`, `invoice_ocr.ollama_model` | local Ollama (native API, JSON-schema `format`) |
 | `invoice_ocr.account_list` | *Accounts for invoice lines*: the account codes the model may choose, one per line as `code: hint`; empty = the built-in list (see below) |
+| `invoice_ocr.call_timeout`, `invoice_ocr.total_deadline`, `invoice_ocr.cron_time_budget` | *Time limits*, see *When OCR runs* |
 
 ### Accounts for invoice lines
 
@@ -161,7 +226,9 @@ for real extractions until you save.
 All providers get the same treatment: JSON-schema structured output where the
 endpoint supports it (a `400` on `response_format` falls back to a plain
 completion), one retry after 15 s on `429`, and the reasoning-token sanity
-check only for models whose name says `thinking`/`reasoning`.
+check only for models whose name says `thinking`/`reasoning` — all within the
+time limit per document. A provider that fails or times out is noted on the bill
+and, in the background job, tried again later.
 
 Each run builds its own configuration (system parameters → environment
 defaults, plus the bill's company for the own-company guard) and passes it to
@@ -195,11 +262,11 @@ All of these are read as **defaults** when the corresponding system parameter
 | `INVOICE_AI_BASE_URL` | — | `openai_compatible`: base URL up to the API version |
 | `INVOICE_AI_API_KEY` | — | `openai_compatible`: API key |
 | `INVOICE_AI_MODEL` | — | `openai_compatible`: model |
-| `INVOICE_AI_TIMEOUT` | `120` | Hard cap in seconds on one call to any provider except staik |
+| `INVOICE_AI_TIMEOUT` | `120` | Cap in seconds on one call to any provider except staik (the *AI call timeout* setting wins) |
 | `STAIK_URL` | `https://api.staik.se/v1` | staik API base URL |
 | `STAIK_API_KEY` | — | staik API key |
 | `STAIK_MODEL` | `qwen3.6:35b-a3b-thinking` | staik model (reasoning variant) |
-| `STAIK_TIMEOUT` | `120` | Hard cap in seconds on one staik call |
+| `STAIK_TIMEOUT` | `120` | Cap in seconds on one staik call (the *AI call timeout* setting wins) |
 | `STAIK_MIN_COMPLETION_TOKENS` | `1000` | Answers from a reasoning model (name contains `thinking`/`reasoning`) below this completion-token count are treated as suspect (the model skipped its reasoning) and re-run |
 | `OLLAMA_URL` | `http://localhost:11434` | Local Ollama base URL |
 | `OLLAMA_MODEL` | `qwen2.5:7b` | Ollama model |
@@ -207,8 +274,14 @@ All of these are read as **defaults** when the corresponding system parameter
 | `INVOICE_OCR_OWN_COMPANY` | — | Receiving company name ("Acme AB"), so its name is never taken for the supplier |
 | `INVOICE_OCR_OWN_VAT` | — | Comma-separated receiving company VAT/org numbers ("SE5566...,5566..."), same purpose |
 | `INVOICE_OCR_TEXT_LIMIT` | `6000` | Characters of invoice text sent to the LLM |
-| `INVOICE_OCR_MAX_PAGES` | `10` | Max PDF pages rendered for tesseract OCR |
+| `INVOICE_OCR_MAX_PAGES` | `10` | Max PDF pages rendered for tesseract OCR (the first ones and the last) |
 | `INVOICE_OCR_SCALE` | `2` | Render scale for tesseract OCR |
+| `INVOICE_OCR_DEADLINE` | `80` | Seconds for one document: text extraction and every provider call |
+| `INVOICE_OCR_EXTRACT_BUDGET` | `30` | Seconds for the text extraction of one document |
+| `INVOICE_OCR_MAX_TEXT_PAGES` | `20` | Max PDF pages read by pdfplumber (the first ones and the last) |
+| `INVOICE_OCR_MAX_PIXELS` | `12000000` | Max pixels of a rendered page or a receipt photo |
+| `INVOICE_OCR_TESSERACT_TIMEOUT` | `20` | Seconds for one tesseract run |
+| `INVOICE_OCR_MAX_IMAGE_BYTES` | `20971520` | Largest receipt image read |
 
 ## Requirements
 

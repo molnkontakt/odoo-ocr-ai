@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+- `account_invoice_ocr_ai` 19.0.1.14.0, `hr_expense_ocr_ai` 19.0.1.4.0: OCR runs in the
+  background, and every document has a time limit. **Behaviour change** — uploads are no
+  longer read inside the request.
+  - **Uploads are read by a background job within seconds (#9, #29).** The journal's
+    *Upload* button, a PDF to a purchase journal's mail alias, a receipt that becomes an
+    expense's main attachment (Upload, e-mail, the API — now also when it is set in
+    `create`, #36.3) and the list actions *Kör OCR igen* / *Läs kvitto (OCR)* only queue
+    the document; one `ir.cron`, *OCR: read queued bills and receipts*, is woken at once
+    and reads the queue oldest first. The upload, the mail fetch or the API call returns
+    at once, so a slow provider no longer gets a worker killed, rolls back an upload of
+    several files or holds up the mail intake. The **form buttons still read at once**.
+    No new dependency (no queue_job).
+  - **What users see.** An *OCR* state on bills and expenses: *Queued*, *Reading*,
+    *Read*, *Failed* (with the error). A banner on the form while a document is queued or
+    failed, *OCR pending* and *OCR failed* search filters, an optional *OCR* list column.
+    The list actions answer "N queued for OCR …, M skipped" with the reasons (#35.1,
+    #36.4); the chatter gets the fill note, or a note saying why OCR gave up.
+  - **The job.** One document at a time, each committed on its own. Its own time budget
+    per run (*Background OCR time per run*, default three quarters of Odoo's cron time
+    limit: 90 s with Odoo's default 120 s): a document is only started when its whole time
+    limit still fits, the rest is left to a run that starts at once. A failed attempt is
+    tried again after 1 and 5 minutes; after three (`invoice_ocr.max_attempts`) the
+    document is *Failed* with a note. While the AI step fails nothing is written; the last
+    attempt fills in what the text gave and notes that the AI failed. An attempt that
+    kills the worker still counts. Documents that are no longer drafts leave the queue.
+  - **Your changes win.** A document someone changed after it was queued (a vendor, a
+    line, a date — any save) is not read at all, so nothing entered by hand is
+    overwritten; a note says so, and the form button still reads it on request (filling
+    only what is empty, as before).
+  - **A time limit per document (#9).** Text extraction and every provider call — the
+    429 wait and retry, the schema fallback, the reliability re-run — end within *Time
+    limit per document* (default 80 s, `INVOICE_OCR_DEADLINE`), never more than three
+    quarters of Odoo's request and cron time limits; before, one call could take about
+    375 s. *AI call timeout* caps a single call for every provider (empty: 120 s as
+    before). The receipt call no longer has a fixed 180 s.
+  - **Bounded text extraction (#26).** pdfplumber reads at most 20 pages and tesseract
+    10 (the first ones and the last), a rendered page or photo is scaled down to 12
+    megapixels, one tesseract run stops after 20 s, the whole reading after 30 s, and a
+    receipt image over 20 MB is not read. A limit that cut the reading is noted in the
+    chatter. The limits are system parameters `invoice_ocr.<key>` (see the module
+    README).
+  - **A failing provider is reported.** A failed AI call is no longer swallowed: the
+    chatter says that only the regex values were used, and the job tries again.
+  - **Upload no longer posts "There was an error while importing the bill" (#17).** A
+    queued bill is reported to Odoo as imported: core only uses that value for this
+    message, and the OCR state and chatter tell how the reading went. The decoder
+    refactor is not needed with OCR in the job. The per-record commits of the list
+    actions are gone.
+  - New settings: *Time limit per document*, *AI call timeout*, *Background OCR time per
+    run*. `hr_expense_ocr_ai` 19.0.1.4.0 needs `account_invoice_ocr_ai` 19.0.1.14.0
+    (`ocr.queue.mixin`).
+
 - `account_invoice_ocr_ai` 19.0.1.13.0, `hr_expense_ocr_ai` 19.0.1.3.0: accounting
   correctness. **Several behaviour changes** — review the first bills and receipts after
   upgrading.

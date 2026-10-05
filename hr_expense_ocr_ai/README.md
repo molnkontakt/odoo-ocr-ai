@@ -9,12 +9,16 @@ and the provider settings.
 
 | Trigger | How |
 |---|---|
-| A draft expense gets its main attachment: an e-mailed expense with a photo, or a receipt uploaded via the API with `message_main_attachment_id` set | `write` hook, only when amount or category is still missing |
-| **Read receipt (OCR)** button on the expense form | `action_read_receipt()`; a failure is shown as a readable error |
-| The list action of the same name | `action_read_receipt_bulk()`: each expense in its own savepoint, a summary of how many were filled, failed or skipped |
+| A draft expense gets its main attachment: the **Upload** button, an e-mailed expense with a photo, or a receipt set via the API with `message_main_attachment_id` (in `create` or a later `write`) | Queued (`create`/`write` hooks), only when amount or category is still missing; the background job reads it within seconds |
+| **Read receipt (OCR)** button on the expense form | `action_read_receipt()`: reads at once; a failure is shown as a readable error |
+| The list action of the same name | `action_read_receipt_bulk()`: queues the selection and says how many were queued or skipped, and why |
 
-A failure on the automatic path never breaks what triggered it (mail fetching,
-upload): the read is rolled back on its own and a chatter note says why.
+The background job is the one of `account_invoice_ocr_ai` (*OCR: read queued
+bills and receipts*), with the same time budget per run, retries, *OCR* state,
+*OCR pending/failed* filters and form banner, and the same rule: an expense
+someone changed after it was queued is not read (see that module's *When OCR
+runs*). The upload, the mail fetch or the API call returns at once, and a failed
+read is rolled back on its own and noted in the chatter.
 
 Off switch: *Expense receipt OCR* in the same settings block as the invoice OCR
 (`expense_ocr.enabled`).
@@ -68,6 +72,8 @@ Measured on real receipts before release:
 
 Photos are EXIF-rotated, converted to greyscale, upscaled to 2000 px and OCR'd
 with `--psm 4`. A 250 kB phone photo takes about 5 s of tesseract and 30 s of
-LLM time. Provider handling (retries, JSON-schema fallback, Ollama) is shared with the
+LLM time. A photo above 12 megapixels is scaled down to that, one larger than
+20 MB is not read, and tesseract and the whole receipt have time limits (the
+invoice module's *Time limits*); a limit that cut the reading is noted. Provider handling (retries, JSON-schema fallback, Ollama) is shared with the
 invoice module; if the LLM fails altogether, a regex fallback still fills
 amount and date.

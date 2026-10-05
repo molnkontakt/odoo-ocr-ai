@@ -1,6 +1,6 @@
 {
     "name": "Expense receipt OCR + AI",
-    "version": "19.0.1.3.0",
+    "version": "19.0.1.4.0",
     "category": "Human Resources/Expenses",
     "summary": "Read receipt photos on expense claims with tesseract + an LLM and fill amount, date, merchant and category",
     "description": """
@@ -8,9 +8,10 @@ Odoo Community has no receipt scanning (hr_expense_extract is Enterprise). This 
 OCR/LLM pipeline of account_invoice_ocr_ai (tesseract, staik/Venice/OpenAI/Ollama, same keys and
 settings) on hr.expense:
 
-- runs when a draft expense gets its main attachment (e-mailed expenses included) and only when
-  amount or category is still missing;
-- the button "Read receipt (OCR)" on the expense and the list action re-run it.
+- a draft expense that gets its main attachment (Upload, e-mailed expenses, the API) is read by
+  a background job within seconds, only when amount or category is still missing;
+- the button "Read receipt (OCR)" on the expense reads at once; the list action queues the
+  selection.
 
 Only empty fields are filled (amount 0, today's date, no category, empty name; the placeholders of
 the Upload button count as empty), the amount in the receipt's currency; everything read and every
