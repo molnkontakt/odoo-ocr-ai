@@ -311,7 +311,9 @@ class OcrQueueMixin(models.AbstractModel):
                     if record.ocr_requested_at]
         upcoming = [at for at in upcoming if at > now]
         if upcoming:
-            self._ocr_queue_trigger(at=min(upcoming).replace(microsecond=0))
+            # Rounded up to the second: the run must not come a moment before it is due.
+            self._ocr_queue_trigger(
+                at=(min(upcoming) + timedelta(seconds=1)).replace(microsecond=0))
 
     @api.model
     def _ocr_queue_recover(self, max_attempts):
