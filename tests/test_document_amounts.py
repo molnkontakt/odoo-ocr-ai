@@ -62,6 +62,14 @@ def test_an_amount_alone_on_the_next_line():
     assert f("Att betala\n1 234,00 kr\n")["total_amount"] == 1234.0
 
 
+def test_common_total_labels():
+    assert f("Totalt inkl. moms 1 250,00\n")["total_amount"] == 1250.0
+    assert f("Totalt (inkl. moms) 1 250,00 kr\n")["total_amount"] == 1250.0
+    assert f("Att betala (SEK): 1 250,00\n")["total_amount"] == 1250.0
+    assert f("ATT BETALA SEK 1.250,00\n")["total_amount"] == 1250.0
+    assert "total_amount" not in f("Att betala 250 00\n"), "öre split off: no amount"
+
+
 def test_different_amounts_with_one_label_are_left_to_the_ai():
     """An order and a separate fee receipt in one document: neither "Totalt" is the total."""
     text = ("Orderspecifikation\nProdukt Totalt (SEK)\nExample item 500,00\nFrakt 100,00\n"

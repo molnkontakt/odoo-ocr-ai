@@ -451,7 +451,8 @@ FIELD_PATTERNS = {
         *_amount_patterns(r"(?:Belopp[ \t]*att[ \t]*betala|Totalt[ \t]*att[ \t]*betala"
                           r"|Summa[ \t]*att[ \t]*betala|Total[ \t]*due)"),
         *_amount_patterns(r"(?:Att[ \t]*betala|Amount[ \t]*due|Balance[ \t]*due)"),
-        *_amount_patterns(r"(?:\bTotalt|Summa[ \t]*inkl\.?[ \t]*moms)"),
+        *_amount_patterns(r"(?:Totalt?[ \t]*\(?inkl\.?[ \t]*moms\)?|\bTotalt"
+                          r"|Summa[ \t]*inkl\.?[ \t]*moms)"),
         # English: "Grand total €539.00" or "Total: $100.00"
         *_amount_patterns(r"(?:Grand[ \t]*total|Total[ \t]*amount|Amount[ \t]*paid"
                           r"|Paid[ \t]*by[ \t]*customer)"),
