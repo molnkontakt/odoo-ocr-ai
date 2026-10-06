@@ -18,15 +18,12 @@ class HrExpense(models.Model):
     def _expense_ocr_enabled(self):
         return self.env["ir.config_parameter"].sudo().get_param("expense_ocr.enabled", "True").lower() not in ("false", "0", "")
 
-    def _expense_ocr_inject_settings(self):
-        """Samma nycklar/leverantör som faktura-OCR:en (Inställningar → Bokföring → Faktura-OCR)."""
-        from odoo.addons.account_invoice_ocr_ai.lib import invoice_ocr
-        ICP = self.env["ir.config_parameter"].sudo()
-        invoice_ocr.AI_PROVIDER = ICP.get_param("invoice_ocr.provider") or invoice_ocr.AI_PROVIDER
-        invoice_ocr.STAIK_API_KEY = ICP.get_param("invoice_ocr.staik_api_key") or invoice_ocr.STAIK_API_KEY
-        invoice_ocr.STAIK_MODEL = ICP.get_param("invoice_ocr.staik_model") or invoice_ocr.STAIK_MODEL
-        invoice_ocr.VENICE_API_KEY = ICP.get_param("invoice_ocr.venice_api_key") or invoice_ocr.VENICE_API_KEY
-        invoice_ocr.VENICE_MODEL = ICP.get_param("invoice_ocr.venice_model") or invoice_ocr.VENICE_MODEL
+    def _expense_ocr_config(self):
+        """Per-run config: same provider, keys and own-company guard as the invoice OCR
+        (Settings → Invoicing → Invoice OCR), for this expense's company. Nothing is written to
+        the invoice library's module globals, which every run in the worker shares."""
+        self.ensure_one()
+        return self.env["account.move"]._invoice_ocr_config(self.company_id)
 
     def _expense_ocr_categories(self):
         """[(kod, namn, hint)] + kod→produkt. Hinten är produktens inköpsbeskrivning, så kassören
@@ -62,9 +59,9 @@ class HrExpense(models.Model):
             att = expense._expense_ocr_attachment()
             if not att:
                 raise UserError(_("Ingen bild- eller PDF-bilaga på utlägget."))
-            self._expense_ocr_inject_settings()
+            cfg = expense._expense_ocr_config()
             cats, by_code = expense._expense_ocr_categories()
-            result = receipt_ocr.extract_receipt_data(att.raw, att.mimetype, att.name, categories=cats)
+            result = receipt_ocr.extract_receipt_data(att.raw, att.mimetype, att.name, categories=cats, config=cfg)
             expense._expense_ocr_apply(result, by_code, att, force=force)
         return True
 

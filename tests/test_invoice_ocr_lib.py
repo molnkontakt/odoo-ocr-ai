@@ -163,12 +163,18 @@ def test_ai_answer_problems_token_limit(monkeypatch):
             "lines": [{"amount": 100}]}
     reference = {"total_amount": 100, "subtotal": 100, "vat_amount": 0}
 
-    low = dict(good, _completion_tokens=462)
+    # The token floor only applies to reasoning models (name says thinking/reasoning)
+    thinking = "qwen3.6:35b-a3b-thinking"
+    low = dict(good, _completion_tokens=462, _served_model=thinking)
     problems = inv._ai_answer_problems(low, reference=reference)
     assert any("462" in p for p in problems)
 
-    high = dict(good, _completion_tokens=3400)
+    high = dict(good, _completion_tokens=3400, _served_model=thinking)
     assert inv._ai_answer_problems(high, reference=reference) == []
+
+    # The floor comes from the per-run config, not only from the global
+    assert inv._ai_answer_problems(
+        low, reference=reference, config={"staik_min_completion_tokens": 400}) == []
 
     # Ingen usage-rapportering ska inte vara ett problem i sig
     assert inv._ai_answer_problems(good, reference=reference) == []
@@ -327,6 +333,7 @@ def test_default_config_has_all_keys():
     cfg = inv.default_config()
     for key in ("provider", "venice_api_key", "venice_model", "openai_api_key",
                 "openai_model", "staik_url", "staik_api_key", "staik_model",
+                "base_url", "api_key", "model", "timeout", "ollama_url", "ollama_model",
                 "staik_timeout", "retry_skip_seconds",
                 "staik_min_completion_tokens", "own_company",
                 "own_vat_numbers", "text_limit", "max_ocr_pages", "ocr_scale"):

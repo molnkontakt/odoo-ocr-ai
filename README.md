@@ -22,9 +22,12 @@ and settings).
 ## AI providers
 
 Configured under *Settings → Invoicing → Invoice OCR*: **staik** (Swedish data
-residency, default), Venice.ai, OpenAI or a local Ollama. The text of the
-document, never the file, is sent to the provider — and only the first
-6000 characters of it (`INVOICE_OCR_TEXT_LIMIT`); see the
+residency, default), Venice.ai, OpenAI, **any OpenAI-compatible endpoint**
+(Mistral, Groq, OpenRouter, Together, DeepSeek, Azure OpenAI, Anthropic's
+compatibility layer, a local vLLM or LM Studio: base URL + key + model) or a
+local **Ollama**. A *Verify provider* button shows which model actually answers.
+The text of the document, never the file, is sent to the provider — and only the
+first 6000 characters of it (`INVOICE_OCR_TEXT_LIMIT`); see the
 [module README](account_invoice_ocr_ai/) for the full environment-variable
 list. Keys live in Odoo system parameters. A reasoning-capable model is
 strongly recommended; the defaults were tuned with `qwen3.6:35b-a3b-thinking`.
@@ -33,7 +36,8 @@ strongly recommended; the defaults were tuned with `qwen3.6:35b-a3b-thinking`.
 
 The upload path (journal *Upload* button, chatter attachment, e-mail alias) runs
 OCR + the LLM call **synchronously inside the create transaction**. One call is
-capped at `STAIK_TIMEOUT` seconds (default 120, env-tunable) and the reliability
+capped at `STAIK_TIMEOUT` seconds for staik and `INVOICE_AI_TIMEOUT` seconds for
+every other provider (both default 120, env-tunable) and the reliability
 re-run is skipped when the first call already took `INVOICE_AI_RETRY_SKIP_SECONDS`
 seconds (default 60), so a single upload can block a worker for roughly that long
 — it can never hang indefinitely. Avoid this on high-volume setups or with

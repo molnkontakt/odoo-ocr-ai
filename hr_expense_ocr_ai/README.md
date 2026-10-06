@@ -37,5 +37,6 @@ Measured on real receipts before release:
 
 Photos are EXIF-rotated, converted to greyscale, upscaled to 2000 px and OCR'd
 with `--psm 4`. A 250 kB phone photo takes about 5 s of tesseract and 30 s of
-LLM time. A `429` from the provider is retried once after 15 s; if the LLM
-fails altogether, a regex fallback still fills amount and date.
+LLM time. Provider handling (retries, JSON-schema fallback, Ollama) is shared with the
+invoice module; if the LLM fails altogether, a regex fallback still fills
+amount and date.

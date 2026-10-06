@@ -34,10 +34,29 @@ a timeout does not lose finished work.
 | Parameter | Meaning |
 |-----------|---------|
 | `invoice_ocr.enabled` | on/off |
-| `invoice_ocr.provider` | `staik` (default), `venice`, `openai`, `ollama` |
-| `invoice_ocr.staik_api_key`, `invoice_ocr.staik_model` | staik credentials; use a reasoning model (default `qwen3.6:35b-a3b-thinking`). An unknown model name silently falls back to staik's default model |
-| `invoice_ocr.venice_api_key`, `invoice_ocr.venice_model` | Venice.ai credentials |
-| `invoice_ocr.openai_api_key`, `invoice_ocr.openai_model` | OpenAI credentials (default model `gpt-4o-mini`) |
+| `invoice_ocr.provider` | `staik` (default), `venice`, `openai`, `openai_compatible`, `ollama` |
+| `invoice_ocr.staik_api_key`, `invoice_ocr.staik_model` | staik; use a reasoning model (default `qwen3.6:35b-a3b-thinking`). An unknown model name silently falls back to staik's default model |
+| `invoice_ocr.venice_api_key`, `invoice_ocr.venice_model` | Venice.ai |
+| `invoice_ocr.openai_api_key`, `invoice_ocr.openai_model` | OpenAI (default `gpt-4o-mini`) |
+| `invoice_ocr.base_url`, `invoice_ocr.api_key`, `invoice_ocr.model` | any other endpoint speaking OpenAI's `/chat/completions`: Mistral, Groq, OpenRouter, Together, DeepSeek, Azure OpenAI, Anthropic's compatibility layer, vLLM, LM Studio … Base URL up to the API version |
+| `invoice_ocr.ollama_url`, `invoice_ocr.ollama_model` | local Ollama (native API, JSON-schema `format`) |
+
+**Verify provider** on the settings page does a one-token round-trip with the
+values on the form — saved or not — and shows which model actually answered
+and how fast. That is the only way to see staik's silent fallback to its
+default model. The values are passed to that one call only; nothing is changed
+for real extractions until you save.
+
+All providers get the same treatment: JSON-schema structured output where the
+endpoint supports it (a `400` on `response_format` falls back to a plain
+completion), one retry after 15 s on `429`, and the reasoning-token sanity
+check only for models whose name says `thinking`/`reasoning`.
+
+Each run builds its own configuration (system parameters → environment
+defaults, plus the bill's company for the own-company guard) and passes it to
+the library; the library's module globals are never changed at run time, so
+concurrent runs for different companies or providers cannot see each other's
+settings.
 
 ### LLM context limit
 
@@ -53,16 +72,20 @@ All of these are read as **defaults** when the corresponding system parameter
 
 | Env var | Default | Meaning |
 |---------|---------|---------|
-| `INVOICE_AI_PROVIDER` | `staik` | LLM provider: `staik`, `venice`, `openai`, `ollama` |
+| `INVOICE_AI_PROVIDER` | `staik` | LLM provider: `staik`, `venice`, `openai`, `openai_compatible`, `ollama` |
 | `VENICE_API_KEY` | — | Venice.ai API key |
 | `VENICE_MODEL` | `google-gemma-3-27b-it` | Venice.ai model |
 | `OPENAI_API_KEY` | — | OpenAI API key |
 | `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model |
+| `INVOICE_AI_BASE_URL` | — | `openai_compatible`: base URL up to the API version |
+| `INVOICE_AI_API_KEY` | — | `openai_compatible`: API key |
+| `INVOICE_AI_MODEL` | — | `openai_compatible`: model |
+| `INVOICE_AI_TIMEOUT` | `120` | Hard cap in seconds on one call to any provider except staik |
 | `STAIK_URL` | `https://api.staik.se/v1` | staik API base URL |
 | `STAIK_API_KEY` | — | staik API key |
 | `STAIK_MODEL` | `qwen3.6:35b-a3b-thinking` | staik model (reasoning variant) |
 | `STAIK_TIMEOUT` | `120` | Hard cap in seconds on one staik call |
-| `STAIK_MIN_COMPLETION_TOKENS` | `1000` | Answers below this completion-token count are treated as suspect (the model skipped its reasoning) and re-run |
+| `STAIK_MIN_COMPLETION_TOKENS` | `1000` | Answers from a reasoning model (name contains `thinking`/`reasoning`) below this completion-token count are treated as suspect (the model skipped its reasoning) and re-run |
 | `OLLAMA_URL` | `http://localhost:11434` | Local Ollama base URL |
 | `OLLAMA_MODEL` | `qwen2.5:7b` | Ollama model |
 | `INVOICE_AI_RETRY_SKIP_SECONDS` | `60` | Skip the reliability re-run when the first call already took this long |

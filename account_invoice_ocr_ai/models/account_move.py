@@ -12,7 +12,7 @@ import re
 
 from markupsafe import Markup, escape
 
-from odoo import _, fields, models
+from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 
 logger = logging.getLogger(__name__)
@@ -84,6 +84,31 @@ class AccountMove(models.Model):
     # OCR + AI fill
     # ------------------------------------------------------------------
 
+    @api.model
+    def _invoice_ocr_config(self, company=None):
+        """Per-run config for the OCR library from Odoo's settings and the receiving company.
+
+        Shared with hr_expense_ocr_ai. System parameters win over environment defaults; the
+        receiving company's name and VAT/registry numbers go along so they are never taken
+        for the supplier.
+
+        Returns a dict for invoice_ocr.extract_invoice_data / chat_json. It does NOT mutate
+        the library's module globals: they are shared by every run in the worker process, so
+        concurrent runs (bulk server action, multi-company users, the settings page's Verify
+        button) would otherwise read another company's VAT or another provider's key, and a
+        key cleared in the settings would keep working until the next restart.
+        """
+        from ..lib import invoice_ocr
+
+        ICP = self.env["ir.config_parameter"].sudo()
+        cfg = invoice_ocr.config_from_settings(lambda key: ICP.get_param(f"invoice_ocr.{key}"))
+        # VAT numbers are normalized inside the library (spaces/dashes stripped, upper),
+        # so no need to pre-clean here.
+        company = company or self.env.company
+        cfg["own_company"] = (company.name or "").strip().lower()
+        cfg["own_vat_numbers"] = [v for v in (company.vat, company.company_registry) if v]
+        return cfg
+
     def _invoice_ocr_extend(self, move, files_data):
         ICP = self.env["ir.config_parameter"].sudo()
         if ICP.get_param("invoice_ocr.enabled", "True").lower() in ("false", "0", ""):
@@ -104,32 +129,8 @@ class AccountMove(models.Model):
 
         # Lazy-import to keep module loadable when libs missing
         from ..lib import invoice_ocr
-        # Per-run config from system parameters + the receiving company.
-        # Mutating invoice_ocr's module globals was a bug: they are shared by
-        # every run in the worker process, so concurrent moves (bulk server
-        # action, multi-company users) could read another company's VAT or
-        # another provider's key mid-run.
-        cfg = invoice_ocr.default_config()
-        for param, key in (
-            ("invoice_ocr.provider", "provider"),
-            ("invoice_ocr.venice_api_key", "venice_api_key"),
-            ("invoice_ocr.venice_model", "venice_model"),
-            ("invoice_ocr.openai_api_key", "openai_api_key"),
-            ("invoice_ocr.openai_model", "openai_model"),
-            ("invoice_ocr.staik_api_key", "staik_api_key"),
-            ("invoice_ocr.staik_model", "staik_model"),
-        ):
-            value = ICP.get_param(param)
-            if value:
-                cfg[key] = value
-        # Never mistake the receiving company for the supplier. VAT numbers are
-        # normalized inside the library (spaces/dashes stripped, upper), so no
-        # need to pre-clean here.
-        company = move.company_id or self.env.company
-        cfg["own_company"] = (company.name or "").strip().lower()
-        cfg["own_vat_numbers"] = [
-            v for v in (company.vat, company.company_registry) if v
-        ]
+
+        cfg = self._invoice_ocr_config(move.company_id)
 
         try:
             data = invoice_ocr.extract_invoice_data(pdf_data, config=cfg)

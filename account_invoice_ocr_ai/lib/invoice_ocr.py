@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import time
 
 import pdfplumber
 
@@ -500,9 +501,23 @@ RETRY_SKIP_SECONDS = float(os.environ.get("INVOICE_AI_RETRY_SKIP_SECONDS", "60")
 # felaktiga pa 462 och 649.
 STAIK_MIN_COMPLETION_TOKENS = int(os.environ.get("STAIK_MIN_COMPLETION_TOKENS", "1000"))
 
+# Any other provider that speaks OpenAI's /chat/completions (Mistral, Groq, OpenRouter, Together,
+# DeepSeek, Azure OpenAI, Anthropic's compatibility layer, a local vLLM or LM Studio, ...):
+# provider "openai_compatible" with a base URL, key and model. Odoo's settings page fills these
+# into the per-run config (see default_config); the globals are only env-derived defaults.
+AI_BASE_URL = os.environ.get("INVOICE_AI_BASE_URL", "")
+AI_API_KEY = os.environ.get("INVOICE_AI_API_KEY", "")
+AI_MODEL = os.environ.get("INVOICE_AI_MODEL", "")
+# Per-call cap for every provider except staik (STAIK_TIMEOUT). Same reasoning as
+# STAIK_TIMEOUT: the upload path is synchronous, so a call must never pin a worker for long.
+AI_TIMEOUT = int(os.environ.get("INVOICE_AI_TIMEOUT", "120"))
+VENICE_URL = "https://api.venice.ai/api/v1"
+OPENAI_URL = "https://api.openai.com/v1"
+
 # The receiving company, so its own name/VAT number printed on the invoice is never taken
-# for the supplier. The Odoo model sets these from res.company before each run; for
-# standalone use set INVOICE_OCR_OWN_COMPANY ("Acme AB") and INVOICE_OCR_OWN_VAT ("SE5566...").
+# for the supplier. The Odoo model passes the invoice company's values in the per-run config
+# (own_company / own_vat_numbers); these globals are the fallback for standalone use: set
+# INVOICE_OCR_OWN_COMPANY ("Acme AB") and INVOICE_OCR_OWN_VAT ("SE5566...", comma-separated).
 OWN_COMPANY = os.environ.get("INVOICE_OCR_OWN_COMPANY", "").strip().lower()
 OWN_VAT_NUMBERS = {v.strip().upper() for v in os.environ.get("INVOICE_OCR_OWN_VAT", "").split(",") if v.strip()}
 
@@ -528,6 +543,10 @@ def default_config():
         "ollama_model": OLLAMA_MODEL,
         "openai_api_key": OPENAI_API_KEY,
         "openai_model": OPENAI_MODEL,
+        "base_url": AI_BASE_URL,
+        "api_key": AI_API_KEY,
+        "model": AI_MODEL,
+        "timeout": AI_TIMEOUT,
         "staik_url": STAIK_URL,
         "staik_api_key": STAIK_API_KEY,
         "staik_model": STAIK_MODEL,
@@ -547,6 +566,33 @@ def _cfg(config):
     cfg = default_config()
     if config:
         cfg.update({k: v for k, v in config.items() if v is not None})
+    return cfg
+
+
+# Provider settings the Odoo module exposes. Each <key> is a config key, the system
+# parameter "invoice_ocr.<key>" and the settings-form field "invoice_ocr_<key>".
+PROVIDER_SETTINGS = (
+    "provider",
+    "staik_api_key", "staik_model",
+    "venice_api_key", "venice_model",
+    "openai_api_key", "openai_model",
+    "base_url", "api_key", "model",
+    "ollama_url", "ollama_model",
+)
+
+
+def config_from_settings(get, base=None):
+    """Per-run config from settings: `get(key)` returns the value for a PROVIDER_SETTINGS key.
+
+    Empty values keep the default (env-derived global or `base`), so a run with the
+    settings saved behaves exactly like the Verify button with the same values on the
+    form. Nothing is written to the module globals.
+    """
+    cfg = _cfg(base)
+    for key in PROVIDER_SETTINGS:
+        value = get(key)
+        if value:
+            cfg[key] = value.strip() if isinstance(value, str) else value
     return cfg
 
 
@@ -681,77 +727,147 @@ Invoice text:
 """
 
 
-def _call_venice(text, cfg):
-    """Call Venice.ai API (OpenAI-compatible)."""
-    import requests as _req
-    r = _req.post("https://api.venice.ai/api/v1/chat/completions",
-        headers={"Authorization": f"Bearer {cfg['venice_api_key']}",
-                 "Content-Type": "application/json"},
-        json={"model": cfg["venice_model"],
-              "messages": [{"role": "user", "content": EXTRACTION_PROMPT + text[:cfg["text_limit"]]}],
-              "max_tokens": 6000, "temperature": 0},
-        timeout=120)
-    choice = r.json()["choices"][0]
-    if choice.get("finish_reason") == "length":
-        logger.warning(
-            "AI-svaret fran %s klipptes av max_tokens — JSON:en blir ofullstandig "
-            "och faltdata gar forlorad. Hoj max_tokens.", cfg["venice_model"])
-    content = choice["message"]["content"]
-    return _parse_ai_json(content)
+def _post(url, **kwargs):
+    """Single seam for HTTP so tests can fake the provider."""
+    import requests
+
+    return requests.post(url, **kwargs)
 
 
-def _call_ollama(text, cfg):
-    """Call local Ollama instance."""
-    import requests as _req
-    r = _req.post(f"{cfg['ollama_url']}/api/chat",
-        json={"model": cfg["ollama_model"], "stream": False,
-              "messages": [{"role": "user", "content": EXTRACTION_PROMPT + text[:cfg["text_limit"]]}]},
-        timeout=60)
-    content = r.json()["message"]["content"]
-    return _parse_ai_json(content)
+def resolve_endpoint(config=None):
+    """(base_url, api_key, model) for the configured OpenAI-compatible provider.
+
+    Everything comes from the per-run config (see default_config; the module globals are
+    only its env-derived defaults). Presets carry their URL and default model;
+    "openai_compatible" takes all three from base_url / api_key / model. Ollama is not an
+    OpenAI endpoint (see chat_json).
+    """
+    cfg = _cfg(config)
+    p = (cfg["provider"] or "").strip().lower()
+    if p == "staik":
+        base, key, model = cfg["staik_url"], cfg["staik_api_key"], cfg["staik_model"]
+    elif p == "venice":
+        base, key, model = VENICE_URL, cfg["venice_api_key"], cfg["venice_model"]
+    elif p == "openai":
+        base, key, model = OPENAI_URL, cfg["openai_api_key"], cfg["openai_model"]
+    elif p in ("openai_compatible", "custom"):
+        base, key, model = cfg["base_url"], cfg["api_key"], cfg["model"]
+    else:
+        raise ValueError(f"unknown AI provider {cfg['provider']!r}")
+    base = (base or "").rstrip("/")
+    if not base:
+        raise ValueError(f"AI provider {p!r}: no base URL configured")
+    if not model:
+        raise ValueError(f"AI provider {p!r}: no model configured")
+    return base, key or "", model
 
 
-def _call_openai(text, cfg):
-    """Call OpenAI API."""
-    import requests as _req
-    r = _req.post("https://api.openai.com/v1/chat/completions",
-        headers={"Authorization": f"Bearer {cfg['openai_api_key']}",
-                 "Content-Type": "application/json"},
-        json={"model": cfg["openai_model"],
-              "messages": [{"role": "user", "content": EXTRACTION_PROMPT + text[:cfg["text_limit"]]}],
-              "max_tokens": 6000, "temperature": 0},
-        timeout=30)
-    content = r.json()["choices"][0]["message"]["content"]
-    return _parse_ai_json(content)
+def _default_timeout(cfg):
+    """Per-call cap: STAIK_TIMEOUT for staik (1.8.1), INVOICE_AI_TIMEOUT for the rest."""
+    if (cfg["provider"] or "").strip().lower() == "staik":
+        return cfg["staik_timeout"]
+    return cfg["timeout"]
 
 
-def _call_staik(text, cfg):
-    """Kall staik (OpenAI-kompatibel). Svensk datahemvist — data stannar i Sverige."""
-    import requests as _req
-    r = _req.post(f"{cfg['staik_url']}/chat/completions",
-        headers={"Authorization": f"Bearer {cfg['staik_api_key']}",
-                 "Content-Type": "application/json"},
-        json={"model": cfg["staik_model"],
-              "messages": [{"role": "user", "content": EXTRACTION_PROMPT + text[:cfg["text_limit"]]}],
-              "max_tokens": 8000, "temperature": 0,
-              "response_format": {"type": "json_schema",
-                                  "json_schema": {"name": "invoice",
-                                                  "schema": INVOICE_JSON_SCHEMA}}},
-        timeout=cfg["staik_timeout"])
+def chat_json(prompt, text, schema, schema_name, max_tokens=8000, max_chars=None, timeout=None,
+              config=None):
+    """One structured-output call to the configured provider.
+
+    Returns (data, meta): `data` is the parsed JSON dict ({} when unparseable), `meta` has
+    served_model, completion_tokens and finish_reason. Handles the provider quirks in one
+    place: a 429 is retried once after 15 s; a 400 on `response_format` (provider without
+    JSON-schema support) is retried as a plain completion; Ollama uses its own API.
+
+    Provider, keys, URLs and limits are read from `config` (merged over default_config()),
+    never from module globals set at run time — those are shared by every run in an Odoo
+    worker. `max_chars` defaults to the config's text_limit, `timeout` to the provider's
+    per-call cap (the upload path is synchronous, so every call is bounded).
+    """
+    cfg = _cfg(config)
+    if max_chars is None:
+        max_chars = cfg["text_limit"]
+    timeout = timeout or _default_timeout(cfg)
+    if (cfg["provider"] or "").strip().lower() == "ollama":
+        return _ollama_chat_json(prompt, text, schema, max_chars, timeout, cfg)
+    base, key, model = resolve_endpoint(cfg)
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt + text[:max_chars]}],
+        "max_tokens": max_tokens,
+        "temperature": 0,
+        "response_format": {"type": "json_schema", "json_schema": {"name": schema_name, "schema": schema}},
+    }
+    url = f"{base}/chat/completions"
+    r = _post(url, headers=headers, json=body, timeout=timeout)
+    if r.status_code == 429:
+        time.sleep(15)
+        r = _post(url, headers=headers, json=body, timeout=timeout)
+    if r.status_code == 400 and "response_format" in body:
+        logger.info("%s rejected response_format — retrying without JSON schema", base)
+        body = {k: v for k, v in body.items() if k != "response_format"}
+        r = _post(url, headers=headers, json=body, timeout=timeout)
+    r.raise_for_status()
     j = r.json()
     choice = j["choices"][0]
-    if choice.get("finish_reason") == "length":
-        logger.warning("AI-svaret fran %s klipptes av max_tokens.", cfg["staik_model"])
+    finish = choice.get("finish_reason")
+    if finish == "length":
+        logger.warning("Answer from %s was cut by max_tokens=%s; the JSON is incomplete.", model, max_tokens)
     # staik faller TYST tillbaka till sin default-modell vid okant modellnamn, och
     # model-faltet speglar basmodellen aven for -thinking. Antalet tokens ar darfor
     # enda tillforlitliga tecknet pa att resonemanget faktiskt kordes.
-    served = j.get("model")
-    ctok = (j.get("usage") or {}).get("completion_tokens")
-    data = _parse_ai_json(choice["message"]["content"])
-    if isinstance(data, dict) and data:
-        data["_completion_tokens"] = ctok
-        data["_served_model"] = served
-    return data
+    meta = {
+        "served_model": j.get("model"),
+        "completion_tokens": (j.get("usage") or {}).get("completion_tokens"),
+        "finish_reason": finish,
+        "model": model,
+    }
+    return _parse_ai_json(choice["message"]["content"] or ""), meta
+
+
+def _ollama_chat_json(prompt, text, schema, max_chars, timeout, cfg):
+    """Ollama's native API; `format` takes a JSON schema since 0.5."""
+    model = cfg["ollama_model"]
+    r = _post(
+        f"{(cfg['ollama_url'] or '').rstrip('/')}/api/chat",
+        json={
+            "model": model, "stream": False, "format": schema or "json",
+            "options": {"temperature": 0},
+            "messages": [{"role": "user", "content": prompt + text[:max_chars]}],
+        },
+        timeout=timeout,
+    )
+    r.raise_for_status()
+    j = r.json()
+    meta = {"served_model": j.get("model"), "completion_tokens": j.get("eval_count"),
+            "finish_reason": j.get("done_reason"), "model": model}
+    return _parse_ai_json((j.get("message") or {}).get("content") or ""), meta
+
+
+def verify_provider(config=None):
+    """Cheap round-trip for the settings page: which model actually answers, and how fast.
+
+    Exposes staik's silent fallback (an unknown model name is served by the default model,
+    visible only in `served_model`) and any URL/key mistake before a real invoice is sent.
+    The settings page passes a config built from the form's (possibly unsaved) values; this
+    function never writes module globals, so an unsaved key is never used by real runs.
+    """
+    cfg = _cfg(config)
+    provider = cfg["provider"]
+    t0 = time.time()
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+    try:
+        data, meta = chat_json('Reply with the JSON object {"ok": true} and nothing else.\n', "", schema, "ping",
+                               max_tokens=300, max_chars=0, timeout=60, config=cfg)
+    except Exception as e:  # noqa: BLE001 — the whole point is to report the failure
+        return {"ok": False, "provider": provider, "error": str(e)[:300], "latency_s": round(time.time() - t0, 1)}
+    return {
+        "ok": bool(isinstance(data, dict) and data.get("ok") is True),
+        "provider": provider, "model_requested": meta.get("model"), "model_served": meta.get("served_model"),
+        "completion_tokens": meta.get("completion_tokens"), "latency_s": round(time.time() - t0, 1),
+    }
 
 
 def _parse_ai_json(content):
@@ -860,8 +976,12 @@ def _ai_answer_problems(data, reference=None, config=None):
     problems = []
     reference = reference or {}
 
+    # Only a reasoning model is expected to spend tokens before answering; a plain model
+    # answering in 500 tokens is normal, a "-thinking" model doing so skipped its reasoning.
     ctok = data.get("_completion_tokens")
-    if ctok is not None and ctok < cfg["staik_min_completion_tokens"]:
+    model_name = str(data.get("_served_model") or data.get("_model") or "").lower()
+    if (ctok is not None and ctok < cfg["staik_min_completion_tokens"]
+            and ("think" in model_name or "reason" in model_name)):
         problems.append(f"bara {ctok} completion-tokens (resonemanget hoppades over)")
 
     # 1. Mot fakturans tryckta belopp
@@ -896,16 +1016,14 @@ def _ai_answer_problems(data, reference=None, config=None):
 
 def _call_provider(text, config=None):
     cfg = _cfg(config)
-    provider = cfg["provider"]
-    if provider == "staik":
-        return _call_staik(text, cfg)
-    if provider == "venice":
-        return _call_venice(text, cfg)
-    elif provider == "ollama":
-        return _call_ollama(text, cfg)
-    elif provider == "openai":
-        return _call_openai(text, cfg)
-    return {}
+    data, meta = chat_json(EXTRACTION_PROMPT, text, INVOICE_JSON_SCHEMA, "invoice",
+                           max_tokens=8000, max_chars=cfg["text_limit"], config=cfg)
+    if isinstance(data, dict) and data:
+        # Diagnostics for _ai_answer_problems; stripped before the data reaches the invoice.
+        data["_completion_tokens"] = meta.get("completion_tokens")
+        data["_served_model"] = meta.get("served_model")
+        data["_model"] = meta.get("model")
+    return data
 
 
 def _extract_fields_ai(text, reference=None, config=None):
@@ -920,8 +1038,6 @@ def _extract_fields_ai(text, reference=None, config=None):
     anropet körs synkront inne i Odoo-transaktionen, och två stycken
     STAIK_TIMEOUT-långa anrop skulle blockera upload-vägen i minuter.
     """
-    import time
-
     cfg = _cfg(config)
     provider = cfg["provider"]
     t0 = time.monotonic()

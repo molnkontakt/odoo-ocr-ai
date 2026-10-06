@@ -2,24 +2,22 @@
 
 ## Unreleased
 
-- Initial public release of `account_invoice_ocr_ai` (invoice OCR + LLM) and
-  `hr_expense_ocr_ai` (receipt OCR + LLM), extracted from Molnkontakt's private
-  Odoo repository.
+- Provider layer generalised: any OpenAI-compatible endpoint (`openai_compatible`:
+  base URL + key + model), Ollama for both modules, OpenAI settings in the UI,
+  JSON-schema fallback and 429 retry for every provider, *Verify provider* button
+  that reports the model actually served. `account_invoice_ocr_ai` 19.0.1.9.0,
+  `hr_expense_ocr_ai` 19.0.1.1.0. Built on the 19.0.1.8.2 per-run config: the
+  provider layer (`resolve_endpoint`, `chat_json`, Ollama, `verify_provider`)
+  reads provider, keys, URLs and limits only from the config passed in and never
+  writes the module globals, which stay env-derived defaults for standalone use.
+  *Verify provider* builds a config from the form's (possibly unsaved) values for
+  that one call, so an unsaved key is never used by real extractions and a
+  cleared key stops working once saved. `hr_expense_ocr_ai` builds the same
+  per-run config for each expense's company. `INVOICE_AI_TIMEOUT` (every provider
+  except staik) defaults to 120 s like `STAIK_TIMEOUT`, so every call on the
+  synchronous upload path stays bounded.
 
-### Fixed (review, PR #1 — `account_invoice_ocr_ai`)
-
-- Removed the premature `cr.commit()` in `_extend_with_attachments`; committing
-  mid-create also committed `super()`'s work and the create itself. The bulk
-  server action keeps its intentional commit-per-move.
-- Bounded the synchronous upload path: staik timeout is now capped at
-  `STAIK_TIMEOUT` (default 120 s, was 300 s) and the reliability re-run is
-  skipped when the first AI call already took `INVOICE_AI_RETRY_SKIP_SECONDS`
-  (default 60 s). Limitation documented in the README; async (queue_job)
-  remains future work.
-- Escaped OCR/LLM values with `markupsafe.escape` in the chatter note to prevent
-  HTML injection.
-
-### Fixed (review, PR #1 medium findings — `account_invoice_ocr_ai`)
+### Fixed (review, PR #1 medium findings — `account_invoice_ocr_ai` 19.0.1.8.2)
 
 - Own-company guard: the VAT comparison is now normalized (spaces/dashes
   stripped, upper-cased) — `company.vat` ("SE556 000-0001") and
@@ -48,3 +46,22 @@
 - Added unit tests (no Odoo) for `_ai_answer_problems` (tolerance, token limit,
   reference comparison), the regex/AI merge (REGEX_WINS + conflicts), and the
   EU/export account-code remapping (now a testable lib function).
+
+### Fixed (review, PR #1 — `account_invoice_ocr_ai` 19.0.1.8.1)
+
+- Removed the premature `cr.commit()` in `_extend_with_attachments`; committing
+  mid-create also committed `super()`'s work and the create itself. The bulk
+  server action keeps its intentional commit-per-move.
+- Bounded the synchronous upload path: staik timeout is now capped at
+  `STAIK_TIMEOUT` (default 120 s, was 300 s) and the reliability re-run is
+  skipped when the first AI call already took `INVOICE_AI_RETRY_SKIP_SECONDS`
+  (default 60 s). Limitation documented in the README; async (queue_job)
+  remains future work.
+- Escaped OCR/LLM values with `markupsafe.escape` in the chatter note to prevent
+  HTML injection.
+
+### Initial release
+
+- Initial public release of `account_invoice_ocr_ai` (invoice OCR + LLM) and
+  `hr_expense_ocr_ai` (receipt OCR + LLM), extracted from Molnkontakt's private
+  Odoo repository.
