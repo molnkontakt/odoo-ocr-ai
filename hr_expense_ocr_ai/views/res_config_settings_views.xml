@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form_expense_ocr" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.expense.ocr</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr"/>
+        <field name="arch" type="xml">
+            <xpath expr="//block[@id='invoice_ocr_settings']" position="inside">
+                <setting string="Kvitto-OCR på utlägg" help="Läser kvittofoton på inmailade utlägg och på utkast som får en huvudbilaga. Samma AI-leverantör och nycklar som ovan.">
+                    <field name="expense_ocr_enabled"/>
+                </setting>
+            </xpath>
+        </field>
+    </record>
+</odoo>
