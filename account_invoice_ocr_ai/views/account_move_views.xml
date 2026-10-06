@@ -36,7 +36,7 @@
                 <field name="ocr_amounts_checked"
                        invisible="move_type not in ('in_invoice', 'in_refund') or not ocr_printed_currency_id"
                        readonly="state != 'draft'"
-                       groups="account.group_account_user"/>
+                       groups="account.group_account_manager,account.group_account_user"/>
             </xpath>
         </field>
     </record>

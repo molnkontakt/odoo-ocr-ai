@@ -44,6 +44,10 @@ class TestOcrAmounts(OcrBillCase):
         cls.accountant = new_test_user(
             cls.env, "ocr_accountant", groups="base.group_user,account.group_account_user",
             company_id=cls.company.id, company_ids=[Command.set(cls.company.ids)])
+        cls.manager = new_test_user(
+            cls.env, "ocr_accounting_admin",
+            groups="base.group_user,account.group_account_manager",
+            company_id=cls.company.id, company_ids=[Command.set(cls.company.ids)])
         cls.billing = new_test_user(
             cls.env, "ocr_billing_only", groups="base.group_user,account.group_account_invoice",
             company_id=cls.company.id, company_ids=[Command.set(cls.company.ids)])
@@ -143,6 +147,10 @@ class TestOcrAmounts(OcrBillCase):
         move = self._bill(1000.0, printed=1250.0)
         with self.assertRaises(AccessError):
             move.with_user(self.billing).write({"ocr_amounts_checked": True})
+        # the accounting administrator, who in Odoo Community lacks the full accounting
+        # features, may tick it too
+        self._bill(1000.0, printed=1250.0).with_user(self.manager).write(
+            {"ocr_amounts_checked": True})
         move.with_user(self.accountant).write({"ocr_amounts_checked": True})
         self.env.cr.precommit.run()  # the tracking values are written at commit
         move.action_post()

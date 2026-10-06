@@ -90,8 +90,12 @@ class AccountMove(models.Model):
         return res
 
     def _ocr_check_override_rights(self):
-        """Only users with accounting rights may confirm amounts that differ from the document."""
-        if not self.env.su and not self.env.user.has_group("account.group_account_user"):
+        """Only users with accounting rights may confirm amounts that differ from the document:
+        the accounting administrators, and users with the full accounting features (in Odoo
+        Community the administrator does not imply those)."""
+        user = self.env.user
+        if not self.env.su and not (user.has_group("account.group_account_manager")
+                                    or user.has_group("account.group_account_user")):
             raise AccessError(_("Only users with accounting rights may confirm that a bill's "
                                 "amounts were checked against the document."))
 
