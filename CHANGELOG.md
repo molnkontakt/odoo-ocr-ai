@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+- `account_invoice_ocr_ai` 19.0.1.16.0, `hr_expense_ocr_ai` 19.0.1.6.0: fixes from re-reading
+  the bills and receipts a production module had filled and comparing them with the posted
+  ones (#39). **Behaviour changes** — see the points marked so. `hr_expense_ocr_ai`
+  19.0.1.6.0 needs `account_invoice_ocr_ai` 19.0.1.16.0 (the not-VAT-registered flag, the
+  receipt-date window); install both from the same release.
+  - **No posting past the printed total — behaviour change.** The total, net and VAT printed
+    on the document are kept on the bill (*Total on the document (OCR)*). A vendor bill or
+    refund whose total differs from the printed total by more than 1 (in the document's
+    currency) is not posted — bulk posting and the post wizard included — unless a user with
+    accounting rights ticks *Amounts checked against the document* (tracked, cleared when the
+    lines change). Bills OCR read no printed total on, or did not read, are not checked.
+  - **Lines with prices including VAT.** When the lines add up to the total of a header that
+    adds up (net + VAT = total) instead of to its net, they are converted to net at their own
+    VAT rate, with a note: a receipt's VAT-inclusive prices booked as net, VAT on top, made a
+    bill 25 % too large.
+  - **Totals check.** Without printed amounts the lines are compared with the AI's total, net
+    and VAT, and the note says they were not verified against printed totals (it was silent);
+    the warning names the pattern "the lines' net is the document's total, VAT added on top".
+  - **Amounts read from the document.** Only from the label's line (a glued column header took
+    an article number on the next line for the total); a rate is never the VAT amount
+    ("Varav moms 25% 23,00"); a row of amounts is no total; "SUMMA … kr", "Summa (SEK)" and
+    "Total due" are totals; a label printed with different amounts (an order and a fee receipt
+    in one PDF) is left to the AI, with a note. The prompt asks for every part of such a PDF.
+  - **Payment reference.** An amount printed on the document is never the OCR reference;
+    "OCR/Fakturanummer: …" is read on its line; when the regex and the AI disagree, the one
+    printed with an OCR label wins, else the AI's.
+  - **Invoice number.** Only after an invoice-number label, and under a header from the
+    label's own column (an account id was booked as the invoice number); the AI's number wins
+    when it is printed with an invoice-number label, and over an order number.
+  - **No duplicate vendors — behaviour change.** VAT and org numbers are compared apart from
+    formatting (spaces, dashes, prefix, Swedish 01). No vendor is created when a partner has
+    the document's number or a vendor of the company has a near name (all its distinctive
+    words in the document's name, or the same distinctive first word): the vendor is left
+    empty and the note names the candidates. A VAT number Odoo rejects no longer fails the
+    reading.
+  - **Accounts — behaviour change.** The default list's hints: 4000 is goods for resale or
+    production, 5410 equipment for own use (computers, accessories, tools …); 5460 is added.
+    The own-use goods accounts 5400–5419, 5430–5499 and 6100–6199 are goods for VAT (a
+    computer from another EU country on 5410: EU G, box 20). A line without an account, and a
+    bill of one line on the totals, get a note.
+  - **Not VAT-registered (new, off by default).** Per company in the invoice OCR settings:
+    bill lines and receipts are booked gross, the document's VAT in the cost, without tax.
+  - **Receipts — behaviour change.** A date more than 3 days ahead or 2 years back is never
+    used (a misread "2075"); on a photo under one megapixel amount and date need confidence
+    0.9; a category with a fixed cost (mileage) is never offered to the model.
+  - **Smaller fixes.** The vendor-match note is translated; hr.expense's OCR-state labels are
+    Swedish after one install or update (post-init hook and migration); the manifest names
+    `Pillow`; the Odoo tests pass on a database in another language (181 of 181 with every
+    user and company in Swedish and English inactive).
+
 - `account_invoice_ocr_ai` 19.0.1.15.0, `hr_expense_ocr_ai` 19.0.1.5.0: the provider layer,
   English source strings with a Swedish translation, and the background job reads as the
   user who queued the document. **Behaviour changes** — see the points marked so.

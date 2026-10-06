@@ -18,7 +18,7 @@ Sister repositories: [odoo-l10n-se](https://github.com/molnkontakt/odoo-l10n-se)
 
 `hr_expense_ocr_ai` depends on `account_invoice_ocr_ai` (shared OCR/LLM library,
 settings and background queue). Install both from the same release:
-`hr_expense_ocr_ai` 19.0.1.5.0 needs `account_invoice_ocr_ai` 19.0.1.15.0 or
+`hr_expense_ocr_ai` 19.0.1.6.0 needs `account_invoice_ocr_ai` 19.0.1.16.0 or
 later, which Odoo's `depends` cannot enforce.
 
 ## AI providers

@@ -1,13 +1,13 @@
 {
     "name": "Expense receipt OCR + AI",
-    "version": "19.0.1.5.0",
+    "version": "19.0.1.6.0",
     "category": "Human Resources/Expenses",
     "summary": "Read receipt photos on expense claims with tesseract + an LLM and fill amount, date, merchant and category",
     "description": """
 Odoo Community has no receipt scanning (hr_expense_extract is Enterprise). This module reuses the
 OCR/LLM pipeline of account_invoice_ocr_ai on hr.expense: tesseract, and every AI provider that
 module supports (staik, Venice, OpenAI, any OpenAI-compatible endpoint, a local Ollama), with the
-same keys and settings. **Requires account_invoice_ocr_ai 19.0.1.15.0 or later** (Odoo's
+same keys and settings. **Requires account_invoice_ocr_ai 19.0.1.16.0 or later** (Odoo's
 depends cannot say so): it uses that module's background OCR queue, its per-run settings and its
 library's provider layer and notes.
 

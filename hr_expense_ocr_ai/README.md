@@ -6,12 +6,13 @@ Receipt OCR + LLM for expense claims in Odoo 19 Community, where
 and the provider settings: every provider it supports (staik, Venice, OpenAI, any
 OpenAI-compatible endpoint, a local Ollama) reads receipts too, with the same keys.
 
-**Version requirement:** `hr_expense_ocr_ai` 19.0.1.5.0 needs
-`account_invoice_ocr_ai` **19.0.1.15.0 or later**. It uses that module's
+**Version requirement:** `hr_expense_ocr_ai` 19.0.1.6.0 needs
+`account_invoice_ocr_ai` **19.0.1.16.0 or later**. It uses that module's
 background queue (`ocr.queue.mixin`, its form banner and states), its per-run
 settings (`account.move._invoice_ocr_config`, `_ocr_currency`,
-`_ocr_notification`) and its library's provider layer (`chat_json` with the
-answer's diagnostics, the reasoning check, translatable notes). Odoo's `depends`
+`_ocr_notification`, the company's *Not VAT-registered* flag) and its library's
+provider layer (`chat_json` with the answer's diagnostics, the reasoning check,
+translatable notes). Odoo's `depends`
 cannot pin a version, so install both from the same release of this repository.
 
 ## When it runs
