@@ -3,4 +3,4 @@
 from . import ocr_queue
 
 # isort: split
-from . import account_move, res_config_settings
+from . import account_move, account_move_line, res_config_settings

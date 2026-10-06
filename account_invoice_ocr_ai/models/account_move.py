@@ -20,9 +20,14 @@ from datetime import timedelta
 from markupsafe import Markup
 
 from odoo import _, api, fields, models
+from odoo.exceptions import AccessError, UserError
 from odoo.tools.misc import formatLang
 
 logger = logging.getLogger(__name__)
+
+# Amounts that differ by at most this much (in the document's currency) are the same: öre
+# rounding (#39)
+AMOUNT_TOLERANCE = 1.0
 
 
 class AccountMove(models.Model):
@@ -44,13 +49,115 @@ class AccountMove(models.Model):
         help="The phrase in the document that made OCR set 'Debited automatically'. Empty when "
              "the flag was set or changed by hand – then running OCR again leaves it alone.",
     )
+    # The amounts printed on the document, as OCR read them (#39). A vendor bill whose total
+    # differs from the printed total is not posted (_ocr_check_printed_total) unless someone
+    # with accounting rights confirms that the amounts were checked against the document.
+    ocr_printed_currency_id = fields.Many2one(
+        "res.currency", string="Currency of the document (OCR)", copy=False, readonly=True,
+        help="Set when OCR read the total printed on the document; empty: no total was read.")
+    ocr_printed_total = fields.Monetary(
+        string="Total on the document (OCR)", currency_field="ocr_printed_currency_id",
+        copy=False, readonly=True,
+        help="The total printed on the document, as OCR read it. The bill is not posted while "
+             "its total differs from it, unless \"Amounts checked against the document\" is "
+             "ticked.")
+    ocr_printed_untaxed = fields.Monetary(
+        string="Net on the document (OCR)", currency_field="ocr_printed_currency_id",
+        copy=False, readonly=True)
+    ocr_printed_tax = fields.Monetary(
+        string="VAT on the document (OCR)", currency_field="ocr_printed_currency_id",
+        copy=False, readonly=True)
+    ocr_amounts_checked = fields.Boolean(
+        string="Amounts checked against the document", copy=False, tracking=True,
+        help="Tick after comparing the bill with the document when its total differs from the "
+             "total OCR read on it, to allow posting it anyway. Only users with accounting "
+             "rights can tick it; it is cleared whenever the lines change.")
 
     def write(self, vals):
         # A flag changed by hand belongs to the user: forget the OCR phrase, so that running
         # OCR again does not reset a manual choice.
         if "ocr_auto_debit" in vals and not self.env.context.get("ocr_auto_debit_write"):
             vals = dict(vals, ocr_auto_debit_phrase=False)
-        return super().write(vals)
+        if vals.get("ocr_amounts_checked"):
+            self._ocr_check_override_rights()
+        if "ocr_amounts_checked" in vals:
+            # Set in the same save as line changes: the user's choice stands (the line hooks
+            # would clear it otherwise)
+            return super(AccountMove, self.with_context(ocr_keep_amounts_checked=True)).write(vals)
+        res = super().write(vals)
+        if {"invoice_line_ids", "line_ids", "currency_id"} & set(vals):
+            self._ocr_reset_amounts_checked()
+        return res
+
+    def _ocr_check_override_rights(self):
+        """Only users with accounting rights may confirm amounts that differ from the document."""
+        if not self.env.su and not self.env.user.has_group("account.group_account_user"):
+            raise AccessError(_("Only users with accounting rights may confirm that a bill's "
+                                "amounts were checked against the document."))
+
+    def _ocr_reset_amounts_checked(self):
+        """Clear "Amounts checked against the document" on draft bills whose lines changed."""
+        if self.env.context.get("ocr_keep_amounts_checked"):
+            return
+        checked = self.filtered(lambda m: m.ocr_amounts_checked and m.state == "draft")
+        if checked:
+            super(AccountMove, checked).write({"ocr_amounts_checked": False})
+
+    def _post(self, soft=True):
+        self._ocr_check_printed_total()
+        return super()._post(soft)
+
+    def _ocr_check_printed_total(self):
+        """Refuse to post vendor bills and refunds whose total differs from the total printed on
+        the document (#39): a receipt's VAT-inclusive prices booked as net, with VAT added on
+        top, were posted at 25 % too much. Not checked when no printed total was read, or when
+        someone with accounting rights ticked "Amounts checked against the document". All
+        bills of a bulk post are checked; one error lists every blocked bill."""
+        problems = []
+        for move in self.filtered(lambda m: m.move_type in ("in_invoice", "in_refund")
+                                  and m.ocr_printed_currency_id and not m.ocr_amounts_checked):
+            problem = move._ocr_printed_total_problem()
+            if problem:
+                problems.append(problem)
+        if problems:
+            raise UserError(_(
+                "%(problems)s\n\nCorrect the lines against the document. If the bill is right as "
+                "it is, a user with accounting rights can tick \"Amounts checked against the "
+                "document\" on the bill and post it.", problems="\n".join(problems)))
+
+    def _ocr_printed_total_problem(self):
+        """Why this bill's total does not match the printed total (a sentence), or None."""
+        self.ensure_one()
+        printed = self.ocr_printed_currency_id
+        if printed != self.currency_id:
+            return _("%(bill)s is in %(currency)s, but the total OCR read on the document "
+                     "(%(printed)s) is in %(document)s.", bill=self.display_name,
+                     currency=self.currency_id.name, document=printed.name,
+                     printed=formatLang(self.env, self.ocr_printed_total, currency_obj=printed))
+        total = abs(self.amount_total)
+        document = abs(self.ocr_printed_total)
+        if abs(total - document) <= AMOUNT_TOLERANCE:
+            return None
+        problem = _("%(bill)s: the total %(total)s differs from the total %(printed)s printed "
+                    "on the document.", bill=self.display_name,
+                    total=formatLang(self.env, total, currency_obj=self.currency_id),
+                    printed=formatLang(self.env, document, currency_obj=printed))
+        if self._ocr_lines_look_vat_inclusive(document):
+            problem = f"{problem} {self._ocr_vat_inclusive_text(document)}"
+        return problem
+
+    def _ocr_lines_look_vat_inclusive(self, document_total):
+        """True when the lines' net is the document's total while VAT was added on top: the
+        line amounts were the prices including VAT."""
+        return (abs(abs(self.amount_untaxed) - abs(document_total)) <= AMOUNT_TOLERANCE
+                and abs(self.amount_tax) > AMOUNT_TOLERANCE)
+
+    def _ocr_vat_inclusive_text(self, document_total):
+        return _("The lines' net %(net)s is the document's total %(total)s, and VAT was added "
+                 "on top of it: the line amounts look like prices including VAT – enter them "
+                 "without VAT.",
+                 net=formatLang(self.env, abs(self.amount_untaxed), currency_obj=self.currency_id),
+                 total=formatLang(self.env, document_total, currency_obj=self.currency_id))
 
     def action_run_ocr(self):
         """Read the latest PDF attachment of each draft vendor bill now: the form button.
@@ -524,6 +631,7 @@ class AccountMove(models.Model):
             self._ocr_post_currency_warning(move, data, currency_problem)
         else:
             self._create_lines_from_ocr(move, data, notes)
+        self._ocr_store_printed_amounts(move, data)
 
         # An extracted bankgiro/plusgiro/account that is the company's own
         own_numbers = set()
@@ -606,6 +714,26 @@ class AccountMove(models.Model):
                 "failed", _("the AI step failed (%s); only the values read from the text were "
                             "filled in", ai_error), noted=True)
         return self._ocr_result("filled")
+
+    @api.model
+    def _ocr_store_printed_amounts(self, move, data):
+        """Keep the total, net and VAT printed on the document on the bill (#39), for the
+        posting check (_ocr_check_printed_total). A new reading replaces them and clears
+        "Amounts checked against the document"; no printed total read: nothing is checked."""
+        from ..lib import invoice_ocr
+
+        found = data.get("_on_document") or {}
+        code = invoice_ocr.normalize_currency(data.get("currency"))
+        currency = (self.env["res.currency"].with_context(active_test=False).search(
+            [("name", "=", code)], limit=1) if code else move.currency_id)
+        vals = {"ocr_amounts_checked": False, "ocr_printed_currency_id": False,
+                "ocr_printed_total": 0.0, "ocr_printed_untaxed": 0.0, "ocr_printed_tax": 0.0}
+        if found.get("total_amount") is not None and currency:
+            vals.update(ocr_printed_currency_id=currency.id,
+                        ocr_printed_total=found["total_amount"],
+                        ocr_printed_untaxed=found.get("subtotal") or 0.0,
+                        ocr_printed_tax=found.get("vat_amount") or 0.0)
+        move.write(vals)
 
     @api.model
     def _ocr_field_labels(self):
@@ -1129,8 +1257,29 @@ class AccountMove(models.Model):
         for line in lines:
             line["vat_rate"] = lib.line_vat_rate(line.get("vat_rate"))
 
+        # Lines with the prices INCLUDING VAT (a receipt prints them so): the header adds up and
+        # the lines add up to its total, not to its net (#39). Booked as net, the VAT on top
+        # made the bill 25 % too large.
+        total, net, _vat = lib.document_header(data)
+        gross_lines = lib.lines_include_vat(
+            [line.get("amount") for line in lines], total, net, _vat)
+        if gross_lines and treatment == "domestic":
+            for line in lines:
+                if line["vat_rate"]:
+                    line["amount"] = lib.amount_excluding_vat(line["amount"], line["vat_rate"])
+                    line["quantity"] = 1.0
+                    line.pop("unit_price", None)
+            notes.append(_(
+                "The line amounts are the document's prices including VAT: they add up to its "
+                "total %(total)s, not to its net %(net)s. Each line was converted to its amount "
+                "excluding VAT at its own VAT rate.",
+                total=formatLang(self.env, total, currency_obj=move.currency_id),
+                net=formatLang(self.env, net, currency_obj=move.currency_id)))
+
         if treatment == "foreign_vat":
-            self._ocr_add_foreign_vat_to_cost(lines, vat_total)
+            # Lines that already include the VAT keep it; others get it added
+            if not gross_lines:
+                self._ocr_add_foreign_vat_to_cost(lines, vat_total)
             data["_foreign_vat"] = vat_total
             notes.append(_(
                 "The supplier is abroad and charged foreign VAT (%(vat)s). Foreign VAT is not "
@@ -1180,7 +1329,7 @@ class AccountMove(models.Model):
         if line_vals_list:
             move.write({"invoice_line_ids": line_vals_list})
             self._ocr_apply_total_adjustments(move, data)
-            self._check_ocr_totals(move, data)
+            self._check_ocr_totals(move, data, notes)
 
     @api.model
     def _ocr_add_foreign_vat_to_cost(self, lines, vat_total):
@@ -1312,64 +1461,104 @@ class AccountMove(models.Model):
             message_type="comment",
         )
 
-    def _check_ocr_totals(self, move, data):
-        """Warn when the lines created do not add up to the amounts printed on the bill.
+    def _check_ocr_totals(self, move, data, notes=None):
+        """Warn when the lines created do not add up to the document's amounts.
 
-        The AI drops lines on long specifications and sometimes puts discounts outside VAT.
-        Both give a bill that looks complete but is wrong, and without this check it would be
-        posted without anyone noticing.
+        The AI drops lines on long specifications, sometimes puts discounts outside VAT and
+        sometimes gives the prices including VAT as line amounts. Each gives a bill that looks
+        complete but is wrong, and without this check it would be posted without anyone
+        noticing.
+
+        The lines are compared with the amounts PRINTED on the document where the regex read
+        them, not with the merged ones (where the regex read nothing the AI's value is in
+        `data`, and the check would confirm itself) — and, for an amount the regex could not
+        read, with the AI's reading of it (#39: with no printed amount at all the check used to
+        stay silent, and a bill a fee short, with a third of its VAT, passed). When no printed
+        amount could be read, a note in `notes` says that the lines were checked only against
+        the AI's reading.
         """
         move.invalidate_recordset()
-        tol = 1.0  # öre rounding and the odd öre are not worth a warning
+        tol = AMOUNT_TOLERANCE  # öre rounding and the odd öre are not worth a warning
 
-        # The bill's PRINTED amounts, not the merged ones. After the merge the regex wins on
-        # the numbers, so they mostly coincide — but where the regex found no value the AI's
-        # stays in data, and the check would confirm itself.
         from ..lib import invoice_ocr
 
+        notes = notes if notes is not None else []
         printed = data.get("_printed") or {}
-        printed_net = printed.get("subtotal")
-        printed_total = printed.get("total_amount")
-        printed_vat = printed.get("vat_amount")
+        # key → (amount, printed on the document?)
+        reference = {}
+        for key in ("subtotal", "vat_amount", "total_amount"):
+            if printed.get(key) is not None:
+                reference[key] = (printed[key], True)
+            elif invoice_ocr._num(data.get(key)) is not None:
+                reference[key] = (invoice_ocr._num(data[key]), False)
         problems = []
         # The amounts are compared digit for digit, so they must be in the same currency (#5)
         document_currency = invoice_ocr.normalize_currency(data.get("currency"))
         if document_currency and document_currency != move.currency_id.name:
             problems.append(_("the bill is in %(bill)s, the document in %(document)s",
                               bill=move.currency_id.name, document=document_currency))
-        if not printed and not problems:
-            logger.info("OCR: no printed amounts read from the PDF — the lines cannot be "
-                        "checked against the bill")
+        if not reference and not problems:
+            logger.info("OCR: no amounts read from the PDF — the lines cannot be checked")
+            notes.append(_("No total, net or VAT could be read from the document: the lines "
+                           "were not checked – compare them with the document."))
             return
+        if not printed and reference:
+            notes.append(_("No amounts printed on the document could be read: the lines were "
+                           "checked only against the AI's reading of the total, net and VAT – "
+                           "compare the total with the document."))
 
         def amount(value):
             return formatLang(self.env, value, currency_obj=move.currency_id)
 
+        def against(key, lines_amount, adjust=0.0):
+            value, on_document = reference[key]
+            params = {"lines": amount(lines_amount), "printed": amount(value + adjust)}
+            if on_document:
+                return {
+                    "subtotal": _("net %(lines)s against the bill's %(printed)s", **params),
+                    "vat_amount": _("VAT %(lines)s against the bill's %(printed)s", **params),
+                    "total_amount": _("total %(lines)s against the bill's %(printed)s", **params),
+                }[key]
+            return {
+                "subtotal": _("net %(lines)s against the AI's reading %(printed)s", **params),
+                "vat_amount": _("VAT %(lines)s against the AI's reading %(printed)s", **params),
+                "total_amount": _("total %(lines)s against the AI's reading %(printed)s",
+                                  **params),
+            }[key]
+
         net = move.amount_untaxed - (data.get("_rounding_adjust") or 0.0)
         # Foreign VAT booked as cost (#22) is in the net and not in the tax.
         foreign_vat = data.get("_foreign_vat") or 0.0
-        if printed_net is not None and abs(net - printed_net - foreign_vat) > tol:
-            problems.append(_("net %(lines)s against the bill's %(printed)s", lines=amount(net),
-                              printed=amount(printed_net + foreign_vat)))
-        if printed_vat is not None and abs(move.amount_tax - printed_vat + foreign_vat) > tol:
-            problems.append(_("VAT %(lines)s against the bill's %(printed)s",
-                              lines=amount(move.amount_tax),
-                              printed=amount(printed_vat - foreign_vat)))
-        if printed_total is not None and abs(move.amount_total - printed_total) > tol:
-            problems.append(_("total %(lines)s against the bill's %(printed)s",
-                              lines=amount(move.amount_total), printed=amount(printed_total)))
+        if "subtotal" in reference and abs(net - reference["subtotal"][0] - foreign_vat) > tol:
+            problems.append(against("subtotal", net, foreign_vat))
+        if "vat_amount" in reference and \
+                abs(move.amount_tax - reference["vat_amount"][0] + foreign_vat) > tol:
+            problems.append(against("vat_amount", move.amount_tax, -foreign_vat))
+        if "total_amount" in reference and \
+                abs(move.amount_total - reference["total_amount"][0]) > tol:
+            problems.append(against("total_amount", move.amount_total))
+            if not foreign_vat and move._ocr_lines_look_vat_inclusive(reference["total_amount"][0]):
+                problems.append(move._ocr_vat_inclusive_text(reference["total_amount"][0]))
         if not problems:
             return
 
         logger.warning("OCR: the lines of move %s do not add up: %s",
                        move.id, "; ".join(problems))
+        if printed:
+            title = _("OCR: the lines do not match the bill")
+            explanation = _(
+                "The lines come from the AI's reading and do not add up to the amounts printed "
+                "on the document — probably a line was dropped or has the wrong VAT rate. "
+                "Check them against the PDF before you post the bill.")
+        else:
+            title = _("OCR: the lines do not match the amounts read from the bill")
+            explanation = _(
+                "No amounts printed on the document could be read, so the lines were compared "
+                "with the AI's own reading of the total, net and VAT – and they do not add up "
+                "to it. Check the lines and the total against the PDF before you post the bill.")
         move.message_post(
             body=Markup("<p><b>⚠ %s</b></p><p>%s</p><p>%s</p>") % (
-                _("OCR: the lines do not match the bill"),
-                Markup("<br/>").join(problems),
-                _("The lines come from the AI's reading and do not add up to the amounts printed "
-                  "on the document — probably a line was dropped or has the wrong VAT rate. "
-                  "Check them against the PDF before you post the bill.")),
+                title, Markup("<br/>").join(problems), explanation),
             message_type="comment",
         )
 

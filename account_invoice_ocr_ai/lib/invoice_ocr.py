@@ -370,22 +370,65 @@ def amount_in_text(value, text):
 # ── Field extraction patterns ────────────────────────────────────────────────
 
 OCR_LABEL = r"\b(?:OCR[ _-]?(?:nummer|nr)|OCR|Betalningsreferens)\b"
+# A combined label such as "OCR/Fakturanummer:" (the invoice number is the reference)
+OCR_LABEL_SUFFIX = r"(?:[ \t]*/[ \t]*[A-Za-zÅÄÖåäö]+\.?)?"
 BANKGIRO_LABEL = r"(?:\bBankgiro(?:nummer|nr)?|\bBG|\bBg\.?)(?![A-Za-zÅÄÖåäö])"
 PLUSGIRO_LABEL = r"(?:\bPlusgiro(?:nummer|nr)?|\bPG|\bPg\.?)(?![A-Za-zÅÄÖåäö])"
 # 123-4567, 1234-5678, 12345678
 BANKGIRO_VALUE = r"(\d{3,4}[ \t-]?\d{4})(?![\d-])"
 # 12 34 56-7, 123456-7, 1234567-8, 12345678
 PLUSGIRO_VALUE = r"(\d(?:[ \t]?\d){0,6}[ \t]?-?[ \t]?\d)(?![\d-])"
+# The labels of an invoice number. Customer, account and order numbers are other labels: their
+# values are never taken for the invoice number (an account id under "Account ID" was, #39).
+INVOICE_NUMBER_LABEL = (r"(?:Fakturanummer|Fakturanr|Faktura[ \t]*nr|Faktura[ \t]*#|Faktnr"
+                        r"|Fakt\.?[ \t]*nr|Invoice[ \t]*(?:no\b|number|nr\b|#)|Rechnungs(?:nummer|nr))")
+
+# ── Amounts after a label ────────────────────────────────────────────────────
+# The amount is on the label's line: a value is never taken from another line, where it is
+# usually something else (a column header glued to its label, "PrisTotalt", took the article
+# number on the next line for the total). The amount may follow a currency
+# ("kr 300.00", "€ 104.64", "(SEK)"); a rate before it is skipped ("Varav moms 25% 23,00"), and
+# a number followed by "%" is a rate, never an amount. A label that ends its line may have its
+# amount alone on the next line ("Att betala\n1 234,00 kr").
+_CURRENCY_MARK = r"(?:kr\.?|sek|eur|usd|gbp|nok|dkk|[€$£])"
+_AMOUNT_VALUE = (r"(-?\d{1,3}(?:[   .,]\d{3})+(?:[.,]\d{1,2})?(?![\d.,]*\d)"
+                 r"|-?\d+(?:[.,]\d{1,2})?(?![\d.,]*\d))"
+                 r"(?![ \t]*(?:%|vara\b|varor\b|artikl|st\b|pcs\b|items?\b)|[ \t]+-?\d)")
+_RATE = r"(?:[ \t]*\d{1,2}(?:[.,]\d{1,3})?[ \t]*%)?"
+AMOUNT_SAME_LINE = (_RATE + r"[ \t.:]*(?:\([ \t]*" + _CURRENCY_MARK + r"[ \t]*\)[ \t.:]*)?"
+                    r"(?:" + _CURRENCY_MARK + r"[ \t]*)?" + _AMOUNT_VALUE)
+AMOUNT_NEXT_LINE = (r"[ \t.:]*(?:\([ \t]*" + _CURRENCY_MARK + r"[ \t]*\))?[ \t.:]*\n[ \t]*"
+                    r"(?:" + _CURRENCY_MARK + r"[ \t]*)?"
+                    r"(-?\d{1,3}(?:[   .]?\d{3})*[.,]\d{2})[ \t]*"
+                    r"(?:" + _CURRENCY_MARK + r")?[ \t]*$")
+
+
+def _amount_patterns(label, next_line=True):
+    """The patterns for an amount after `label`: on its line, then (if `next_line`) alone
+    on the next line."""
+    patterns = [label + AMOUNT_SAME_LINE]
+    if next_line:
+        patterns.append(label + AMOUNT_NEXT_LINE)
+    return patterns
+
+
+# "SUMMA 12345 kr" on a receipt, "Summa (SEK) 1 250,00": a total, unless it is the sum before
+# VAT or a discount ("Summa exkl. moms", "Summa netto", "Summa rabatt", "Summa varor").
+SUMMA_TOTAL_LABEL = (r"\bSumma\b(?![ \t.:]*(?:exkl|excl|netto|moms|vat|varor|artiklar|rabatt"
+                     r"|att[ \t]+betala|inkl))")
+
+
+SUMMA_TOTAL_PATTERNS = frozenset(_amount_patterns(SUMMA_TOTAL_LABEL, next_line=False))
 
 
 FIELD_PATTERNS = {
     "invoice_number": [
-        # Same-line: "Fakturanummer: 1033", "Invoice no.: 084000802912"
-        # Use [\s.:]* to consume any combo of dots/colons/spaces between label and value
-        r"(?:Fakturanummer|Faktura\s*nr|Faktura\s*#|Invoice\s*(?:no|number|#))[\s.:]*(\d[\d/-]*)",
-        r"(?:Faktnr|Fakt\.?\s*nr)[\s.:]*(\d[\d/-]*)",
-        # English: "Order Number: EU50246" or "Invoice #EU50246"
-        r"(?:Order\s*(?:Number|No|#)|Invoice\s*#)[\s.:]*(\S+)",
+        # Same-line: "Fakturanummer: 1033", "Invoice no.: 084000802912" — on the label's line
+        # only; a value under its label is read by the next-line logic, column by column
+        INVOICE_NUMBER_LABEL + r"[ \t.:#]*(\d[\d/-]*)",
+        # English: "Order Number: EU50246" or "Invoice #EU50246" (an order number is the
+        # reference on some receipts; the AI's invoice number wins over it, see _merge_fields)
+        r"(?:Order[ \t]*(?:Number|No|#)|Invoice[ \t]*#)[ \t.:]*(\S+)",
     ],
     "invoice_date": [
         r"(?:Fakturadatum|Invoice\s*date)[\s.:]*(" + "|".join(DATE_PATTERNS) + ")",
@@ -401,36 +444,46 @@ FIELD_PATTERNS = {
         r"\d{4}-\d{2}-\d{2}\s+(\d{4}-\d{2}-\d{2})",
     ],
     "total_amount": [
-        r"(?:Belopp\s*att\s*betala|Totalt\s*att\s*betala|Att\s*betala|Summa\s*att\s*betala|Amount\s*due)\s*(?:\(SEK\))?[\s.:]*[€$£]?([\d\s.,]+)",
-        r"(?:Totalt|Summa\s*inkl\.?\s*moms)[\s.:]*[€$£]?([\d\s.,]+)",
+        # The amount to pay: the most specific labels first ("Amount due" may also be printed
+        # for each line of a specification)
+        *_amount_patterns(r"(?:Belopp[ \t]*att[ \t]*betala|Totalt[ \t]*att[ \t]*betala"
+                          r"|Summa[ \t]*att[ \t]*betala|Total[ \t]*due)"),
+        *_amount_patterns(r"(?:Att[ \t]*betala|Amount[ \t]*due|Balance[ \t]*due)"),
+        *_amount_patterns(r"(?:\bTotalt|Summa[ \t]*inkl\.?[ \t]*moms)"),
         # English: "Grand total €539.00" or "Total: $100.00"
-        r"(?:Grand\s*total|Total\s*amount|Amount\s*paid|Paid\s*by\s*customer)[\s.:]*[€$£]?([\d\s.,]+)",
+        *_amount_patterns(r"(?:Grand[ \t]*total|Total[ \t]*amount|Amount[ \t]*paid"
+                          r"|Paid[ \t]*by[ \t]*customer)"),
         # Plain "Total € 104.64" on its own line (Hetzner)
-        r"(?:^|\n)Total\s+[€$£]\s*([\d.,]+)\s*$",
+        r"(?:^|\n)Total[ \t]+[€$£][ \t]*([\d.,]+)[ \t]*$",
         # Hetzner totals row: "Total € 104.64 € 0.00 € 104.64" (subtotal, vat, total) — pick last
-        r"(?:^|\n)Total(?:\s+[€$£]\s*[\d.,]+){2}\s+[€$£]\s*([\d.,]+)",
+        r"(?:^|\n)Total(?:[ \t]+[€$£][ \t]*[\d.,]+){2}[ \t]+[€$£][ \t]*([\d.,]+)",
+        # Receipts: "SUMMA 12345 kr", "Summa (SEK) 1 250,00" (last: an invoice's "Summa" can be
+        # the net, see _summa_is_net)
+        *sorted(SUMMA_TOTAL_PATTERNS),
     ],
     "vat_amount": [
         # "Moms 25% 512,00 kr" — rate then amount
-        r"Moms\s+\d+%\s+([\d\s.,]+)\s*kr",
+        r"\bMoms[ \t]+\d{1,2}[ \t]*%[ \t]+" + _AMOUNT_VALUE + r"[ \t]*kr",
         # "Moms 500,00" but NOT "Moms 25%" (that's a rate, not an amount)
-        r"^Moms\s+([\d\s.,]+)$",
-        r"(?:Varav\s*moms|Mervärdesskatt)[\s.:]*[€$£]?([\d\s.,]+)",
+        r"^Moms[ \t]+" + _AMOUNT_VALUE + r"[ \t]*$",
+        # "Varav moms 25% 23,00", "Varav moms 2469.0 kr", "Mervärdesskatt: 500,00"
+        *_amount_patterns(r"(?:Varav[ \t]*moms|Mervärdesskatt)"),
         # "I rutan ... Moms 512,00 kr"
-        r"Moms\s+([\d\s.,]+)\s*kr",
-        # English: "Tax €0.00" or "VAT: 100.00"
-        r"(?:^Tax\s+Amount|^VAT\b)[\s.:]*[€$£]?([\d\s.,]+)",
+        r"\bMoms[ \t]+" + _AMOUNT_VALUE + r"[ \t]*kr",
+        # English: "Tax €0.00", "VAT: 100.00", "VAT kr 60.00"
+        *_amount_patterns(r"(?:^Tax[ \t]+Amount|^VAT\b)"),
     ],
     "subtotal": [
-        r"(?:Belopp\s*exkl\.?\s*moms|Summa\s*exkl\.?\s*moms|Netto|Exkl\.?\s*moms)[\s.:]*[€$£]?([\d\s.,]+)",
+        *_amount_patterns(r"(?:Belopp[ \t]*exkl\.?[ \t]*moms|Summa[ \t]*exkl\.?[ \t]*moms|Netto"
+                          r"|Exkl\.?[ \t]*moms|Totalt?[ \t]*\([ \t]*exkl\.?[ \t]*moms[ \t]*\))"),
         # English: "Subtotal €549.00" or "Total exclude tax €539.00"
-        r"(?:Subtotal|Total\s*exclu\w*\s*tax)[\s.:]*[€$£]?([\d\s.,]+)",
+        *_amount_patterns(r"(?:Subtotal|Total[ \t]*exclu\w*[ \t]*tax)"),
     ],
     # Values stay on the label's line ([ \t], never \s, which also matches a line break and
     # glued the next line's digits on); a label on one row with the value on the next is
     # handled by the next-line patterns below. Labels are whole words ('SUBG 5' is no BG).
     "ocr_number": [
-        OCR_LABEL + r"[ \t.:]*(\d[\d \t]*\d)",
+        OCR_LABEL + OCR_LABEL_SUFFIX + r"[ \t.:]*(\d[\d \t]*\d)",
     ],
     "bankgiro": [
         BANKGIRO_LABEL + r"[ \t.:]*" + BANKGIRO_VALUE,
@@ -454,7 +507,7 @@ FIELD_PATTERNS = {
 # org_number is extracted before these (see _extract_org_number) so an org.nr
 # on the bankgiro line is never taken for the bankgiro
 NEXTLINE_PATTERNS_ORDERED = [
-    ("invoice_number", [r"(?:Fakturanummer|Faktura\s*nr|Invoice\s*(?:no|number))"]),
+    ("invoice_number", [INVOICE_NUMBER_LABEL]),
     ("invoice_date", [r"(?:Fakturadatum|Invoice\s*date)"]),
     ("due_date", [r"(?:Förfallodatum|Förfallodag|Due\s*date)"]),
     ("bankgiro", [BANKGIRO_LABEL]),
@@ -487,6 +540,62 @@ def _nextline_number(field, label_col, line, exclude=()):
         if best is None or distance < best[0]:
             best = (distance, re.sub(r"\s+", "", m.group(1)))
     return best[1] if best else None
+
+
+# An invoice-number candidate on the line under its label: a token starting with a digit,
+# never a date or an amount
+_INVOICE_NUMBER_TOKEN = re.compile(r"(?<![\w/.,-])(\d[\w/-]*)(?![\w/-]|[.,]\d)")
+_DATE_TOKEN = re.compile(r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[./-]\d{1,2}[./-]\d{4}|\d{4}[./]\d{1,2}[./]\d{1,2}")
+
+
+def _nextline_invoice_number(label, label_line, line):
+    """The invoice number on `line`, under the `label` match on `label_line`, or None.
+
+    pdfplumber joins a table's header and its values with single spaces, so the columns of
+    the two lines do not line up: the token whose position in its line is closest to the
+    label's position in the header line wins ("Account ID Invoice No Invoice Date" over
+    "100200 2026-01-000123 2026-06-01" gives 2026-01-000123, not the account id under
+    "Account ID"). Dates and amounts are never taken.
+    """
+    where = label.start() / max(len(label_line.rstrip()), 1)
+    best = None
+    for m in _INVOICE_NUMBER_TOKEN.finditer(line):
+        token = m.group(1)
+        if len(token) < 3 or _DATE_TOKEN.fullmatch(token):
+            continue
+        distance = abs(m.start() / max(len(line.rstrip()), 1) - where)
+        if best is None or distance < best[0]:
+            best = (distance, token)
+    return best[1] if best else None
+
+
+def label_anchored(field, value, text):
+    """True when `value` is printed in `text` with a label of `field` (invoice_number,
+    ocr_number): on the label's line after it, or on the line under a line with the label.
+
+    Used to decide between the regex and the AI when they read different values (#39).
+    """
+    digits = re.sub(r"[\s-]", "", str(value or ""))
+    if not digits or not text:
+        return False
+    label = INVOICE_NUMBER_LABEL if field == "invoice_number" else OCR_LABEL + OCR_LABEL_SUFFIX
+    # the value as printed: OCR numbers may be grouped with spaces, invoice numbers are verbatim
+    printed = (r"[ \t]?".join(map(re.escape, digits)) if field == "ocr_number"
+               else re.escape(str(value).strip()))
+    token = r"(?<![\w/-])" + printed + r"(?![\w/-])"
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        for m in re.finditer(label, line, re.IGNORECASE):
+            after = line[m.end():]
+            if re.match(r"[ \t.:#]*\d", after):
+                # the label's value is on its own line: the next line is something else
+                if re.match(r"[ \t.:#]*" + printed + r"(?![\w/-])", after):
+                    return True
+                continue
+            following = next((ln for ln in lines[i + 1:i + 3] if ln.strip()), "")
+            if re.search(token, following):
+                return True
+    return False
 
 
 # ── Egna identiteter ─────────────────────────────────────────────────────────
@@ -1052,6 +1161,9 @@ def extract_fields(text, own_ids=None, own_names=None, config=None):
     if own_names is None:
         own_names = cfg["own_names"]
     result = {}
+    # How the invoice number and the OCR reference were found: "label" (after their label, on
+    # its line), "next_line" (under it) or "order" (an order number); _merge_fields weighs them
+    sources = {}
     lines = text.split("\n")
     own_keys = build_own_ids(own_ids)
     own_name_keys = build_own_names(own_names)
@@ -1075,21 +1187,48 @@ def extract_fields(text, own_ids=None, own_names=None, config=None):
                         pattern, text, re.IGNORECASE | re.MULTILINE)):
                     break
             continue
-        for pattern in patterns:
+        for index, pattern in enumerate(patterns):
+            if field in ("total_amount", "vat_amount", "subtotal"):
+                # Every amount with this label: one value is the printed amount; different
+                # values ("Totalt 648,00" for the goods and "Totalt 29,00" for a fee on one
+                # document) leave the field to the AI
+                values = []
+                for m in re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE):
+                    parsed = _parse_amount(m.group(1).strip())
+                    if parsed is not None and parsed not in values:
+                        values.append(parsed)
+                if len(values) > 1:
+                    result.setdefault("_ambiguous_amounts", {})[field] = values
+                    break
+                if values:
+                    result[field] = values[0]
+                    if pattern in SUMMA_TOTAL_PATTERNS:
+                        sources[field] = "summa"
+                    break
+                continue
             m = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
             if m:
                 value = m.group(1).strip()
-                if field in ("total_amount", "vat_amount", "subtotal"):
-                    parsed = _parse_amount(value)
-                    if parsed is not None:
-                        value = parsed
-                    else:
-                        continue  # Skip if amount can't be parsed
-                elif field in ("bankgiro", "plusgiro", "ocr_number"):
+                if field in ("bankgiro", "plusgiro", "ocr_number"):
                     value = re.sub(r"\s+", "", value)
                 if value:
                     result[field] = value
+                    if field == "invoice_number":
+                        sources["invoice_number"] = "label" if index == 0 else "order"
+                    elif field == "ocr_number":
+                        sources["ocr_number"] = "label"
                     break
+
+    # A "total" equal to the net while VAT is printed is the net, not the amount to pay; so is a
+    # "Summa" on which the printed VAT is a Swedish rate ("Summa 1 000,00 / Moms 250,00" without
+    # a labelled amount due).
+    total, net, vat = (result.get(k) for k in ("total_amount", "subtotal", "vat_amount"))
+    if total is not None and vat is not None and vat >= 1 and (
+            (net is not None and abs(total - net) < 0.005)
+            or (sources.get("total_amount") == "summa" and any(
+                abs(total * rate / 100 - vat) <= 0.02 + 0.005 * vat for rate in SWEDISH_VAT_RATES))):
+        result.pop("total_amount")
+        sources.pop("total_amount", None)
 
     # Leverantörens org.nr — aldrig köparens (det egna bolagets) nummer
     org, own_skipped = _extract_org_number(text, lines, own_keys)
@@ -1105,7 +1244,14 @@ def extract_fields(text, own_ids=None, own_names=None, config=None):
             continue  # Already found via same-line pattern
         for pattern in patterns:
             for i, line in enumerate(lines):
-                if not re.search(pattern, line, re.IGNORECASE):
+                label = re.search(pattern, line, re.IGNORECASE)
+                if not label:
+                    continue
+                if field in ("invoice_number", "ocr_number") and re.match(
+                        OCR_LABEL_SUFFIX + r"[ \t.:#]*[^\s\d]*\d", line[label.end():]):
+                    # the value follows the label on its own line ("OCR/Fakturanummer:
+                    # 1234567897", "Fakturanr SE6ABC12"): the next line holds something else,
+                    # e.g. the amount due or the buyer's address
                     continue
                 # Look at the next few non-empty lines
                 for j in range(i + 1, min(i + 4, len(lines))):
@@ -1113,8 +1259,12 @@ def extract_fields(text, own_ids=None, own_names=None, config=None):
                     if not next_line:
                         continue
                     if field == "invoice_number":
-                        m = re.match(r"(\d[\d/-]*)", next_line)
-                    elif field in ("invoice_date", "due_date"):
+                        value = _nextline_invoice_number(label, line, lines[j])
+                        if value:
+                            result[field] = value
+                            sources[field] = "next_line"
+                        break
+                    if field in ("invoice_date", "due_date"):
                         m = re.match(r"(" + "|".join(DATE_PATTERNS) + ")", next_line)
                     elif field in ("bankgiro", "plusgiro", "ocr_number"):
                         # Never an org.nr (6-4 digits) printed on the line, the buyer's or
@@ -1125,10 +1275,11 @@ def extract_fields(text, own_ids=None, own_names=None, config=None):
                             orgs |= {re.sub(r"\D", "", o) for o in re.findall(ORG_VALUE, lines[j])}
                         if result.get("org_number"):
                             orgs.add(re.sub(r"\D", "", result["org_number"]))
-                        label = re.search(pattern, line, re.IGNORECASE)
                         value = _nextline_number(field, label.start(), lines[j], orgs)
                         if value:
                             result[field] = value
+                            if field == "ocr_number":
+                                sources[field] = "next_line"
                         break
                     else:
                         m = None
@@ -1176,6 +1327,7 @@ def extract_fields(text, own_ids=None, own_names=None, config=None):
         m = re.search(r"Nummer\s+(\d{6,})", text)
         if m:
             result["invoice_number"] = m.group(1)
+            sources["invoice_number"] = "label"
     if "invoice_date" not in result:
         m = re.search(r"\bDatum\s+(\d{2}\.\d{2}\.\d{4})", text)
         if m:
@@ -1277,6 +1429,8 @@ def extract_fields(text, own_ids=None, own_names=None, config=None):
                         break
                 break
 
+    if sources:
+        result["_sources"] = sources
     return result
 
 
@@ -2506,6 +2660,42 @@ def document_vat(data):
     return None
 
 
+def document_header(data):
+    """The document's (total, net, VAT): each the printed (regex) amount when one was read,
+    else the AI's; None when unknown."""
+    printed = (data or {}).get("_printed") or {}
+    return tuple(_num(printed[k]) if printed.get(k) is not None else _num((data or {}).get(k))
+                 for k in ("total_amount", "subtotal", "vat_amount"))
+
+
+# How far amounts may differ and still count as the same (öre rounding)
+AMOUNT_TOLERANCE = 1.0
+
+
+def header_is_consistent(total, net, vat, tol=AMOUNT_TOLERANCE):
+    """True when the header adds up: net + VAT = total."""
+    return None not in (total, net, vat) and abs(net + vat - total) <= tol
+
+
+def lines_include_vat(line_amounts, total, net, vat, tol=AMOUNT_TOLERANCE):
+    """True when the lines carry the document's prices INCLUDING VAT (#39).
+
+    A receipt prints its prices with VAT ("Computer 12 000 kr, Frakt 345 kr, SUMMA 12 345 kr,
+    varav moms 2 469 kr"); booked as net with the VAT added on top the bill came to
+    15 431,25. Only when the header adds up (net + VAT = total, VAT charged — so the AI's
+    header cannot confirm itself) and the lines add up to the total, not to the net.
+    """
+    if not header_is_consistent(total, net, vat, tol) or vat < 1:
+        return False
+    lines_sum = sum(_num(a) or 0.0 for a in line_amounts)
+    return abs(lines_sum - total) <= tol and abs(lines_sum - net) > tol
+
+
+def amount_excluding_vat(amount, rate):
+    """`amount` including VAT at `rate` percent, without the VAT, rounded to öre."""
+    return round(float(amount) / (1 + (rate or 0) / 100.0), 2)
+
+
 def vat_was_charged(vat_total, net=None):
     """True when the document's VAT (document_vat) is real VAT, not öre rounding: at least
     1.00, or at least 1 % of the net."""
@@ -2958,8 +3148,13 @@ def _merge_fields(text, regex_fields, ai_fields, own_keys):
     notes = []
     own_skipped = list(regex_fields.get("_own_ids_skipped") or [])
     ambiguous = regex_fields.get("_ambiguous_dates") or {}
+    sources = regex_fields.get("_sources") or {}
+    for key, values in (regex_fields.get("_ambiguous_amounts") or {}).items():
+        notes.append(_("%(field)s: the document prints several different amounts with the same "
+                       "label (%(values)s) – none of them was taken as the printed one",
+                       field=key, values=", ".join(f"{v:.2f}" for v in values)))
     for key in sorted(all_keys):
-        if key in ("_own_ids_skipped", "_ambiguous_dates"):
+        if key in ("_own_ids_skipped", "_ambiguous_dates", "_sources", "_ambiguous_amounts"):
             continue
         ai_val = ai_fields.get(key)
         regex_val = regex_fields.get(key)
@@ -3014,6 +3209,21 @@ def _merge_fields(text, regex_fields, ai_fields, own_keys):
         if ai_has and regex_has and str(ai_val) != str(regex_val):
             conflicts.append(f"{key}: regex={regex_val} ai={ai_val}")
 
+        # The regex took an order number, or the AI's invoice number is printed next to an
+        # invoice-number label: the AI's wins (an account id read from the column next to the
+        # invoice number was booked as the invoice number, #39).
+        if key == "invoice_number" and regex_has and ai_has and str(ai_val) != str(regex_val) \
+                and (sources.get(key) == "order" or label_anchored(key, ai_val, text)):
+            final[key] = ai_val
+            if sources.get(key) == "order":
+                notes.append(_("invoice_number: the regex read the order number %(regex)s – "
+                               "used the AI's %(value)s", regex=regex_val, value=ai_val))
+            else:
+                notes.append(_("invoice_number: used the AI's %(value)s, printed with an "
+                               "invoice-number label, not %(regex)s", value=ai_val,
+                               regex=regex_val))
+            continue
+
         if key in REGEX_WINS and regex_has:
             final[key] = regex_val
         elif ai_has:
@@ -3033,15 +3243,40 @@ def _merge_fields(text, regex_fields, ai_fields, own_keys):
     # wins when it is valid, else the AI's when that one is, else the field stays empty.
     # A longer "bankgiro" is an account number — on an auto-debit document the LLM has
     # taken the buyer's clearing+account number (or a truncated one) for the bankgiro.
+    amounts = _document_amount_digits(regex_fields, ai_fields)
     for key in ("bankgiro", "plusgiro", "ocr_number"):
         candidates = [(src, val) for src, val in (("regex", regex_fields.get(key)),
                                                   ("AI", ai_fields.get(key))) if val]
+        if key == "ocr_number":
+            # An amount printed on the document is not a payment reference, however well it
+            # passes the check digit: "Belopp att betala: 1248 kr" under "OCR/Fakturanummer:
+            # <the reference>" was read as the reference "1248" (#39).
+            for src, val in list(candidates):
+                if re.sub(r"\D", "", str(val)) in amounts:
+                    candidates.remove((src, val))
+                    final.setdefault("_notes", []).append(_(
+                        "ocr_number '%(value)s' is an amount on the document, not a payment "
+                        "reference – not used", value=val))
         if not candidates:
+            final.pop(key, None)
             continue
         valid = [(src, val) for src, val in candidates if _valid_field_value(key, val, final)]
         rejected = [f"'{val}'" for src, val in candidates if (src, val) not in valid]
         if valid:
             src, val = valid[0]
+            if key == "ocr_number" and len({re.sub(r"[\s-]", "", str(v)) for _s, v in valid}) > 1:
+                # The regex and the AI read different valid references: the one printed with
+                # an OCR label wins; if both or neither are, the AI's (it read the whole
+                # document, the regex only one label).
+                anchored = [(s_, v) for s_, v in valid if label_anchored(key, v, text)]
+                src, val = anchored[0] if len(anchored) == 1 else next(
+                    (s_, v) for s_, v in valid if s_ == "AI")
+                if src == "AI":
+                    final.setdefault("_notes", []).append(_(
+                        "ocr_number: the regex read %(regex)s, the AI %(value)s – used the AI's "
+                        "(%(why)s)", regex=valid[0][1], value=val,
+                        why=(_("printed with an OCR label") if anchored
+                             else _("neither is printed with an OCR label"))))
             final[key] = val
             if rejected and src == "AI":
                 final.setdefault("_notes", []).append(_(
@@ -3078,9 +3313,30 @@ def _merge_fields(text, regex_fields, ai_fields, own_keys):
                if regex_fields.get(k) is not None}
     if printed:
         final["_printed"] = printed
+    # The amounts of the bill that are printed on the document: read by the regex, or the
+    # AI's value when it is printed as an amount in the text. The Odoo module keeps them on
+    # the bill and does not post a bill whose total differs from the printed total (#39).
+    on_document = {k: final[k] for k in ("total_amount", "subtotal", "vat_amount")
+                   if _num(final.get(k)) is not None
+                   and (k in printed or amount_in_text(final[k], text))}
+    if on_document:
+        final["_on_document"] = on_document
 
     final["raw_text"] = text[:2000]
     return final
+
+
+def _document_amount_digits(*sources):
+    """The amounts of the document (total, net, VAT; regex and AI) as digit strings, in
+    kronor and in öre: 1248.00 → {"1248", "124800"}; 1247.94 → {"1247", "1248", "124794"}."""
+    digits = set()
+    for source in sources:
+        for key in ("total_amount", "subtotal", "vat_amount"):
+            value = _num((source or {}).get(key))
+            if value is None or value <= 0:
+                continue
+            digits |= {str(int(value)), str(int(round(value))), str(int(round(value * 100)))}
+    return digits
 
 
 # ── CLI for testing ──────────────────────────────────────────────────────────

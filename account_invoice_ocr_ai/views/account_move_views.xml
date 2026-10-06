@@ -30,6 +30,13 @@
                        invisible="move_type not in ('in_invoice', 'in_receipt')"/>
                 <field name="ocr_auto_debit_phrase"
                        invisible="move_type not in ('in_invoice', 'in_receipt') or not ocr_auto_debit_phrase"/>
+                <field name="ocr_printed_currency_id" invisible="1"/>
+                <field name="ocr_printed_total"
+                       invisible="move_type not in ('in_invoice', 'in_refund') or not ocr_printed_currency_id"/>
+                <field name="ocr_amounts_checked"
+                       invisible="move_type not in ('in_invoice', 'in_refund') or not ocr_printed_currency_id"
+                       readonly="state != 'draft'"
+                       groups="account.group_account_user"/>
             </xpath>
         </field>
     </record>

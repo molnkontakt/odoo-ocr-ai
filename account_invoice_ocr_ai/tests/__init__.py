@@ -1,5 +1,6 @@
 from . import (
     test_enable_toggle,
+    test_ocr_amounts,
     test_ocr_bulk,
     test_ocr_companies,
     test_ocr_guards,
