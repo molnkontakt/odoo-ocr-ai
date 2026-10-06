@@ -108,3 +108,10 @@ def test_document_header_prefers_the_printed_amounts():
             "_printed": {"total_amount": 125.0}}
     assert inv.document_header(data) == (125.0, 80.0, 20.0)
     assert inv.document_header({}) == (None, None, None)
+
+
+def test_the_prompt_asks_for_every_part_of_a_document():
+    """An order specification and a separate fee receipt in one PDF: the model left the fee
+    out of the lines and the total (#39)."""
+    prompt = inv.build_extraction_prompt()
+    assert "SEVERAL PARTS" in prompt and "all parts together" in prompt

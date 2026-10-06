@@ -1834,6 +1834,9 @@ IMPORTANT:
   Best of all: subtract it from that service's own line instead of listing it
   separately.
 - subtotal + vat_amount must equal total_amount. If the invoice has fees, charges, or adjustments beyond the line items, include them as separate lines.
+- ONE PDF CAN HOLD SEVERAL PARTS of one purchase, each with its own "Totalt" (e.g. an order
+  specification followed by a separate receipt for a fee or a buyer protection): include the
+  lines of every part, and give total_amount, subtotal and vat_amount for all parts together.
 - Equipment, computers, accessories and supplies the company buys for ITS OWN USE are costs
   (the list's equipment, consumables or office-supplies account), not goods for resale.
 - Use the SAME account code for similar services on the same invoice. E.g. if all lines are cloud/SaaS services, use one account (6231 if it is in the list) for all of them including platform fees.
