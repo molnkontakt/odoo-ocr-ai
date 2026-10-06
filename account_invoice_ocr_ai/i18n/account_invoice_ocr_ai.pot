@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 19.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-06 07:04+0000\n"
-"PO-Revision-Date: 2026-10-06 07:04+0000\n"
+"POT-Creation-Date: 2026-10-06 11:53+0000\n"
+"PO-Revision-Date: 2026-10-06 11:53+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
@@ -483,6 +483,27 @@ msgstr ""
 #. odoo-python
 #: code:addons/account_invoice_ocr_ai/models/account_move.py:0
 msgid ""
+"No amount could be read after a label on the document, so the lines were "
+"compared with the AI's reading of the total, net and VAT – and they do not "
+"add up to it. Its total %s is printed on the document and is kept as the "
+"document's total for the posting check. Check the lines and the total "
+"against the PDF before you post the bill."
+msgstr ""
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"No amount could be read after a label on the document: the lines were "
+"checked against the AI's reading of the total, net and VAT. Its total "
+"%(total)s is printed on the document and is kept as the document's total for"
+" the posting check – compare the lines with the document."
+msgstr ""
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
 "No amounts printed on the document could be read, so the lines were compared"
 " with the AI's own reading of the total, net and VAT – and they do not add "
 "up to it. Check the lines and the total against the PDF before you post the "
@@ -495,7 +516,7 @@ msgstr ""
 msgid ""
 "No amounts printed on the document could be read: the lines were checked "
 "only against the AI's reading of the total, net and VAT – compare the total "
-"with the document."
+"with the document. The total is not checked when the bill is posted."
 msgstr ""
 
 #. module: account_invoice_ocr_ai
@@ -504,6 +525,15 @@ msgstr ""
 msgid ""
 "No lines were read: one line was made from the totals, on the default "
 "account – check its account."
+msgstr ""
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"No partner has %(kind)s %(number)s printed on the document, and it gives no "
+"other vendor name – choose the vendor by hand and add the number to it so "
+"that it is found next time."
 msgstr ""
 
 #. module: account_invoice_ocr_ai
@@ -820,6 +850,14 @@ msgstr ""
 #. module: account_invoice_ocr_ai
 #. odoo-python
 #: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"Reference: the document has no invoice number – used the %(label)s %(value)s"
+" printed on it."
+msgstr ""
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
 msgid "Regex/AI conflicts:"
 msgstr ""
 
@@ -959,6 +997,16 @@ msgstr ""
 msgid ""
 "The document is in %(document)s, the bill in %(bill)s: it already has lines,"
 " so its currency was not changed."
+msgstr ""
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"The document prints several different totals (%(values)s): it seems to hold "
+"several receipts or orders. None of them is the printed total, so the total "
+"is not checked when the bill is posted – check the lines against every part "
+"of the document by hand"
 msgstr ""
 
 #. module: account_invoice_ocr_ai
@@ -1359,14 +1407,6 @@ msgstr ""
 #. odoo-python
 #: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
 msgid ""
-"invoice_number: the regex read the order number %(regex)s – used the AI's "
-"%(value)s"
-msgstr ""
-
-#. module: account_invoice_ocr_ai
-#. odoo-python
-#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
-msgid ""
 "invoice_number: used the AI's %(value)s, printed with an invoice-number "
 "label, not %(regex)s"
 msgstr ""
@@ -1460,6 +1500,12 @@ msgstr ""
 msgid ""
 "ocr_number: the regex read %(regex)s, the AI %(value)s – used the AI's "
 "(%(why)s)"
+msgstr ""
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "order number"
 msgstr ""
 
 #. module: account_invoice_ocr_ai
@@ -1642,6 +1688,12 @@ msgstr ""
 #. module: account_invoice_ocr_ai
 #. odoo-python
 #: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "the VAT number"
+msgstr ""
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
 msgid "the VAT number %s"
 msgstr ""
 
@@ -1688,6 +1740,12 @@ msgstr ""
 #. module: account_invoice_ocr_ai
 #. odoo-python
 #: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "the org number"
+msgstr ""
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
 msgid "the org number %s"
 msgstr ""
 
@@ -1728,6 +1786,14 @@ msgstr ""
 #. odoo-python
 #: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
 msgid "vendor_name: marketplace VAT-declarer override → %(vendor)s"
+msgstr ""
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"vendor_name: the AI's %(ai)s is the company itself (the buyer) – used "
+"%(value)s, the name printed on the document"
 msgstr ""
 
 #. module: account_invoice_ocr_ai

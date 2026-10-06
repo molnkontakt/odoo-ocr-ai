@@ -84,8 +84,13 @@ def test_different_amounts_with_one_label_are_left_to_the_ai():
     # one part's total, even read by the AI, is not the document's printed total
     merged_part = inv._merge_fields(text, out, {"total_amount": 600.0}, set())
     assert "total_amount" not in merged_part.get("_on_document", {})
-    assert any("several different amounts" in n and "600.00, 30.00" in n
+    # several totals: several receipts or orders in one PDF — the lines must be checked by
+    # hand and the posting check has no total (the VAT note stays generic)
+    assert any("several different totals (600.00, 30.00)" in n
+               and "several receipts or orders" in n and "not checked when the bill is posted" in n
                for n in merged["_notes"])
+    assert any(n.startswith("vat_amount: the document prints several different amounts")
+               and "20.00, 6.00" in n for n in merged["_notes"])
     # the same amount twice (the invoice and its payment slip) is one printed amount
     assert f("Att betala 1 250,00\nInbetalning\nAtt betala 1 250,00\n")["total_amount"] == 1250.0
 

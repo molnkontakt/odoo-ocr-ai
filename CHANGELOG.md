@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- `account_invoice_ocr_ai` 19.0.1.16.1: what a second re-reading of the same bills left
+  (#39).
+  - **Suppliers abroad.** The supplier's VAT or company number is read under the labels used
+    abroad — "VAT-nr.", "VAT no", "VAT ID", "USt-IdNr.", "UID", "BTW", "TVA", "P.IVA", "NIP",
+    "CVR", "Y-tunnus", "Org.nr … MVA" … — with its country prefix (or the prefix the label
+    implies: CVR is DK, Y-tunnus FI, P.IVA IT, NIP PL), never the buyer's own number, which is
+    noted as skipped. A one-line footer that carries the number ("Example Shop - Street 1 -
+    8000 Aarhus - … - VAT-nr. DK…") gives the vendor's name. When the AI names the buyer as the
+    vendor (a Danish web shop's invoice prints the buyer at the top) the name printed on the
+    document is used instead: the vendor is found on the number, or created with the footer's
+    name, the number and its country, and its lines get the EU purchase tax again. With no
+    other name on the document the vendor stays empty and the note names the number, so that
+    it can be added to the right partner. A column header ("ADRESS KONTAKT
+    ORGANISATIONSNUMMER"), a field ("Tel: …") or a lone "AB" is no longer read as a vendor
+    name, and a bullet glued to a footer name is dropped.
+  - **Receipts without an invoice number.** The order, receipt or booking number printed with
+    its label ("Ordernummer", "Order no", "Kvittonummer", "Receipt no", "Bokningsnummer",
+    "Booking reference" …, on the label's line or under a column header) is the bill's
+    reference, with a note that says which number it is — never an amount, a date, the OCR
+    reference, an org number, the buyer's own number or a customer id. An invoice number,
+    the regex's or the AI's, always wins; an English "Order Number" is no longer taken as the
+    invoice number.
+  - **Notes.** When no amount was read after a label but the AI's total is printed on the
+    document, the fill note and the mismatch warning say that this total is kept for the
+    posting check (they said "no printed amounts could be read" next to a stored printed
+    total); without any total they say that the total is not checked when the bill is posted.
+    A document with several different totals is noted as several receipts or orders in one
+    PDF, whose lines must be checked by hand, with the posting check inactive — the check
+    still has no total for such a PDF (known limitation).
+
 - `account_invoice_ocr_ai` 19.0.1.16.0, `hr_expense_ocr_ai` 19.0.1.6.0: fixes from re-reading
   the bills and receipts a production module had filled and comparing them with the posted
   ones (#39). **Behaviour changes** — see the points marked so. `hr_expense_ocr_ai`

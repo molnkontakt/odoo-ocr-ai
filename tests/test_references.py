@@ -3,6 +3,9 @@ never the OCR reference, a value under a header is taken from its own column, an
 regex and the AI disagree the value printed with the right label wins. All numbers are
 invented; the references have a valid mod-10 check digit, and so has the amount 1 248."""
 
+import importlib.util
+from pathlib import Path
+
 import invoice_ocr as inv
 
 REFERENCE = "900000000019"
@@ -99,10 +102,11 @@ def test_the_ais_labelled_invoice_number_wins():
     out = _merge(regex, {"invoice_number": "2026-01-000123"}, HEADER_TEXT)
     assert out["invoice_number"] == "2026-01-000123"
     assert any("used the AI's 2026-01-000123" in n for n in out["_notes"])
-    # an order number never beats the AI's invoice number
-    regex = {"invoice_number": "EU50246", "_sources": {"invoice_number": "order"}}
+    # an order number is never the invoice number, and never beats the AI's invoice number
+    regex = inv.extract_fields("Order Number: EU50246\n")
+    assert "invoice_number" not in regex and regex["reference_number"] == "EU50246"
     out = _merge(regex, {"invoice_number": "4711"}, "Order Number: EU50246\n")
-    assert out["invoice_number"] == "4711"
+    assert out["invoice_number"] == "4711" and "reference_number" not in out
     # the regex's labelled number stays when the AI's is not printed with a label
     regex = {"invoice_number": "4711", "_sources": {"invoice_number": "label"}}
     out = _merge(regex, {"invoice_number": "100200"}, "Fakturanummer: 4711\nKund 100200\n")
@@ -115,3 +119,81 @@ def test_label_anchored():
     assert not inv.label_anchored("ocr_number", "1248", TELECOM_TEXT)
     assert inv.label_anchored("ocr_number", REFERENCE, "OCR 9000 0000 0019\n")
     assert not inv.label_anchored("invoice_number", "55501234", TELECOM_TEXT)
+
+
+# -- the reference of a receipt without an invoice number (#39) --------------------------
+
+_FIXTURES = (Path(__file__).resolve().parent.parent
+             / "account_invoice_ocr_ai" / "tests" / "ocr_fixtures.py")
+_spec = importlib.util.spec_from_file_location("ocr_fixtures", _FIXTURES)
+fx = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(fx)
+SHOP_RECEIPT = fx.SHOP_RECEIPT_TEXT
+TRAIN_TICKET = fx.TRAIN_TICKET_TEXT
+STORE_RECEIPT = """Kvittonummer 7100ABCD0YQ-1
+Beställningsdatum: 2026-07-27
+Example charger 499,00 kr
+Totalt (exkl. moms)399,20 kr
+Varav moms 99,80 kr
+Example Power AB • Org nr: 999999-0022 • Tel: 08-123 456
+"""
+
+
+def test_receipt_reference_from_its_label():
+    out = inv.extract_fields(SHOP_RECEIPT)
+    assert "invoice_number" not in out, "an empty FAKTURANUMMER label gives no invoice number"
+    assert (out["reference_number"], out["reference_label"]) == ("12345678", "Ordernummer")
+    assert out["_sources"]["reference_number"] == "order"
+    assert out["org_number"] == "999999-0022"
+    out = inv.extract_fields(TRAIN_TICKET)
+    assert (out["reference_number"], out["reference_label"]) == ("WK000XYZ", "Bokningsnummer")
+    out = inv.extract_fields(STORE_RECEIPT)
+    assert (out["reference_number"], out["reference_label"]) == ("7100ABCD0YQ-1", "Kvittonummer")
+    assert out["vendor_name"] == "Example Power AB"
+    # English labels, and a label with a colon
+    assert inv.extract_fields("Order no.: EU50246\n")["reference_number"] == "EU50246"
+    assert inv.extract_fields("Booking reference: ABC1234\n")["reference_label"] == "Booking reference"
+    assert inv.extract_fields("Receipt #: 4711-1\n")["reference_number"] == "4711-1"
+
+
+def test_reference_only_without_an_invoice_number():
+    regex = inv.extract_fields(SHOP_RECEIPT)
+    out = _merge(regex, {"vendor_name": "Example Hardware AB", "total_amount": 10490.0}, SHOP_RECEIPT)
+    assert (out["reference_number"], out["reference_label"]) == ("12345678", "Ordernummer")
+    assert "invoice_number" not in out
+    # the AI read an invoice number: it is the reference, the order number is not kept
+    out = _merge(regex, {"invoice_number": "F-2026-0001"}, SHOP_RECEIPT)
+    assert out["invoice_number"] == "F-2026-0001" and "reference_number" not in out
+    # the regex read one: the same
+    text = "Fakturanummer 1033\nOrdernummer 12345678\n"
+    out = _merge(inv.extract_fields(text), {}, text)
+    assert out["invoice_number"] == "1033" and "reference_number" not in out
+
+
+def test_reference_is_never_an_amount_date_or_other_number():
+    # an amount printed on the document, however it is labelled
+    text = "Kvittonummer 1248\nTotalt 1 248,00 kr\n"
+    out = _merge(inv.extract_fields(text), {}, text)
+    assert "reference_number" not in out
+    out = _merge({"reference_number": "12345", "reference_label": "Ordernummer"},
+                 {"total_amount": 12345.0})
+    assert "reference_number" not in out
+    # a date, the OCR reference, the org number, the buyer's own number
+    assert "reference_number" not in inv.extract_fields("Ordernummer 2026-03-02\n")
+    assert "reference_number" not in inv.extract_fields("Ordernummer: 13.04.2026\n")
+    out = _merge({"reference_number": REFERENCE, "reference_label": "Ordernummer",
+                  "ocr_number": REFERENCE}, {})
+    assert "reference_number" not in out
+    out = _merge({"reference_number": "9999990022", "org_number": "999999-0022"}, {})
+    assert "reference_number" not in out
+    out = inv._merge_fields("x", {"reference_number": "999999-0006"}, {},
+                            inv.build_own_ids(["999999-0006"]))
+    assert "reference_number" not in out
+    # a customer number next to the order number is not the reference
+    text = "Kundnummer 55501234 Ordernummer 777000111\n"
+    assert inv.extract_fields(text)["reference_number"] == "777000111"
+    text = "Kundnummer Ordernummer Datum\n55501234 777000111 2026-03-01\n"
+    assert inv.extract_fields(text)["reference_number"] == "777000111"
+    # words under a header, or no digit at all, are no reference
+    assert "reference_number" not in inv.extract_fields("Ordernummer se följesedeln\n")
+    assert "reference_number" not in inv.extract_fields("BOKNINGSNUMMER\nSe biljetten\n")

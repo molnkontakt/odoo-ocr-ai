@@ -3,6 +3,7 @@ from . import (
     test_ocr_amounts,
     test_ocr_bulk,
     test_ocr_companies,
+    test_ocr_foreign_vendor,
     test_ocr_guards,
     test_ocr_lines,
     test_ocr_lock_dates,

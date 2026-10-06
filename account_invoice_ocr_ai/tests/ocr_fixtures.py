@@ -88,3 +88,60 @@ Att betala: 1 250,00
 Bankgiro: 123-4566
 Betala enkelt med autogiro – anslut dig till autogiro på vår webb!
 """
+
+# A Danish web shop's invoice to the buyer, as pdfplumber reads it (#39): the buyer's name
+# and VAT number at the top, the shop only in the small print and in the one-line footer,
+# under the label its country uses. The CVR 12345674 is invented, with a correct check digit.
+FOREIGN_VENDOR_NAME = "Example Shop"
+FOREIGN_VENDOR_VAT = "DK12345674"
+FOREIGN_INVOICE_TEXT = """Order 12345678
+Datum 23-04-2026
+Faktura 90001234
+Sida 1
+Kundnr 0700000001
+Momsnr SE999999000601
+Acme Receiver AB
+Exempelgatan 2 Betalning Kort
+111 22 Exempelstad Säljare online
+SVERIGE Nettovikt 1,2 kg
+Nummer Namn Antal Pris Belopp
+3000001 Example Router 5G 1 2 500,80 2 500,80
+Momsfritt - Free of VAT
+Momssats 0%
+Momsfritt belopp 2 500,80
+Totalt belopp (SEK) 2 500,80
+Intra-Community-Delivery. Reverse charge in accordance with Council Directive 2006/112/EC
+All garanti som tillhandahålls av Example Shop a/s upphör att gälla om serienumret tagits bort.
+Example Shop - Example Street 17 - 8000 Aarhus - Tlf. 12 34 56 78 - www.example.dk - b2b@example.dk - VAT-nr. DK12345674"""
+
+# A shop receipt without an invoice number: the order number under its column header, an
+# empty "FAKTURANUMMER" label, the total as "SUMMA" (#39)
+SHOP_RECEIPT_TEXT = """ORDERNUMMER MOTTAGARE
+12345678 Example Person
+DATUM Exempelgatan 2
+2026-04-13
+111 22 Exempelstad
+BETALSÄTT
+Example Pay
+FAKTURANUMMER
+ARTIKELNUMMER KATEGORI PRODUKT ANTAL Á-PRIS
+Example tablet 13"
+396420 EXAMPLE 1 10490 kr
+Detta kvitto gäller som garantibevis SUMMA 10490 kr
+Varav moms 2098 kr
+ADRESS KONTAKT ORGANISATIONSNUMMER
+Example Hardware Tel: 08-123 456 00 999999-0022
+AB support@example.se Godkänd för F-skatt
+"""
+# A train ticket: a booking number, the total printed as "Total" (no label the regex reads)
+TRAIN_TICKET_TEXT = """Kvitto
+Organisationsnummer: 999999-0022
+Datum 2026-03-02 14:04:08
+Bokningsnummer WK000XYZ
+Din resa
+Vuxen 95,00
+Total 95,00 SEK
+Moms
+Belopp Netto Brutto
+6% 5,38 89,62 95,00
+"""

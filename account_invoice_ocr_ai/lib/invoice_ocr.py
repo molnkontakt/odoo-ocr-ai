@@ -384,6 +384,25 @@ PLUSGIRO_VALUE = r"(\d(?:[ \t]?\d){0,6}[ \t]?-?[ \t]?\d)(?![\d-])"
 # values are never taken for the invoice number (an account id under "Account ID" was, #39).
 INVOICE_NUMBER_LABEL = (r"(?:Fakturanummer|Fakturanr|Faktura[ \t]*nr|Faktura[ \t]*#|Faktnr"
                         r"|Fakt\.?[ \t]*nr|Invoice[ \t]*(?:no\b|number|nr\b|#)|Rechnungs(?:nummer|nr))")
+# The labels of an order, receipt or booking number: the reference of a receipt that has no
+# invoice number (#39: a shop receipt's "ORDERNUMMER", a ticket's "Bokningsnummer", a
+# store's "Kvittonummer" were the reference of the posted bills). Never an invoice number.
+_NOT_A_LETTER = r"(?![A-Za-zÅÄÖåäö])"
+REFERENCE_LABELS = (
+    ("order", r"(?:Ordernummer|Ordernr|Order[ \t]*(?:nr|no|number|#|id|reference|ref)"
+              r"|Beställningsnummer|Beställningsnr|Bestellnummer|Purchase[ \t]*order"
+              r"|PO[ \t]*(?:no|number|#))" + _NOT_A_LETTER + r"\.?"),
+    ("receipt", r"(?:Kvittonummer|Kvittonr|Kvitto[ \t]*(?:nr|nummer|#|id)"
+                r"|Receipt[ \t]*(?:nr|no|number|#|id)|Belegnummer|Belegnr|Bon[ \t]*nr)"
+                + _NOT_A_LETTER + r"\.?"),
+    ("booking", r"(?:Bokningsnummer|Bokningsnr|Bokning[ \t]*(?:nr|nummer|#|id)|Bokningsreferens"
+                r"|Boknings-?id|Booking[ \t]*(?:nr|no|number|#|id|reference|ref)"
+                r"|Reservation[ \t]*(?:nr|no|number|#|id)|Buchungsnummer)" + _NOT_A_LETTER + r"\.?"),
+)
+# The value after such a label on its line: a token with a digit in it ("WK344VXT",
+# "7146XVVY6YQ-1", "23038881"); the column form (label on one line, value under it) is read
+# by _nextline_invoice_number
+_REFERENCE_VALUE = r"[ \t.:#]*(?P<value>[A-Za-z0-9][A-Za-z0-9/-]{2,})(?![A-Za-z0-9/-])"
 
 # ── Amounts after a label ────────────────────────────────────────────────────
 # The amount is on the label's line: a value is never taken from another line, where it is
@@ -428,9 +447,9 @@ FIELD_PATTERNS = {
         # Same-line: "Fakturanummer: 1033", "Invoice no.: 084000802912" — on the label's line
         # only; a value under its label is read by the next-line logic, column by column
         INVOICE_NUMBER_LABEL + r"[ \t.:#]*(\d[\d/-]*)",
-        # English: "Order Number: EU50246" or "Invoice #EU50246" (an order number is the
-        # reference on some receipts; the AI's invoice number wins over it, see _merge_fields)
-        r"(?:Order[ \t]*(?:Number|No|#)|Invoice[ \t]*#)[ \t.:]*(\S+)",
+        # English: "Invoice #EU50246" (an order number is never the invoice number: on a
+        # receipt without one it is the reference, see REFERENCE_LABELS and _merge_fields)
+        r"Invoice[ \t]*#[ \t.:]*(\S+)",
     ],
     "invoice_date": [
         r"(?:Fakturadatum|Invoice\s*date)[\s.:]*(" + "|".join(DATE_PATTERNS) + ")",
@@ -615,6 +634,95 @@ ORG_VALUE = r"(\d{6}[\s-]?\d{4})"
 # Svenskt momsreg.nr: "Momsreg.nr.: SE556000000001", "Momsregistreringsnummer SE…"
 SE_VAT_LABEL = r"(?:Momsreg(?:istrerings)?\.?\s*(?:nr|nummer)|VAT\s*(?:no|number|nr|id))"
 
+# ── The supplier's VAT or company number under the labels used abroad ────────
+# A supplier abroad prints its number in the footer under its own country's label: "VAT-nr.
+# DK12345674", "USt-IdNr. DE123456789", "BTW-nr. NL123456789B01", "CVR-nr. 12345678",
+# "Y-tunnus 1234567-8", "P.IVA 12345678901", "NIP 1234567890", "Org.nr 987 654 321 MVA" (#39:
+# a Danish supplier's "VAT-nr." was not read, so nothing resolved the vendor). Only a value
+# right after such a label counts, and never the buyer's own number.
+VAT_LABEL = (
+    r"(?:VAT[ \t.-]*(?:Reg(?:\.|istration)?[ \t.-]*)?(?:No|Nr|Number|ID)\b\.?"
+    r"|Moms(?:reg(?:istrerings)?)?[ \t.-]*(?:nr|nummer)\b\.?"
+    r"|CVR(?:[ \t.-]*(?:nr|no|nummer))?\b\.?"
+    r"|USt[ \t.-]*Id(?:[ \t.-]*Nr)?\b\.?"
+    r"|UID(?:[ \t.-]*(?:Nr|Nummer))?\b\.?"
+    r"|MVA[ \t.-]*(?:nr|nummer)\b\.?"
+    r"|Y-tunnus|ALV[ \t.-]*(?:nro|tunnus|numero)\b\.?"
+    r"|BTW(?:[ \t.-]*(?:nr|nummer|id|identificatienummer))?\b\.?"
+    r"|(?:N[°o]\.?[ \t]*|Num[ée]ro[ \t]*(?:de[ \t]*)?)?TVA(?:[ \t.-]*intracom\w*)?\b\.?"
+    r"|P\.?[ \t]*IVA\b\.?|Partita[ \t]*IVA\b"
+    r"|NIF\b\.?|CIF\b\.?|NIP\b\.?"
+    r"|Tax[ \t.-]*(?:ID|Number|No)\b\.?"
+    r"|Company[ \t.-]*(?:Reg(?:\.|istration)?[ \t.-]*)?(?:No|Nr|Number)\b\.?"
+    r"|Org(?:\.|anisasjons|anisations)?[ \t.-]*(?:nr|nummer)\b\.?)"
+)
+# The number as printed: a country prefix, an optional letter group (ATU…, ESB…, FRXX…,
+# CHE-…), the digits in groups, and an optional suffix (NL …B01, NO …MVA, CY …L, CHE … MWST).
+# Case-sensitive: the suffix must end the token, so "SE556000000001 Bankgiro" keeps no "B".
+_VAT_BODY = (r"(?:[A-Z]{1,3}[ .-]?)?\d(?:[ .-]?\d){5,12}"
+             r"(?:[ \t.-]?(?:MVA|MWST|[A-Z]{1,2}\d{0,2}))?(?![A-Za-z0-9])")
+VAT_WITH_PREFIX_RE = re.compile(
+    r"(?i:" + VAT_LABEL + r")[ \t.:]*(?P<value>(?P<prefix>[A-Z]{2})[ \t]?" + _VAT_BODY + ")",
+    re.MULTILINE)
+# The prefixes a VAT number may carry: the EU countries (EL for Greece, XI for Northern
+# Ireland), Norway, Switzerland, Iceland and the United Kingdom.
+VAT_PREFIXES = frozenset({
+    "AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "ES", "FI", "FR", "GR", "HR", "HU", "IE",
+    "IT", "LT", "LU", "LV", "MT", "NL", "PL", "PT", "RO", "SE", "SI", "SK", "EL", "XI", "GB",
+    "NO", "CH", "IS",
+})
+# A label of one country whose number is printed without the prefix: the prefix and the
+# number of digits it has ("CVR-nr. 12345678" is DK12345678, "Y-tunnus 1234567-8" FI12345678).
+VAT_LABEL_COUNTRY = (
+    (r"CVR(?:[ \t.-]*(?:nr|no|nummer))?\b\.?", "DK", 8),
+    (r"Y-tunnus|ALV[ \t.-]*(?:nro|tunnus|numero)\b\.?", "FI", 8),
+    (r"P\.?[ \t]*IVA\b\.?|Partita[ \t]*IVA\b", "IT", 11),
+    (r"NIP\b\.?", "PL", 10),
+    (r"USt[ \t.-]*Id(?:[ \t.-]*Nr)?\b\.?", "DE", 9),
+)
+_BARE_NUMBER = r"[ \t.:]*(?P<value>\d(?:[ .-]?\d){6,12})(?![A-Za-z0-9])"
+# Norway: "Org.nr 987 654 321 MVA", "Foretaksregisteret NO 987 654 321 MVA"
+NO_MVA_RE = re.compile(r"(?<![A-Za-z0-9])(?:NO[ \t]?)?(\d{3}[ .]?\d{3}[ .]?\d{3})[ \t]*MVA\b")
+
+
+def vat_number_text(value):
+    """A VAT number as it is stored: upper case, without spaces, dots and dashes."""
+    return re.sub(r"[^0-9A-Za-z]", "", str(value or "")).upper()
+
+
+def supplier_vat_candidates(text):
+    """The VAT and company numbers printed after a label in `text`, in document order:
+    [(line index, number)], the number normalized (vat_number_text) and with its country
+    prefix — printed, or the one of a country-specific label (VAT_LABEL_COUNTRY). A value
+    whose prefix is no VAT prefix, or with too few digits, is left out."""
+    lines = (text or "").split("\n")
+    starts, pos = [], 0
+    for line in lines:
+        starts.append(pos)
+        pos += len(line) + 1
+
+    def line_of(offset):
+        return max(i for i, start in enumerate(starts) if start <= offset)
+
+    found = []
+    for m in VAT_WITH_PREFIX_RE.finditer(text or ""):
+        value = vat_number_text(m.group("value"))
+        if value[:2] in VAT_PREFIXES and sum(c.isdigit() for c in value[2:]) >= 7:
+            found.append((m.start("value"), line_of(m.start("value")), value))
+    for label, prefix, digits in VAT_LABEL_COUNTRY:
+        for m in re.finditer(r"(?i:" + label + r")" + _BARE_NUMBER, text or ""):
+            number = re.sub(r"\D", "", m.group("value"))
+            if len(number) == digits:
+                found.append((m.start("value"), line_of(m.start("value")), prefix + number))
+    for m in NO_MVA_RE.finditer(text or ""):
+        found.append((m.start(1), line_of(m.start(1)), "NO" + re.sub(r"\D", "", m.group(1))))
+    found.sort()
+    result = []
+    for _offset, line, value in found:
+        if (line, value) not in result:
+            result.append((line, value))
+    return result
+
 # Words in a company name that say nothing about which company it is: legal forms,
 # countries, generic business words. Shared by the bank-line matching in the Odoo model
 # and the receipt module's merchant check.
@@ -782,6 +890,55 @@ def build_own_names(names):
 def _mentions_own_name(text, own_names):
     compact = re.sub(r"\s+", "", str(text or "").lower())
     return any(k in compact for k in own_names)
+
+
+# Words of a footer or a column header that name a field, not a company: "ADRESS KONTAKT
+# ORGANISATIONSNUMMER" over a shop's address block was read as the vendor's name (#39).
+_LABEL_WORDS = frozenset({
+    "adress", "address", "besöksadress", "postadress", "kontakt", "contact", "telefon", "tel",
+    "tlf", "tfn", "phone", "fax", "e-post", "epost", "email", "e-mail", "mail", "webb", "web",
+    "hemsida", "website", "www", "bankgiro", "plusgiro", "bg", "pg", "iban", "bic", "swift",
+    "kundnummer", "kundnr", "fakturanummer", "fakturadatum", "datum", "date", "momsreg",
+    "momsregnr", "momsnr", "vat", "org", "orgnr", "säte", "styrelsens", "godkänd", "skatt",
+    "innehar", "page", "sida", "faktura", "invoice", "kvitto", "receipt", "order", "post",
+})
+# What separates the parts of a one-line footer: "Name - Street 1 - 8000 Town - VAT-nr. …",
+# "Name • Org nr: … • Tel …", "Name | www.example.com"
+_FOOTER_SEPARATOR = re.compile(r"\s+[-–—•·∙|]\s+|\s*[|•·∙]\s*|,\s+")
+
+
+def clean_vendor_name(name):
+    """A vendor name read from the document without the separators and labels glued to it
+    ("Example Power AB •", "Example AB,")."""
+    return re.sub(r"^[\s•·∙|,;:–—-]+|[\s•·∙|,;:–—-]+$", "", str(name or ""))
+
+
+def looks_like_company_name(name, own_names=frozenset()):
+    """True when `name` can be a company's name: letters in it, not a number, URL, e-mail
+    address or field label ("ADRESS KONTAKT"), and not the buyer's own name."""
+    name = clean_vendor_name(name)
+    if len(name) < 2 or len(name) > 80:
+        return False
+    if re.match(r"\d|https?://|www\.", name, re.IGNORECASE) or "@" in name:
+        return False
+    if re.search(r"\w\s*:\s*\S", name):
+        return False  # "Tel: 08-123 456", "Kundnr: 123" are fields, not a name
+    if _mentions_own_name(name, own_names):
+        return False
+    # a distinctive word that is no field label: "AB", "Sverige AB" or "ADRESS KONTAKT" is none
+    return any(token not in _LABEL_WORDS for token in name_tokens(name) if not token.isdigit())
+
+
+def name_before_label(line, label_start, own_names=frozenset()):
+    """The company name a footer line starts with, before the label at `label_start`
+    ("Example Shop - Example Street 1 - 8000 Aarhus - Tel. 12 34 56 78 - VAT-nr. DK…" gives
+    "Example Shop"), or None when the line starts with something else."""
+    head = line[:label_start]
+    first = _FOOTER_SEPARATOR.split(head.strip(), maxsplit=1)[0] if head.strip() else ""
+    first = clean_vendor_name(first)
+    if not first or re.search(r"\w\s*:\s*\S", first):
+        return None  # "Kundnr: 123" is a field, not a name
+    return first if looks_like_company_name(first, own_names) else None
 
 
 def _extract_org_number(text, lines, own_keys):
@@ -1232,7 +1389,7 @@ def extract_fields(text, own_ids=None, own_names=None, config=None):
                         pattern, text, re.IGNORECASE | re.MULTILINE)):
                     break
             continue
-        for index, pattern in enumerate(patterns):
+        for pattern in patterns:
             if field in ("total_amount", "vat_amount", "subtotal"):
                 # Every amount with this label: one value is the printed amount; different
                 # values ("Totalt 648,00" for the goods and "Totalt 29,00" for a fee on one
@@ -1259,7 +1416,7 @@ def extract_fields(text, own_ids=None, own_names=None, config=None):
                 if value:
                     result[field] = value
                     if field == "invoice_number":
-                        sources["invoice_number"] = "label" if index == 0 else "order"
+                        sources["invoice_number"] = "label"
                     elif field == "ocr_number":
                         sources["ocr_number"] = "label"
                     break
@@ -1339,6 +1496,35 @@ def extract_fields(text, own_ids=None, own_names=None, config=None):
             if field in result:
                 break
 
+    # An order, receipt or booking number (REFERENCE_LABELS): the reference of a receipt that
+    # has no invoice number (_merge_fields decides). On the label's line, else under the
+    # label from its own column ("ORDERNUMMER MOTTAGARE" over "23038881 Example Person");
+    # never a date. Amounts and the document's other numbers are weeded out in the merge.
+    for kind, pattern in REFERENCE_LABELS:
+        if "reference_number" in result:
+            break
+        for i, line in enumerate(lines):
+            label = re.search(pattern, line, re.IGNORECASE)
+            if not label:
+                continue
+            same_line = re.match(_REFERENCE_VALUE, line[label.end():])
+            if same_line and re.search(r"\d", same_line.group("value")):
+                value = same_line.group("value")
+            else:
+                # the label ends its line, or heads a column ("ORDERNUMMER MOTTAGARE"): the
+                # value is on the line below
+                below = next((lines[j] for j in range(i + 1, min(i + 3, len(lines)))
+                              if lines[j].strip()), "")
+                value = _nextline_invoice_number(label, line, below) if below else None
+            if value and re.search(r"\d", value) and not _DATE_TOKEN.fullmatch(value):
+                printed = label.group(0).rstrip(" .:#")
+                result["reference_number"] = value
+                # as printed; a header in capitals ("ORDERNUMMER") as a word, not "PO"
+                result["reference_label"] = (printed.capitalize()
+                                             if printed.isupper() and len(printed) > 3 else printed)
+                sources["reference_number"] = kind
+                break
+
     # Loopia format: "Netto: Moms % Moms: SEK att betala" header, then "588,00 25.00 147,00 735,00"
     if "subtotal" not in result or "total_amount" not in result:
         for i, line in enumerate(lines):
@@ -1403,37 +1589,34 @@ def extract_fields(text, own_ids=None, own_names=None, config=None):
             if parsed:
                 result["vat_amount"] = parsed
 
-    # Pick supplier VAT from all "VAT Reg. No.: <CC>NNNN" matches.
-    # Hetzner & similar foreign invoices print the SUPPLIER VAT in the footer
-    # and the CUSTOMER (the receiving company's SE...) VAT in the header. Prefer
-    # non-own, non-SE candidates, and prefer the LAST occurrence (footer).
-    vat_candidates = re.findall(r"VAT\s*Reg\.?\s*No\.?[\s:]*([A-Z]{2}\d{6,12})",
-                                text, re.IGNORECASE)
+    # The supplier's VAT or company number under a label (supplier_vat_candidates): "VAT Reg.
+    # No.", and the labels used abroad — "VAT-nr.", "USt-IdNr.", "CVR", "BTW", "Y-tunnus" …
+    # Foreign invoices often print the SUPPLIER VAT in the footer and the CUSTOMER
+    # (the receiving company's SE...) VAT in the header. Prefer non-own, non-SE candidates,
+    # and prefer the LAST occurrence (footer).
+    vat_candidates = supplier_vat_candidates(text)
+    vat_line = None  # the line of the supplier's number: its footer may start with the name
     if vat_candidates:
         # Prefer non-own, non-SE; fall back to last occurrence. is_own_id compares
         # normalized keys (spaces/dashes stripped, upper; SE…01 and the bare org.nr
         # count as the same number) — company.vat is often stored with spaces and
         # company_registry as NNNNNN-NNNN.
-        non_own = [v for v in vat_candidates if not is_own_id(v, own_keys)]
-        non_se = [v for v in non_own if not v.upper().startswith("SE")]
+        non_own = [(line, v) for line, v in vat_candidates if not is_own_id(v, own_keys)]
+        non_se = [(line, v) for line, v in non_own if not v.startswith("SE")]
         if non_se:
-            result["org_number"] = non_se[-1]
+            vat_line, result["org_number"] = non_se[-1]
         elif non_own and "org_number" not in result:
             # Only Swedish candidates left and nothing else found. Our own numbers
             # are already filtered out (own_ids), so the remaining one is the
             # supplier's. When the regex extraction already found a number (e.g.
             # "Organisationsnummer") keep it rather than guess between parties.
-            result["org_number"] = non_own[-1]
+            vat_line, result["org_number"] = non_own[-1]
         # else: only own VAT found — leave any prior org_number value alone
-
-    # Inget org.nr alls: svenskt momsreg.nr ("Momsreg.nr.: SE556000000001")
-    if "org_number" not in result:
-        for m in re.finditer(SE_VAT_LABEL + r"\.?[\s.:]*([A-Z]{2}\s?\d[\d\s]{6,13}\d)",
-                             text, re.IGNORECASE):
-            v = re.sub(r"\s+", "", m.group(1)).upper()
-            if not is_own_id(v, own_keys):
-                result["org_number"] = v
-                break
+        for _line, v in vat_candidates:
+            if is_own_id(v, own_keys) and v not in result.setdefault("_own_ids_skipped", []):
+                result["_own_ids_skipped"].append(v)
+        if not result.get("_own_ids_skipped"):
+            result.pop("_own_ids_skipped", None)
 
     # Extract supplier/vendor name from the PDF
     # Look for the first company-like name (ending in AB, AS, GmbH, Ltd, etc.)
@@ -1442,20 +1625,34 @@ def extract_fields(text, own_ids=None, own_names=None, config=None):
         for line in lines[:15]:
             stripped = line.strip()
             if re.search(r"\b(?:AB|AS|GmbH|Ltd|Inc|LLC|Oy|A/S)\b", stripped) and not _mentions_own_name(stripped, own_name_keys):
-                # Take up to and including the company suffix
+                # Take up to and including the company suffix — a line that starts with the
+                # suffix alone ("AB support@…", the wrapped end of a name) is no name
                 m = re.match(r"(.+?\b(?:AB|AS|GmbH|Ltd|Inc|LLC|Oy|A/S)\b)", stripped)
-                result["vendor_name"] = m.group(1).strip() if m else stripped.split("  ")[0].strip()
-                break
+                name = m.group(1).strip() if m else stripped.split("  ")[0].strip()
+                if looks_like_company_name(name, own_name_keys):
+                    result["vendor_name"] = name
+                    break
+
+    if "vendor_name" not in result and vat_line is not None:
+        # The footer line with the supplier's VAT number starts with its name: "Example Shop -
+        # Example Street 1 - 8000 Aarhus - Tel. … - VAT-nr. DK…" (#39: a Danish supplier
+        # whose name the AI replaced with the buyer's)
+        label = re.search(r"(?i:" + VAT_LABEL + r")", lines[vat_line])
+        name = name_before_label(lines[vat_line], label.start(), own_name_keys) if label else None
+        if name:
+            result["vendor_name"] = name
+            sources["vendor_name"] = "vat_label"
 
     if "vendor_name" not in result:
         # Swedish: "Company AB  Organisationsnummer  Bankgiro"
         for line in lines:
             m = re.match(r"^(.+?)\s+" + ORG_LABEL + r"[\s.:]*(\d{6}[\s-]?\d{4})?", line, re.IGNORECASE)
             if m:
-                name = m.group(1).strip().rstrip(",")
+                name = clean_vendor_name(m.group(1))
                 if m.group(2) and is_own_id(m.group(2), own_keys):
                     continue  # köparens block ("Sweden ORG.NR: <eget nummer>")
-                if name and len(name) > 1 and not _mentions_own_name(name, own_name_keys):
+                # not a column header ("ADRESS KONTAKT ORGANISATIONSNUMMER") or the buyer
+                if name and len(name) > 1 and looks_like_company_name(name, own_name_keys):
                     result["vendor_name"] = name
                     break
 
@@ -2583,8 +2780,9 @@ _FOREIGN_PURCHASE_RANGES = ((4510, 4529), (4530, 4539), (4540, 4549))
 
 
 def country_from_vat(vat):
-    """The ISO country code of a VAT number's prefix ('EL…' is GR, 'XI…' GB), or None."""
-    m = re.match(r"\s*([A-Za-z]{2})(?=[\s\d])", str(vat or ""))
+    """The ISO country code of a VAT number's prefix ('EL…' is GR, 'XI…' GB), or None. The
+    prefix may be followed by a letter group before the digits (ATU…, ESB…, FRXX…)."""
+    m = re.match(r"\s*([A-Za-z]{2})(?=[\s\d]|[A-Z]{1,3}\d)", str(vat or ""))
     if not m:
         return None
     prefix = m.group(1).upper()
@@ -3151,7 +3349,8 @@ def extract_invoice_data_from_text(text, own_ids=None, own_names=None, config=No
         ai_fields, ai_error = {}, error_message(e)
     ai_notes = list(ai_fields.pop("_ai_notes", None) or [])
     ai_fields, account_notes = check_account_codes(ai_fields, _accounts(cfg))
-    final = _merge_fields(text, regex_fields, ai_fields, own_keys)
+    final = _merge_fields(text, regex_fields, ai_fields, own_keys,
+                          own_names=build_own_names(cfg["own_names"]))
     notes = [*run.notes, *ai_notes, *account_notes]
     if notes:
         final.setdefault("_notes", []).extend(notes)
@@ -3196,8 +3395,12 @@ def _valid_field_value(key, value, fields):
     return valid_giro_or_ocr(key, value)
 
 
-def _merge_fields(text, regex_fields, ai_fields, own_keys):
-    """Merge the regex and AI fields (pure function, no network calls)."""
+def _merge_fields(text, regex_fields, ai_fields, own_keys, own_names=frozenset()):
+    """Merge the regex and AI fields (pure function, no network calls).
+
+    own_keys:  the buyer's org/VAT numbers (build_own_ids); own_names: the buyer's names
+    (build_own_names) — a vendor name the AI gives that is the buyer's is replaced by the
+    name read from the document, when there is one (#39)."""
     # Merge. Regex vinner pa SIFFROR och identifierare, AI pa beskrivande falt.
     #
     # Uppmatt over sju leverantorer och 23 fakturor: regex pa den tryckta totalen
@@ -3216,13 +3419,22 @@ def _merge_fields(text, regex_fields, ai_fields, own_keys):
     notes = []
     own_skipped = list(regex_fields.get("_own_ids_skipped") or [])
     ambiguous = regex_fields.get("_ambiguous_dates") or {}
-    sources = regex_fields.get("_sources") or {}
     for key, values in (regex_fields.get("_ambiguous_amounts") or {}).items():
+        if key == "total_amount":
+            # Several receipts or orders in one PDF (an order and the fee for it): the lines
+            # of every part must be checked by hand, and the posting check has no total
+            notes.append(_("The document prints several different totals (%(values)s): it seems "
+                           "to hold several receipts or orders. None of them is the printed "
+                           "total, so the total is not checked when the bill is posted – check "
+                           "the lines against every part of the document by hand",
+                           values=", ".join(f"{v:.2f}" for v in values)))
+            continue
         notes.append(_("%(field)s: the document prints several different amounts with the same "
                        "label (%(values)s) – none of them was taken as the printed one",
                        field=key, values=", ".join(f"{v:.2f}" for v in values)))
     for key in sorted(all_keys):
-        if key in ("_own_ids_skipped", "_ambiguous_dates", "_sources", "_ambiguous_amounts"):
+        if key in ("_own_ids_skipped", "_ambiguous_dates", "_sources", "_ambiguous_amounts",
+                   "reference_number", "reference_label"):
             continue
         ai_val = ai_fields.get(key)
         regex_val = regex_fields.get(key)
@@ -3277,19 +3489,27 @@ def _merge_fields(text, regex_fields, ai_fields, own_keys):
         if ai_has and regex_has and str(ai_val) != str(regex_val):
             conflicts.append(f"{key}: regex={regex_val} ai={ai_val}")
 
-        # The regex took an order number, or the AI's invoice number is printed next to an
-        # invoice-number label: the AI's wins (an account id read from the column next to the
-        # invoice number was booked as the invoice number, #39).
+        # The AI's invoice number is printed next to an invoice-number label: it wins (an
+        # account id read from the column next to the invoice number was booked as the
+        # invoice number, #39).
         if key == "invoice_number" and regex_has and ai_has and str(ai_val) != str(regex_val) \
-                and (sources.get(key) == "order" or label_anchored(key, ai_val, text)):
+                and label_anchored(key, ai_val, text):
             final[key] = ai_val
-            if sources.get(key) == "order":
-                notes.append(_("invoice_number: the regex read the order number %(regex)s – "
-                               "used the AI's %(value)s", regex=regex_val, value=ai_val))
-            else:
-                notes.append(_("invoice_number: used the AI's %(value)s, printed with an "
-                               "invoice-number label, not %(regex)s", value=ai_val,
-                               regex=regex_val))
+            notes.append(_("invoice_number: used the AI's %(value)s, printed with an "
+                           "invoice-number label, not %(regex)s", value=ai_val, regex=regex_val))
+            continue
+
+        # The AI names the buyer as the vendor (a foreign supplier's invoice that prints the
+        # buyer's name and VAT number at the top): the name read from the document — its
+        # footer, next to the supplier's VAT number — is used instead (#39).
+        # With no other name on the document the AI's stays, and the Odoo module's own guard
+        # drops it with a note.
+        if key == "vendor_name" and ai_has and regex_has and own_names \
+                and _name_key(ai_val) in own_names and _name_key(regex_val) not in own_names:
+            final[key] = regex_val
+            notes.append(_("vendor_name: the AI's %(ai)s is the company itself (the buyer) – "
+                           "used %(value)s, the name printed on the document",
+                           ai=ai_val, value=regex_val))
             continue
 
         if key in REGEX_WINS and regex_has:
@@ -3355,6 +3575,21 @@ def _merge_fields(text, regex_fields, ai_fields, own_keys):
             final.setdefault("_notes", []).append(_(
                 "%(field)s %(values)s fails the length or check-digit test – not used",
                 field=key, values=" / ".join(dict.fromkeys(rejected))))
+
+    # A receipt without an invoice number (neither the regex nor the AI read one): its order,
+    # receipt or booking number is the reference (#39) — never an amount, a date, the OCR
+    # reference, the org number or one of the buyer's own numbers. An invoice number always
+    # wins over it.
+    reference = regex_fields.get("reference_number")
+    if reference and not final.get("invoice_number"):
+        digits = re.sub(r"\D", "", str(reference))
+        others = {re.sub(r"\D", "", str(final.get(k) or "")) for k in
+                  ("ocr_number", "org_number", "bankgiro", "plusgiro")} - {""}
+        if not (digits.isdigit() and str(reference).isdigit() and digits in amounts) \
+                and digits not in others and not is_own_id(reference, own_keys) \
+                and not _DATE_TOKEN.fullmatch(str(reference)):
+            final["reference_number"] = str(reference)
+            final["reference_label"] = regex_fields.get("reference_label") or ""
 
     # Marketplace invoices (Amazon, eBay, …): the VAT-declaring entity is the vendor, not
     # the merchant who "sold" the item. Searched in the full text, not a slice of it.

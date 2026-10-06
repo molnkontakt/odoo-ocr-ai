@@ -6,6 +6,24 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 19.0\n"
 "Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-06 11:53+0000\n"
+"PO-Revision-Date: 2026-10-06 11:53+0000\n"
+"Last-Translator: \n"
+"Language-Team: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: \n"
+"Language: sv\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+# Translation of Odoo Server.
+# This file contains the translation of the following modules:
+# 	* account_invoice_ocr_ai
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Odoo Server 19.0\n"
+"Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-10-06 07:04+0000\n"
 "PO-Revision-Date: 2026-10-06 07:04+0000\n"
 "Last-Translator: \n"
@@ -532,6 +550,36 @@ msgstr "Netto på underlaget (OCR)"
 #. odoo-python
 #: code:addons/account_invoice_ocr_ai/models/account_move.py:0
 msgid ""
+"No amount could be read after a label on the document, so the lines were "
+"compared with the AI's reading of the total, net and VAT – and they do not "
+"add up to it. Its total %s is printed on the document and is kept as the "
+"document's total for the posting check. Check the lines and the total "
+"against the PDF before you post the bill."
+msgstr ""
+"Inget belopp kunde läsas efter en rubrik på underlaget, så raderna jämfördes "
+"med AI:ns läsning av totalen, nettot och momsen – och de summerar inte till "
+"den. Dess total %s står tryckt på underlaget och behålls som underlagets "
+"total för kontrollen vid bokföring. Kontrollera raderna och totalen mot "
+"PDF:en innan fakturan bokförs."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"No amount could be read after a label on the document: the lines were "
+"checked against the AI's reading of the total, net and VAT. Its total "
+"%(total)s is printed on the document and is kept as the document's total for"
+" the posting check – compare the lines with the document."
+msgstr ""
+"Inget belopp kunde läsas efter en rubrik på underlaget: raderna "
+"kontrollerades mot AI:ns läsning av totalen, nettot och momsen. Dess total "
+"%(total)s står tryckt på underlaget och behålls som underlagets total för "
+"kontrollen vid bokföring – jämför raderna med underlaget."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
 "No amounts printed on the document could be read, so the lines were compared"
 " with the AI's own reading of the total, net and VAT – and they do not add "
 "up to it. Check the lines and the total against the PDF before you post the "
@@ -547,11 +595,11 @@ msgstr ""
 msgid ""
 "No amounts printed on the document could be read: the lines were checked "
 "only against the AI's reading of the total, net and VAT – compare the total "
-"with the document."
+"with the document. The total is not checked when the bill is posted."
 msgstr ""
 "Inga tryckta belopp kunde läsas på underlaget: raderna kontrollerades bara "
 "mot AI:ns läsning av totalen, nettot och momsen – jämför totalen med "
-"underlaget."
+"underlaget. Totalen kontrolleras inte när fakturan bokförs."
 
 #. module: account_invoice_ocr_ai
 #. odoo-python
@@ -562,6 +610,18 @@ msgid ""
 msgstr ""
 "Inga rader lästes: en rad skapades av totalbeloppen, på standardkontot – "
 "kontrollera kontot."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"No partner has %(kind)s %(number)s printed on the document, and it gives no "
+"other vendor name – choose the vendor by hand and add the number to it so "
+"that it is found next time."
+msgstr ""
+"Ingen partner har %(kind)s %(number)s som står på underlaget, och det anger "
+"inget annat leverantörsnamn – välj leverantör för hand och lägg in numret på "
+"den så att den hittas nästa gång."
 
 #. module: account_invoice_ocr_ai
 #. odoo-python
@@ -906,6 +966,16 @@ msgstr ""
 #. module: account_invoice_ocr_ai
 #. odoo-python
 #: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"Reference: the document has no invoice number – used the %(label)s %(value)s"
+" printed on it."
+msgstr ""
+"Referens: underlaget har inget fakturanummer – använde %(label)s %(value)s "
+"som står på underlaget."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
 msgid "Regex/AI conflicts:"
 msgstr "Konflikter regex/AI:"
 
@@ -1081,6 +1151,20 @@ msgid ""
 msgstr ""
 "Underlaget är i %(document)s, fakturan i %(bill)s: den har redan rader, "
 "så valutan ändrades inte."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"The document prints several different totals (%(values)s): it seems to hold "
+"several receipts or orders. None of them is the printed total, so the total "
+"is not checked when the bill is posted – check the lines against every part "
+"of the document by hand"
+msgstr ""
+"Underlaget har flera olika totaler (%(values)s): det verkar innehålla flera "
+"kvitton eller ordrar. Ingen av dem är den tryckta totalen, så totalen "
+"kontrolleras inte när fakturan bokförs – kontrollera raderna mot varje del "
+"av underlaget för hand"
 
 #. module: account_invoice_ocr_ai
 #. odoo-python
@@ -1565,15 +1649,6 @@ msgstr "https://api.mistral.ai/v1"
 #. odoo-python
 #: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
 msgid ""
-"invoice_number: the regex read the order number %(regex)s – used the AI's "
-"%(value)s"
-msgstr ""
-"invoice_number: regex läste ordernumret %(regex)s – AI:ns %(value)s användes"
-
-#. module: account_invoice_ocr_ai
-#. odoo-python
-#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
-msgid ""
 "invoice_number: used the AI's %(value)s, printed with an invoice-number "
 "label, not %(regex)s"
 msgstr ""
@@ -1677,6 +1752,12 @@ msgid ""
 "(%(why)s)"
 msgstr ""
 "ocr_number: regex läste %(regex)s, AI:n %(value)s – AI:ns användes (%(why)s)"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "order number"
+msgstr "ordernumret"
 
 #. module: account_invoice_ocr_ai
 #. odoo-python
@@ -1892,6 +1973,12 @@ msgstr ""
 #. module: account_invoice_ocr_ai
 #. odoo-python
 #: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "the VAT number"
+msgstr "momsregistreringsnumret"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
 msgid "the VAT number %s"
 msgstr "momsregistreringsnumret %s"
 
@@ -1943,6 +2030,12 @@ msgstr ""
 #. module: account_invoice_ocr_ai
 #. odoo-python
 #: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "the org number"
+msgstr "organisationsnumret"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
 msgid "the org number %s"
 msgstr "organisationsnumret %s"
 
@@ -1987,6 +2080,16 @@ msgstr "okänd AI-tjänst %(provider)r"
 #: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
 msgid "vendor_name: marketplace VAT-declarer override → %(vendor)s"
 msgstr "vendor_name: marknadsplatsens momsdeklarant används i stället → %(vendor)s"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid ""
+"vendor_name: the AI's %(ai)s is the company itself (the buyer) – used "
+"%(value)s, the name printed on the document"
+msgstr ""
+"vendor_name: AI:ns %(ai)s är det egna bolaget (köparen) – %(value)s "
+"användes, namnet som står på underlaget"
 
 #. module: account_invoice_ocr_ai
 #. odoo-python

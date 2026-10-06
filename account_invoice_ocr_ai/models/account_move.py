@@ -566,6 +566,14 @@ class AccountMove(models.Model):
                            "found – choose the vendor by hand.", move.partner_id.display_name))
         if data.get("invoice_number") and not move.ref:
             vals["ref"] = data["invoice_number"]
+        elif data.get("reference_number") and not move.ref:
+            # A receipt without an invoice number: its order, receipt or booking number is
+            # the reference (#39) — the library only gives one when no invoice number was read
+            vals["ref"] = data["reference_number"]
+            notes.append(_("Reference: the document has no invoice number – used the "
+                           "%(label)s %(value)s printed on it.",
+                           label=data.get("reference_label") or _("order number"),
+                           value=data["reference_number"]))
         if data.get("invoice_date") and not move.invoice_date:
             vals["invoice_date"] = data["invoice_date"]
             # The accounting date follows the invoice date, not the day the document was
@@ -1025,7 +1033,9 @@ class AccountMove(models.Model):
         # 1-2. The VAT number (a letter prefix, e.g. LU12345613, SE999999...) or the Swedish org
         # number, compared apart from formatting: spaces, dashes, the country prefix, the
         # trailing 01 of a Swedish VAT number (#39). Several partners with it: no match.
-        is_vat = bool(re.match(r"^[A-Z]{2}\d", org_raw))
+        # A VAT number: a country prefix, then the number — digits, or a letter group first
+        # (ATU…, ESB…, FRXX…, CHE-…)
+        is_vat = bool(re.match(r"^[A-Z]{2}[A-Z]{0,3}[ .-]?\d", org_raw))
         org_clean = re.sub(r"[^0-9]", "", org_raw)
         same_number = self.env["res.partner"]
         if org_clean:
@@ -1063,6 +1073,15 @@ class AccountMove(models.Model):
         if name and invoice_ocr._name_key(name) in own_names:
             notes.append(_("The vendor name \"%s\" is the company itself – not used.", name))
             name = ""
+        if not name and org_clean and not same_number:
+            # The document's number is on no partner and the AI's only name was the buyer's
+            # (a foreign supplier that prints the buyer at the top): the note names the number
+            # so that the vendor can be chosen by hand — and found by the number next time
+            notes.append(_("No partner has %(kind)s %(number)s printed on the document, and it "
+                           "gives no other vendor name – choose the vendor by hand and add the "
+                           "number to it so that it is found next time.",
+                           kind=_("the VAT number") if is_vat else _("the org number"),
+                           number=org_raw))
         if name:
             partner = self._ocr_partner_by_name(name, own, notes, company)
             if partner:
@@ -1106,7 +1125,7 @@ class AccountMove(models.Model):
         if name and (org_raw or banks):
             vals = {"name": name, "is_company": True, "supplier_rank": 1}
             # VAT
-            if org_raw and re.match(r"^[A-Z]{2}\d", org_raw):
+            if org_raw and is_vat:
                 vals["vat"] = org_raw
             elif org_clean:
                 vals["vat"] = f"SE{org_clean}01" if len(org_clean) == 10 else org_clean
@@ -1577,13 +1596,24 @@ class AccountMove(models.Model):
             notes.append(_("No total, net or VAT could be read from the document: the lines "
                            "were not checked – compare them with the document."))
             return
-        if not printed and reference:
-            notes.append(_("No amounts printed on the document could be read: the lines were "
-                           "checked only against the AI's reading of the total, net and VAT – "
-                           "compare the total with the document."))
-
         def amount(value):
             return formatLang(self.env, value, currency_obj=move.currency_id)
+
+        # The total the posting check will compare with (_ocr_store_printed_amounts): read
+        # after a label, or the AI's total found printed in the text. The note says what is
+        # stored: "no printed amounts" next to a stored printed total confused reviewers (#39).
+        on_document = data.get("_on_document") or {}
+        if not printed and reference and on_document.get("total_amount") is not None:
+            notes.append(_("No amount could be read after a label on the document: the lines "
+                           "were checked against the AI's reading of the total, net and VAT. Its "
+                           "total %(total)s is printed on the document and is kept as the "
+                           "document's total for the posting check – compare the lines with the "
+                           "document.", total=amount(on_document["total_amount"])))
+        elif not printed and reference:
+            notes.append(_("No amounts printed on the document could be read: the lines were "
+                           "checked only against the AI's reading of the total, net and VAT – "
+                           "compare the total with the document. The total is not checked when "
+                           "the bill is posted."))
 
         def against(key, lines_amount, adjust=0.0):
             # self.env._: a nested function has no self for Odoo's _() to find the language
@@ -1628,6 +1658,14 @@ class AccountMove(models.Model):
                 "The lines come from the AI's reading and do not add up to the amounts printed "
                 "on the document — probably a line was dropped or has the wrong VAT rate. "
                 "Check them against the PDF before you post the bill.")
+        elif on_document.get("total_amount") is not None:
+            title = _("OCR: the lines do not match the amounts read from the bill")
+            explanation = _(
+                "No amount could be read after a label on the document, so the lines were "
+                "compared with the AI's reading of the total, net and VAT – and they do not add "
+                "up to it. Its total %s is printed on the document and is kept as the "
+                "document's total for the posting check. Check the lines and the total against "
+                "the PDF before you post the bill.", amount(on_document["total_amount"]))
         else:
             title = _("OCR: the lines do not match the amounts read from the bill")
             explanation = _(
