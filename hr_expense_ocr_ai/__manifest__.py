@@ -20,11 +20,12 @@ Only empty fields are filled (amount 0, today's date, no category, empty name; t
 the Upload button count as empty), the amount in the receipt's currency; everything read and every
 guard that fired is written to the chatter, including a printed VAT that the category's tax does
 not give. Guards against model guesses: the merchant, the
-amount and the date must appear in the OCR text, a confidence below 0.6 (or none) leaves amount and
-date empty (merchant, description and category may still be filled), the category must be one of
-the company's expensable products (their description is sent to the model as a hint, so
-category-specific rules belong in the category's description, not in the module). English
-source strings, with a Swedish translation.
+amount and the date must appear in the OCR text, the date within three days ahead and two years
+back, a confidence below 0.6 (0.9 on a photo under one megapixel, or none) leaves amount and date
+empty (merchant, description and category may still be filled), the category must be one of the
+company's expensable products without a fixed cost (their description is sent to the model as a
+hint, so category-specific rules belong in the category's description, not in the module).
+English source strings, with a Swedish translation.
     """,
     "author": "Molnkontakt AB",
     "license": "LGPL-3",

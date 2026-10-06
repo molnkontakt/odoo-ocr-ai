@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 19.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-05 22:37+0000\n"
-"PO-Revision-Date: 2026-10-05 22:37+0000\n"
+"POT-Creation-Date: 2026-10-06 07:00+0000\n"
+"PO-Revision-Date: 2026-10-06 07:00+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
@@ -493,6 +493,22 @@ msgstr ""
 #. module: hr_expense_ocr_ai
 #. odoo-python
 #: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid ""
+"the date %(date)s cannot be the receipt's (more than %(days)s days ahead or "
+"%(years)s years back) — ignored"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid ""
+"the date %(date)s cannot be the receipt's (more than %(days)s days ahead or "
+"%(years)s years back) — used the receipt's date %(printed)s"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
 msgid "the date %(date)s is not printed on the receipt — ignored"
 msgstr ""
 
@@ -540,6 +556,15 @@ msgstr ""
 #. odoo-python
 #: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
 msgid "the model's date %(date)r is not a valid date — ignored"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid ""
+"the photo is only %(width)s×%(height)s pixels: OCR misreads digits on a "
+"photo this small, so amount and date are filled only with confidence "
+"%(needed)s or more (here %(confidence)s) — they are not filled"
 msgstr ""
 
 #. module: hr_expense_ocr_ai

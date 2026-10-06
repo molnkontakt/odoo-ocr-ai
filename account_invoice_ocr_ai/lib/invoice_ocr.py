@@ -132,6 +132,8 @@ class DocumentRun:
         self.total = float(total_seconds or 0) or TOTAL_DEADLINE
         self.deadline = _clock() + self.total
         self.notes = []
+        # (width, height) of a photo read with tesseract, as received (receipt_ocr)
+        self.image_size = None
 
     def remaining(self):
         return self.deadline - _clock()

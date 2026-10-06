@@ -61,6 +61,8 @@ def _prepare_image(raw, max_pixels=None, run=None):
     """
     img = Image.open(io.BytesIO(raw))
     w, h = img.size
+    if run:
+        run.image_size = (w, h)
     factor = 1.0
     if max_pixels and w * h > max_pixels:
         factor = (max_pixels / (w * h)) ** 0.5
@@ -214,9 +216,10 @@ def _regex_total(text):
     return (best[1] if best else None), skipped
 
 
-def _regex_fields(text):
+def _regex_fields(text, today=None):
     """Total and date read by the regexes. `_skipped_currency`: a total line in a foreign
-    currency that was not used."""
+    currency that was not used. With `today`, the first plausible date (date_is_plausible)
+    is the receipt's date."""
     out = {}
     total, skipped = _regex_total(text)
     if total is not None:
@@ -227,11 +230,40 @@ def _regex_fields(text):
         for m in regex.finditer(text):
             y, mo, d = (int(m.group(i)) for i in order)
             with contextlib.suppress(ValueError):
-                out["date"] = date(y, mo, d).isoformat()
-                break
+                day = date(y, mo, d).isoformat()
+                if date_is_plausible(day, today):
+                    out["date"] = day
+                    break
         if "date" in out:
             break
     return out
+
+
+# A receipt date outside this window is a misreading (#39: OCR read "2026" as "2075", the
+# model "2025"): at most RECEIPT_MAX_FUTURE_DAYS after today (time zones, a receipt dated by
+# a till that is a day ahead) and at most RECEIPT_MAX_AGE_DAYS before it (expense claims are
+# made within months; an older receipt is entered by hand).
+RECEIPT_MAX_FUTURE_DAYS = 3
+RECEIPT_MAX_AGE_DAYS = 730
+
+
+def _as_date(value):
+    if isinstance(value, date):
+        return value
+    with contextlib.suppress(TypeError, ValueError):
+        return date.fromisoformat(str(value))
+    return None
+
+
+def date_is_plausible(value, today):
+    """True when the receipt date `value` lies in the window around `today` (see
+    RECEIPT_MAX_FUTURE_DAYS, RECEIPT_MAX_AGE_DAYS); always True without `today`."""
+    day, today = _as_date(value), _as_date(today)
+    if day is None:
+        return False
+    if today is None:
+        return True
+    return -RECEIPT_MAX_AGE_DAYS <= (day - today).days <= RECEIPT_MAX_FUTURE_DAYS
 
 
 def _date_in_text(iso, text):
@@ -414,6 +446,11 @@ def _clean(data, categories):
 
 
 MIN_CONFIDENCE = 0.6
+# A photo smaller than this (pixels) is read unreliably: tesseract misreads digits on it ("339"
+# for "389" on a 480×640 photo, #39), and the model may still be confident. The amount and date
+# of such a photo are filled only from SMALL_IMAGE_MIN_CONFIDENCE.
+SMALL_IMAGE_PIXELS = 1_000_000
+SMALL_IMAGE_MIN_CONFIDENCE = 0.9
 
 
 # Words on receipts that do not tell one shop from another (besides legal forms etc.)
@@ -452,11 +489,13 @@ def _total_in_text(total, text):
     return inv.amount_in_text(total, text)
 
 
-def _apply_guards(fields, text, regex=None):
+def _apply_guards(fields, text, regex=None, today=None, image_size=None):
     """Returnerar (fält att fylla i, anmärkningar). Osäkra läsningar blir anmärkningar, inte fält.
 
     `regex` is what _regex_fields read from the text: when the model's value fails a check,
-    the printed value is used instead (and noted).
+    the printed value is used instead (and noted). With `today`, a date outside the plausible
+    window (date_is_plausible) is not used. `image_size` (width, height) of a photo smaller
+    than SMALL_IMAGE_PIXELS raises the confidence needed for amount and date.
     """
     notes = []
     fields = dict(fields)
@@ -466,9 +505,24 @@ def _apply_guards(fields, text, regex=None):
         notes.append(_("the merchant name \"%(merchant)s\" is not printed on the receipt — ignored",
                        merchant=fields["merchant"]))
         fields.pop("merchant")
+    if fields.get("date") and not date_is_plausible(fields["date"], today):
+        printed = regex.get("date")
+        window = {"days": RECEIPT_MAX_FUTURE_DAYS, "years": RECEIPT_MAX_AGE_DAYS // 365}
+        if printed and printed != fields["date"] and date_is_plausible(printed, today) \
+                and _date_in_text(printed, text):
+            notes.append(_("the date %(date)s cannot be the receipt's (more than %(days)s days "
+                           "ahead or %(years)s years back) — used the receipt's date %(printed)s",
+                           date=fields["date"], printed=printed, **window))
+            fields["date"] = printed
+        else:
+            notes.append(_("the date %(date)s cannot be the receipt's (more than %(days)s days "
+                           "ahead or %(years)s years back) — ignored", date=fields["date"],
+                           **window))
+            fields.pop("date")
     if fields.get("date") and not _date_in_text(fields["date"], text):
         printed = regex.get("date")
-        if printed and printed != fields["date"] and _date_in_text(printed, text):
+        if printed and printed != fields["date"] and _date_in_text(printed, text) \
+                and date_is_plausible(printed, today):
             notes.append(_("the date %(date)s is not printed on the receipt — used the "
                            "receipt's date %(printed)s", date=fields["date"], printed=printed))
             fields["date"] = printed
@@ -489,12 +543,20 @@ def _apply_guards(fields, text, regex=None):
             fields.pop("total")
     # Low confidence (or none at all) leaves amount and date empty; merchant, description
     # and category may still be filled. The prompt asks the confidence for total and date.
+    small = bool(image_size) and image_size[0] * image_size[1] < SMALL_IMAGE_PIXELS
+    needed = SMALL_IMAGE_MIN_CONFIDENCE if small else MIN_CONFIDENCE
     if conf is None:
         notes.append(_("no confidence given — amount and date are not filled"))
     elif conf < MIN_CONFIDENCE:
         notes.append(_("low confidence (%(confidence)s) — amount and date are not filled",
                        confidence=f"{conf:.2f}"))
-    if conf is None or conf < MIN_CONFIDENCE:
+    elif conf < needed:
+        notes.append(_("the photo is only %(width)s×%(height)s pixels: OCR misreads digits on a "
+                       "photo this small, so amount and date are filled only with confidence "
+                       "%(needed)s or more (here %(confidence)s) — they are not filled",
+                       width=image_size[0], height=image_size[1], needed=f"{needed:.2f}",
+                       confidence=f"{conf:.2f}"))
+    if conf is None or conf < needed:
         fields.pop("total", None)
         fields.pop("date", None)
     return fields, notes
@@ -516,7 +578,8 @@ def extract_receipt_data(raw, mimetype=None, filename=None, categories=None, con
     if len(text.strip()) < 15:
         result["notes"] = list(run.notes)
         return result
-    regex = _regex_fields(text)
+    today = cfg.get("today") or date.today()
+    regex = _regex_fields(text, today)
     skipped = regex.pop("_skipped_currency", None)
     ai_notes = []
     try:
@@ -533,7 +596,7 @@ def extract_receipt_data(raw, mimetype=None, filename=None, categories=None, con
         # The model sees the whole context; the regex only fills gaps
         fields = dict(regex)
         fields.update(ai)
-        fields, notes = _apply_guards(fields, text, regex)
+        fields, notes = _apply_guards(fields, text, regex, today, run.image_size)
         if bad_date:
             notes.insert(0, _("the model's date %(date)r is not a valid date — ignored",
                               date=bad_date))

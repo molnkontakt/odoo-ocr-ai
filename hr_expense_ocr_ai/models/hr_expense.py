@@ -27,21 +27,31 @@ class HrExpense(models.Model):
 
     def _expense_ocr_config(self):
         """Per-run config: same provider, keys and own-company guard as the invoice OCR
-        (Settings → Invoicing → Invoice OCR), for this expense's company. Nothing is written to
-        the invoice library's module globals, which every run in the worker shares."""
+        (Settings → Invoicing → Invoice OCR), for this expense's company, and today's date in
+        the user's time zone (a receipt's date must be near it). Nothing is written to the
+        invoice library's module globals, which every run in the worker shares."""
         self.ensure_one()
-        return self.env["account.move"]._invoice_ocr_config(self.company_id)
+        cfg = self.env["account.move"]._invoice_ocr_config(self.company_id)
+        cfg["today"] = fields.Date.context_today(self)
+        return cfg
 
     def _expense_ocr_categories(self):
         """[(code, name, hint)] and code → product. The hint is the product's purchase
         description, or the category's "Guideline" (product description, an HTML field) as
         plain text, so the administrator can steer the categorisation by describing the
         categories in Odoo. Empty editor content ('<p><br></p>') is no hint; a hint is capped
-        at HINT_LIMIT."""
+        at HINT_LIMIT.
+
+        A category with a fixed cost (mileage: quantity × cost) is never offered, so never
+        chosen for a receipt: fuel put on the mileage category became an expense of 1.00
+        (#39)."""
         self.ensure_one()
         products = self.env["product.product"].sudo().search([
             ("can_be_expensed", "=", True), ("company_id", "in", [False, self.company_id.id]),
         ])
+        currency = self.company_id.currency_id
+        products = products.filtered(lambda p: currency.is_zero(
+            p.with_company(self.company_id).standard_price))
         cats, by_code = [], {}
         for p in products:
             code = p.default_code or f"P{p.id}"

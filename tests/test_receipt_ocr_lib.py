@@ -177,7 +177,8 @@ def test_bad_ai_date_keeps_the_regex_date(monkeypatch):
     monkeypatch.setattr(r, "read_text", lambda *a, **k: TEXT)
     monkeypatch.setattr(r, "_chat_json", lambda *a, **k: {
         "total": 418.0, "date": "17/09/26", "confidence": 0.9})
-    out = r.extract_receipt_data(b"x", "image/jpeg", "receipt.jpg")
+    out = r.extract_receipt_data(b"x", "image/jpeg", "receipt.jpg",
+                                 config={"today": "2026-10-01"})
     assert out["fields"]["date"] == "2026-09-17"
     assert any("17/09/26" in n for n in out["notes"])
 
@@ -312,3 +313,73 @@ def test_prompt_has_no_category_rules_of_its_own():
     prompt = r.build_prompt([("MASKIN", "Machinery", "fuel, oil, tools"), ("FOOD", "Meals")])
     assert "  MASKIN — Machinery: fuel, oil, tools\n  FOOD — Meals\n" in prompt
     assert "Follow each category's description" in prompt
+
+
+# ── Receipt dates in a plausible window, small photos (#39) ────────────────────
+
+def test_receipt_date_window():
+    today = "2026-10-01"
+    assert r.date_is_plausible("2026-10-01", today)
+    assert r.date_is_plausible("2026-10-04", today)          # a till a few days ahead
+    assert not r.date_is_plausible("2026-10-05", today)
+    assert r.date_is_plausible("2024-10-02", today)
+    assert not r.date_is_plausible("2024-09-30", today)      # more than two years back
+    assert not r.date_is_plausible("2079-05-14", today)
+    assert r.date_is_plausible("2079-05-14", None), "no today: no window"
+    assert not r.date_is_plausible("not a date", today)
+
+
+def test_misread_year_is_never_used():
+    """OCR printed "2079-05-14" for the receipt's date, the model said 2025-05-14: neither
+    is used, and the note says why."""
+    text = "Example Fuel Station\nKvitto 2079-05-14 10:14\nTotalt 249,00 kr\n"
+    regex = r._regex_fields(text, "2026-10-01")
+    assert "date" not in regex
+    kept, notes = r._apply_guards({"date": "2025-05-14", "total": 249.0, "confidence": 0.9},
+                                  text, regex, "2026-10-01")
+    assert "date" not in kept and kept["total"] == 249.0
+    assert any("2025-05-14 is not printed on the receipt — ignored" in n for n in notes)
+    kept, notes = r._apply_guards({"date": "2079-05-14", "confidence": 0.9}, text, regex,
+                                  "2026-10-01")
+    assert "date" not in kept
+    assert any("2079-05-14 cannot be the receipt's" in n for n in notes)
+    # the printed date in the window is used instead of the model's implausible one
+    text = "Kvitto 2026-05-14\nTotalt 249,00 kr\nGaranti till 2029-05-14\n"
+    regex = r._regex_fields(text, "2026-10-01")
+    kept, notes = r._apply_guards({"date": "2029-05-14", "confidence": 0.9}, text, regex,
+                                  "2026-10-01")
+    assert kept["date"] == "2026-05-14"
+    assert any("used the receipt's date 2026-05-14" in n for n in notes)
+
+
+def test_first_plausible_printed_date():
+    text = "Garanti 2079-01-01\nKöp 2026-05-14\n"
+    assert r._regex_fields(text, "2026-10-01")["date"] == "2026-05-14"
+    assert r._regex_fields(text)["date"] == "2079-01-01", "without today: the first date"
+
+
+def test_small_photo_needs_a_high_confidence():
+    fields = {"total": 249.0, "date": "2026-05-14", "confidence": 0.7, "items": "Chain oil"}
+    text = "Kvitto 2026-05-14\nTotalt 249,00 kr\n"
+    kept, notes = r._apply_guards(fields, text, {}, "2026-10-01", (480, 640))
+    assert "total" not in kept and "date" not in kept and kept["items"] == "Chain oil"
+    assert any("only 480×640 pixels" in n for n in notes)
+    kept, notes = r._apply_guards(dict(fields, confidence=0.95), text, {}, "2026-10-01",
+                                  (480, 640))
+    assert kept["total"] == 249.0 and not notes
+    kept, _notes = r._apply_guards(fields, text, {}, "2026-10-01", (3024, 4032))
+    assert kept["total"] == 249.0, "a normal phone photo"
+
+
+def test_the_photos_size_reaches_the_guards(monkeypatch):
+    def read(raw, mimetype, filename, cfg):
+        inv.document_run(cfg).image_size = (480, 640)
+        return "Example Fuel Station\nKvitto 2026-05-14\nTotalt 249,00 kr\n"
+
+    monkeypatch.setattr(r, "read_text", read)
+    monkeypatch.setattr(r, "_chat_json", lambda *a, **k: {
+        "merchant": "Example Fuel Station", "total": 249.0, "date": "2026-05-14",
+        "confidence": 0.8})
+    out = r.extract_receipt_data(b"x", "image/jpeg", "small.jpg", config={"today": "2026-10-01"})
+    assert "total" not in out["fields"]
+    assert any("480×640" in n for n in out["notes"])

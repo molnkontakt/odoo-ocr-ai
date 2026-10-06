@@ -75,12 +75,30 @@ class TestReceiptCurrency(TransactionCase):
         self.assertFalse(expense.total_amount_currency)
         self.assertIn(f"{name} has no exchange rate", self._bodies(expense))
 
-    def test_fixed_cost_category_is_left_alone(self):
-        product = self.env["product.product"].create({
+    def test_fixed_cost_category_is_never_chosen(self):
+        """A category with a fixed cost (mileage) is not offered to the model, and not taken
+        from its answer: fuel put on it became an expense of 1.00 (#39)."""
+        mileage = self.env["product.product"].create({
             "name": "Mileage", "can_be_expensed": True, "standard_price": 2.5,
             "default_code": "MILE", "supplier_taxes_id": [(5, 0, 0)]})
         expense = self._read({"total": 1234.4, "currency": "JPY", "category_code": "MILE"})
-        self.assertEqual(expense.product_id, product)
+        self.assertNotEqual(expense.product_id, mileage)
+        self.assertEqual(expense.total_amount_currency, 1234.0)
+        cats, by_code = expense._expense_ocr_categories()
+        self.assertNotIn("MILE", by_code)
+        self.assertNotIn("MILE", [code for code, _name, _hint in cats])
+
+    def test_fixed_cost_category_set_by_hand_is_left_alone(self):
+        mileage = self.env["product.product"].create({
+            "name": "Mileage", "can_be_expensed": True, "standard_price": 2.5,
+            "default_code": "MILE", "supplier_taxes_id": [(5, 0, 0)]})
+        expense = self._read({"total": 1234.4, "currency": "JPY"}, product_id=mileage.id)
+        self.assertEqual(expense.product_id, mileage)
         self.assertEqual(expense.currency_id, self.company.currency_id)
         self.assertEqual(expense.total_amount_currency, 2.5, "quantity × cost")
+        result = {"text": "x", "source": "ai", "notes": [],
+                  "fields": {"total": 1234.4, "currency": "JPY"}}
+        with mock.patch.object(receipt_ocr, "extract_receipt_data", return_value=result):
+            expense.action_read_receipt(force=True)
+        self.assertEqual(expense.total_amount_currency, 2.5)
         self.assertIn("has a fixed cost", self._bodies(expense))

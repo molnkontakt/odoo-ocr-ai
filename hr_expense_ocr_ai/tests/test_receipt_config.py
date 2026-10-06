@@ -1,6 +1,7 @@
 """Receipt OCR gets the invoice OCR's settings as a per-run config, never via module globals."""
 from unittest import mock
 
+from odoo import fields
 from odoo.addons.account_invoice_ocr_ai.lib import invoice_ocr
 from odoo.addons.hr_expense_ocr_ai.lib import receipt_ocr
 from odoo.tests import TransactionCase, tagged
@@ -34,6 +35,8 @@ class TestReceiptConfig(TransactionCase):
         self.assertEqual(cfg["provider"], "openai_compatible")
         self.assertEqual(cfg["api_key"], "K-receipt")
         self.assertIn(expense.company_id.name, cfg["own_names"])
+        self.assertEqual(cfg["today"], fields.Date.context_today(expense),
+                         "a receipt's date is checked against today in the user's time zone")
         self.assertEqual(_globals(), before)
 
     def test_disable_is_stored_and_respected(self):

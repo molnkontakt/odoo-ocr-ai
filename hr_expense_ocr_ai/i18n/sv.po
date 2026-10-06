@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 19.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-05 22:37+0000\n"
-"PO-Revision-Date: 2026-10-05 22:37+0000\n"
+"POT-Creation-Date: 2026-10-06 07:00+0000\n"
+"PO-Revision-Date: 2026-10-06 07:00+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
@@ -533,6 +533,26 @@ msgstr ""
 #. module: hr_expense_ocr_ai
 #. odoo-python
 #: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid ""
+"the date %(date)s cannot be the receipt's (more than %(days)s days ahead or "
+"%(years)s years back) — ignored"
+msgstr ""
+"datumet %(date)s kan inte vara kvittots (mer än %(days)s dagar framåt eller "
+"%(years)s år bakåt) — används inte"
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid ""
+"the date %(date)s cannot be the receipt's (more than %(days)s days ahead or "
+"%(years)s years back) — used the receipt's date %(printed)s"
+msgstr ""
+"datumet %(date)s kan inte vara kvittots (mer än %(days)s dagar framåt eller "
+"%(years)s år bakåt) — kvittots datum %(printed)s användes"
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
 msgid "the date %(date)s is not printed on the receipt — ignored"
 msgstr "datumet %(date)s står inte på kvittot — ignorerat"
 
@@ -585,6 +605,18 @@ msgstr "butiksnamnet \"%(merchant)s\" står inte på kvittot — ignorerat"
 #: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
 msgid "the model's date %(date)r is not a valid date — ignored"
 msgstr "modellens datum %(date)r är inget giltigt datum — ignorerat"
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/lib/receipt_ocr.py:0
+msgid ""
+"the photo is only %(width)s×%(height)s pixels: OCR misreads digits on a "
+"photo this small, so amount and date are filled only with confidence "
+"%(needed)s or more (here %(confidence)s) — they are not filled"
+msgstr ""
+"fotot är bara %(width)s×%(height)s pixlar: OCR läser fel siffror på så små "
+"foton, så belopp och datum fylls bara i med konfidens %(needed)s eller mer "
+"(här %(confidence)s) — de fylls inte i"
 
 #. module: hr_expense_ocr_ai
 #. odoo-python

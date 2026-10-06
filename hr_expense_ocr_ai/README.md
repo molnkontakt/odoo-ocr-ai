@@ -50,8 +50,9 @@ appended, e.g. the subject a mail alias gives expenses from unknown senders.
 The amount is written in the receipt's currency: the expense's currency is set
 in the same write and the amount is rounded like that currency. A currency that
 is unknown, inactive or has no exchange rate on or before the receipt date
-leaves the amount empty with a note, and so does a category with a fixed cost
-(its amount is quantity × cost, in the company's currency). Without the AI, a
+leaves the amount empty with a note, and so does a category with a fixed cost set
+by hand (its amount is quantity × cost, in the company's currency); such a
+category (mileage) is never offered to the model, so a receipt is never put on it. Without the AI, a
 total printed in a foreign currency (`EUR 12,50`, `€ 12,50`) is not read.
 Everything read, what was filled, which guards fired and which model answered
 (with its completion tokens) is posted as a chatter note, so the reviewer sees
@@ -68,10 +69,16 @@ Measured on real receipts before release:
   and a date (18 is not found in 418,00, nor 17 in a date). When the model's
   value is not, the value read from the receipt text is used instead, or the
   field stays empty; either way a note says so.
+- The date must lie in a plausible window: at most 3 days after today and at
+  most 2 years before it (`RECEIPT_MAX_FUTURE_DAYS`, `RECEIPT_MAX_AGE_DAYS` in
+  `lib/receipt_ocr.py`). A misread year ("2075") is never used: the first
+  printed date in the window is taken instead, or the date stays empty.
 - Confidence below 0.6, or no confidence at all, leaves amount and date empty
   (typically a downscaled, unreadable photo that was read as 339 instead of
-  389). Merchant, description and category may still be filled; the note says
-  what was left out.
+  389). On a photo under one megapixel (`SMALL_IMAGE_PIXELS`) tesseract misreads
+  digits even when the model is fairly sure, so there amount and date need a
+  confidence of 0.9 (`SMALL_IMAGE_MIN_CONFIDENCE`). Merchant, description and
+  category may still be filled; the note says what was left out.
 - The VAT printed on the receipt is compared with what the expense's tax gives
   (when the VAT amount is printed, the expense has a tax and its amount is the
   receipt's total, also for a category set by hand): a difference of more than 1
