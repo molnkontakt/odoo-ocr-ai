@@ -3383,8 +3383,11 @@ def _merge_fields(text, regex_fields, ai_fields, own_keys):
     # The amounts of the bill that are printed on the document: read by the regex, or the
     # AI's value when it is printed as an amount in the text. The Odoo module keeps them on
     # the bill and does not post a bill whose total differs from the printed total (#39).
+    # Not when the document prints several different amounts with the label (one part of a
+    # multi-part document is not its total).
+    ambiguous_amounts = regex_fields.get("_ambiguous_amounts") or {}
     on_document = {k: final[k] for k in ("total_amount", "subtotal", "vat_amount")
-                   if _num(final.get(k)) is not None
+                   if _num(final.get(k)) is not None and k not in ambiguous_amounts
                    and (k in printed or amount_in_text(final[k], text))}
     if on_document:
         final["_on_document"] = on_document
