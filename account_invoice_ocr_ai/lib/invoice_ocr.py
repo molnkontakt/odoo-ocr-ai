@@ -91,6 +91,49 @@ def _parse_date(text):
     return text
 
 
+# ── Öresavrundning och justeringar utanför moms ─────────────────────────────
+# Vissa fakturor (t.ex. från teleoperatörer) trycker "Belopp exkl. moms" EFTER
+# tillgodo/justeringar utan moms, men momsen på underlaget FÖRE dem, och "Att betala"
+# efter öresavrundning:
+#   tjänster 2 061,00 · tillgodo −0,25 · exkl. moms 2 060,75 · moms 515,25 (25 % av
+#   2 061,00) · öresavrundning −1,00 · att betala 2 575,00
+# AI:n lägger då 2 060,75 som en momsbelagd rad → moms 515,19, totalt 2 575,94.
+MAX_VAT_BASE_SHIFT = 2.0   # största del av netto som får flyttas utanför moms
+MAX_ROUNDING = 2.0         # största öresavrundning som läggs till automatiskt
+
+
+def plan_total_adjustments(taxed_net, untaxed_net, current_vat, printed_vat, printed_total):
+    """Justeringar som får raderna att stämma med fakturans tryckta moms och totalbelopp.
+
+    taxed_net: {momssats (int): netto på rader med den satsen}; untaxed_net: netto utan moms;
+    current_vat: momsen Odoo räknat fram. Returnerar {"base_shift": (sats, belopp) | None,
+    "rounding": belopp | None}:
+
+    * base_shift: momsunderlaget enligt den tryckta momsen skiljer sig från radernas –
+      flytta beloppet till momsraden och lägg MOTSATT belopp utanför moms (nettot oförändrat).
+      Bara när alla momsrader har samma sats och skillnaden är större än momsens egen
+      avrundning (2 öre på underlaget) men högst MAX_VAT_BASE_SHIFT.
+    * rounding: det som skiljer totalen (efter base_shift) från "Att betala", högst MAX_ROUNDING.
+    Större avvikelser lämnas orörda – de är inte avrundning och ska granskas av en människa.
+    """
+    plan = {"base_shift": None, "rounding": None}
+    vat_after = current_vat
+    rates = [r for r, net in taxed_net.items() if net]
+    if printed_vat is not None and len(rates) == 1 and rates[0]:
+        rate = rates[0]
+        implied = round(printed_vat * 100.0 / rate, 2)
+        delta = round(implied - taxed_net[rate], 2)
+        if 0.02 < abs(delta) <= MAX_VAT_BASE_SHIFT:
+            plan["base_shift"] = (rate, delta)
+            vat_after = printed_vat
+    if printed_total is not None:
+        total_after = round(sum(taxed_net.values()) + untaxed_net + vat_after, 2)
+        diff = round(printed_total - total_after, 2)
+        if 0.005 < abs(diff) <= MAX_ROUNDING:
+            plan["rounding"] = diff
+    return plan
+
+
 def _parse_amount(text):
     """Parse amount: '1 234,56' / '1234.56' / '€539.00' / '$1,234.56' → float."""
     text = text.strip()
@@ -183,13 +226,9 @@ FIELD_PATTERNS = {
     "plusgiro": [
         r"(?:Plusgiro|PG|Pg\.?)[\s.:]*([\d\s-]+\d)",
     ],
-    "org_number": [
-        # Swedish org-nr (NNNNNN-NNNN)
-        r"(?:Org\.?\s*(?:nr|nummer)|Organisationsnummer)[\s.:]*(\d{6}[\s-]?\d{4})",
-        # VAT Reg No with letter-prefix — but pick the SUPPLIER one: prefer DE/LU/IE etc, NOT a customer SE number on a foreign invoice
-        # Match any "VAT Reg. No.: <CC><digits>" (capture all, then heuristic in extract_fields picks supplier)
-        r"VAT\s*Reg\.?\s*No\.?[\s:]*([A-Z]{2}\d{6,12})",
-    ],
+    # org_number hanteras separat i _extract_org_number: fakturan trycker ofta
+    # BÅDA parternas org.nr, och det första efter en etikett är inte sällan
+    # köparens (det egna bolagets).
     "currency": [
         r"(?:Valuta|Currency)[\s.:]*(SEK|EUR|USD|NOK|DKK|GBP)",
         r"\((\s*SEK|EUR|USD|NOK|DKK|GBP)\s*\)",
@@ -200,16 +239,294 @@ FIELD_PATTERNS = {
 # Some invoices put the label on one line and the value on the next:
 #   Fakturanummer  Erreferens
 #   1033           Johan Tollstorp
-# Order matters: org_number must be extracted before bankgiro
-# so we can avoid matching org.nr as bankgiro
+# org_number is extracted before these (see _extract_org_number) so an org.nr
+# on the bankgiro line is never taken for the bankgiro
 NEXTLINE_PATTERNS_ORDERED = [
     ("invoice_number", [r"(?:Fakturanummer|Faktura\s*nr|Invoice\s*(?:no|number))"]),
     ("invoice_date", [r"(?:Fakturadatum|Invoice\s*date)"]),
     ("due_date", [r"(?:Förfallodatum|Förfallodag|Due\s*date)"]),
-    ("org_number", [r"(?:Organisationsnummer|Org\.?\s*(?:nr|nummer))"]),
     ("bankgiro", [r"(?:Bankgiro|BG\b)"]),
     ("plusgiro", [r"(?:Plusgiro|PG\b)"]),
 ]
+
+
+# ── Egna identiteter ─────────────────────────────────────────────────────────
+# Köparens (det egna bolagets) org.nr, momsreg.nr och namn står på varje faktura.
+# Odoo-modulen skickar in fakturabolagets värden från res.company i
+# per-körning-configen ("own_ids"/"own_names", se default_config) och ändrar
+# aldrig modul-globalerna; OWN_COMPANY / OWN_VAT_NUMBERS (miljövariablerna
+# INVOICE_OCR_OWN_COMPANY och INVOICE_OCR_OWN_VAT, se nedan) används bara när
+# anroparen inte skickar något, t.ex. i fristående skript.
+
+# "Org.nr", "Org. nummer", "Organisationsnr.", "Organisationsnummer"
+ORG_LABEL = r"(?:Organisationsnummer|Organisationsnr|Org\.?\s*(?:nr|nummer))"
+ORG_VALUE = r"(\d{6}[\s-]?\d{4})"
+# Svenskt momsreg.nr: "Momsreg.nr.: SE556000000001", "Momsregistreringsnummer SE…"
+SE_VAT_LABEL = r"(?:Momsreg(?:istrerings)?\.?\s*(?:nr|nummer)|VAT\s*(?:no|number|nr|id))"
+
+_LEGAL_SUFFIXES = re.compile(
+    r"\b(?:ab|aktiebolag|\(publ\)|publ|ltd|limited|gmbh|as|a/s|oy|inc|llc|bv|sa|sarl)\b\.?",
+    re.IGNORECASE)
+
+
+def _id_keys(value):
+    """Jämförelsenycklar för ett org.nr eller momsreg.nr.
+
+    '556000-0000', '5560000000', 'SE556000000001' och '556000000001' ska alla
+    räknas som samma identitet. Tomma eller för korta värden ger inga nycklar.
+    """
+    s = re.sub(r"[^0-9A-Za-z]", "", str(value or "")).upper()
+    digits = re.sub(r"\D", "", s)
+    if len(digits) < 6:
+        return set()
+    keys = {s, digits}
+    # Svenskt momsreg.nr = SE + org.nr (10 siffror) + 01
+    if len(digits) == 12 and digits.endswith("01"):
+        keys.add(digits[:10])
+    return keys
+
+
+def build_own_ids(values):
+    """Normalisera en lista egna org.nr/momsreg.nr till en mängd jämförelsenycklar."""
+    keys = set()
+    for v in values or ():
+        keys |= _id_keys(v)
+    return keys
+
+
+def _default_own_ids():
+    return build_own_ids(OWN_VAT_NUMBERS)
+
+
+def _default_own_names():
+    return [OWN_COMPANY] if OWN_COMPANY else []
+
+
+def is_own_id(value, own_keys):
+    """True om value är ett av det egna bolagets org.nr/momsreg.nr (own_keys från build_own_ids)."""
+    return bool(_id_keys(value) & own_keys)
+
+
+def _name_key(name):
+    s = _LEGAL_SUFFIXES.sub("", str(name or "").lower())
+    return re.sub(r"[\s,.\-()]+", "", s)
+
+
+def build_own_names(names):
+    """Normaliserade egna bolagsnamn (gemener, utan blanksteg och bolagsform).
+
+    pdfplumber tappar ofta mellanslagen ('EXAMPLERECEIVERAB'), så jämförelsen görs
+    utan blanksteg. Namn kortare än fyra tecken hoppas över — de ger falsklarm.
+    """
+    keys = set()
+    for n in names or ():
+        k = _name_key(n)
+        if len(k) >= 4:
+            keys.add(k)
+    return keys
+
+
+def _mentions_own_name(text, own_names):
+    compact = re.sub(r"\s+", "", str(text or "").lower())
+    return any(k in compact for k in own_names)
+
+
+def _extract_org_number(text, lines, own_keys):
+    """Leverantörens org.nr: första kandidaten efter en org.nr-etikett som INTE är köparens.
+
+    Ordning: etikett+värde på samma rad (i dokumentordning), därefter etikett på
+    en rad och värdet på nästa. Returnerar (värde, [egna nummer som hoppades över]).
+    """
+    skipped = []
+    candidates = [m.group(1).strip() for m in re.finditer(
+        ORG_LABEL + r"[\s.:]*" + ORG_VALUE, text, re.IGNORECASE)]
+    for i, line in enumerate(lines):
+        if not re.search(ORG_LABEL, line, re.IGNORECASE):
+            continue
+        for j in range(i + 1, min(i + 4, len(lines))):
+            nxt = lines[j].strip()
+            if not nxt:
+                continue
+            m = re.search(ORG_VALUE, nxt)
+            if m:
+                candidates.append(m.group(1).strip())
+            break
+    for c in candidates:
+        if is_own_id(c, own_keys):
+            if c not in skipped:
+                skipped.append(c)
+            continue
+        return c, skipped
+    return None, skipped
+
+
+# ── Egna bankkonton ──────────────────────────────────────────────────────────
+
+def build_own_bank_keys(acc_numbers):
+    """Jämförelsenycklar för det egna bolagets bankkonton (sanitized_acc_number).
+
+    Returnerar (bank_keys, account_keys): bank_keys är alla kontons siffror utan
+    inledande nollor (bankgiro, plusgiro, konto); account_keys bara clearing+konto
+    (minst tio siffror), som is_own_bank_number även känner igen avkortade.
+    """
+    bank_keys, account_keys = set(), set()
+    for acc in acc_numbers or ():
+        acc = re.sub(r"\s+", "", str(acc or "")).upper()
+        digits = re.sub(r"\D", "", acc).lstrip("0")
+        bank_keys.add(digits)
+        # Svenskt IBAN: SEkk + 3 siffror bank-id + 17 siffror clearing/konto.
+        # På fakturor står bara clearing+konto ('9999-0012345').
+        if re.match(r"^SE\d{22}$", acc):
+            bank_keys.add(acc[7:].lstrip("0"))
+            account_keys.add(acc[7:].lstrip("0"))
+        elif not acc.startswith(("BG", "PG")) and len(digits) >= 10:
+            account_keys.add(digits)  # clearing+konto utan IBAN
+    return ({k for k in bank_keys if len(k) >= 6},
+            {k for k in account_keys if len(k) >= 10})
+
+
+def is_own_bank_number(number, bank_keys, account_keys=()):
+    """True om ett extraherat bankgiro/plusgiro/kontonummer är det egna bolagets.
+
+    Jämför siffrorna utan inledande nollor: 'BG 123-4567' mot '1234567', och
+    '9999-0012345' mot clearing+konto ur ett svenskt IBAN.
+    """
+    digits = re.sub(r"\D", "", str(number or "")).lstrip("0")
+    if len(digits) < 6:
+        return False
+    if digits in bank_keys:
+        return True
+    # AI:n kortar ibland av det egna kontonumret till bankgirolängd och kallar det
+    # bankgiro ('9999-0012' av '9999-0012345'). Början av ett eget
+    # clearing+kontonummer är det egna bolagets.
+    return len(digits) >= 7 and any(
+        k.startswith(digits) and len(k) > len(digits) for k in account_keys)
+
+
+# ── Betalreferens (OCR-nummer) ───────────────────────────────────────────────
+
+def ocr_mod10(number):
+    """Luhn/modulus 10 som Bankgirot och Plusgirot använder för OCR-nummer."""
+    total = 0
+    for i, ch in enumerate(reversed(str(number))):
+        d = int(ch) * (2 if i % 2 else 1)
+        total += d - 9 if d > 9 else d
+    return total % 10 == 0
+
+
+def valid_payment_reference(ocr_number, invoice_number=None):
+    """Betalreferensen att spara, eller False.
+
+    Bara siffror: måste vara ett giltigt OCR-nummer (2-25 siffror, modulus 10). AI:n har
+    klistrat ihop fakturanumret med köparens postnummer och ibland tagit postnumret ensamt.
+    Börjar referensen med fakturanumret och är fakturanumret självt giltigt används det
+    (vissa leverantörer skriver "Ange fakturanummer som OCR"). Annars sparas ingen
+    referens; betalfilen tar då fakturanumret. Referenser med bokstäver (RF-referenser,
+    utländska betalreferenser) lämnas som de är.
+    """
+    raw = str(ocr_number or "").strip()   # AI:n svarar ibland med ett tal
+    compact = re.sub(r"[\s\-]", "", raw)
+    if not compact:
+        return False
+    if not compact.isdigit():
+        return raw
+    if 2 <= len(compact) <= 25 and ocr_mod10(compact):
+        return compact
+    invoice = re.sub(r"[\s\-]", "", str(invoice_number or ""))
+    if (invoice.isdigit() and 2 <= len(invoice) < len(compact)
+            and compact.startswith(invoice) and ocr_mod10(invoice)):
+        return invoice
+    return False
+
+
+# ── Autogiro / automatisk dragning ───────────────────────────────────────────
+# Fakturor som dras automatiskt från köparens konto (bankavgifter, autogiro, SEPA
+# direct debit) får INTE betalas manuellt — då betalas de två gånger. pdfplumber
+# tappar ofta mellanslagen ('Betalningavfakturanskermedautomatik…'), så matchningen
+# görs på text utan blanksteg. Mönstren skrivs därför också utan blanksteg.
+#
+# Varje mönster måste PÅSTÅ att en dragning sker. Fristående ord som
+# 'autogiromedgivande', 'direct debit' eller 'Lastschrift' står lika gärna i
+# reklam, villkor och uppräkningar av betalsätt och räcker inte. Ett falsklarm
+# gör att en vanlig faktura aldrig betalas.
+_NOT_A_LIST = r"(?!eller|or|oder|och|and|und|,|/)"
+AUTO_DEBIT_PATTERNS = [
+    r"skermedautomatik",                                   # "Betalning sker med automatik"
+    r"debiteras(?:ert|ditt|vårt|företagets|bolagets)?konto",  # "Beloppet debiteras företagets konto"
+    r"(?:dras|drages|debiteras)(?:automatiskt)?från(?:ert|ditt|vårt|företagets|bolagets)konto",
+    r"(?:dras|debiteras|betalas)automatiskt",
+    r"(?:betalas|dras|debiteras|betalning(?:en)?sker)(?:via|med|genom|på)autogiro",
+    r"autogirodragning(?:en)?(?:sker|görs|kommer)",
+    r"(?:betalningssätt|betalsätt|betalningsmetod|betalningsform|paymentmethod|zahlungsart"
+    r"|zahlungsweise)[:.]?(?:sepa-?)?(?:autogiro|directdebit|lastschrift)" + _NOT_A_LIST,
+    r"(?:will|shall)be(?:automatically)?debited",
+    r"(?:paid|collected|charged|debited)(?:automatically)?(?:by|via|through)(?:sepa-?)?directdebit",
+    r"(?:wird|werden)(?:per|mittels|durch|via)(?:sepa-?)?lastschrift",
+    r"vonihremkonto(?:abgebucht|eingezogen)",
+]
+# Reklam för autogiro/direct debit på en vanlig faktura är inte en dragning.
+AUTO_DEBIT_NEGATIVE = [
+    r"(?:anslut(?:a|er)?|ansök(?:a|er)?(?:om)?|anmäl(?:a|er)?|teckna|välj|byttill|betala(?:enkelt)?med)(?:dig)?(?:till)?autogiro",
+    r"(?:setup|signupfor|switchto|payby|apply(?:for)?)(?:a)?directdebit",
+]
+# Nekad dragning: 'Autogirodragning sker ej', 'kommer inte att debiteras …'
+_AUTO_DEBIT_NEG_BEFORE = re.compile(
+    r"(?:ej|inte|icke|not|nicht|aldrig|never)(?:att|to|be|längre|mehr)?$")
+_AUTO_DEBIT_NEG_AFTER = re.compile(
+    r"^(?:sker|görs|kommer|will|is|does|shall|wird)?(?:ej|inte|icke|not|nicht|aldrig|never)")
+# Villkor: meningen beskriver när dragning sker, inte att den sker för den här fakturan
+_AUTO_DEBIT_CONDITION = re.compile(
+    r"om(?:du|ni)(?:har|betalar|väljer|valt|anslutit|ansluter|önskar)"
+    r"|ifall|såvida|vidbetalning(?:via|med|genom)"
+    r"|if(?:you|the(?:customer|buyer|client))|unless|(?:for|to)customers(?:who|with|that)"
+    r"|för(?:kunder|er)(?:som|med)|wenn(?:sie|du)|falls(?:sie|du)")
+_AUTO_DEBIT_CONDITION_START = re.compile(r"\s*(?:om|ifall|if|when|wenn|falls)\b", re.I)
+
+
+def _auto_debit_segments(text):
+    """Dela texten i meningar/stycken så att negation och villkor bara gäller sin mening.
+
+    Radbrytningar inom en mening (layoutens radbrytning) behålls ihop; en ny
+    rad som börjar med versal räknas som ny mening, utom efter ett kolon.
+    """
+    segments = []
+    for block in re.split(r"(?<=[.!?;])\s+|\n\s*\n", str(text or "")):
+        cur = []
+        for line in block.split("\n"):
+            s = line.strip()
+            if not s:
+                continue
+            if cur and s[0].isupper() and not cur[-1].endswith(":"):
+                segments.append(" ".join(cur))
+                cur = []
+            cur.append(s)
+        if cur:
+            segments.append(" ".join(cur))
+    return segments
+
+
+def detect_auto_debit(text):
+    """Returnerar den matchande frasen (utan blanksteg) om fakturan dras automatiskt, annars None.
+
+    Frasen måste påstå en dragning, får inte vara nekad ('sker ej') och får inte
+    stå i en villkorsmening ('om du har autogiro', 'Vid betalning via autogiro …').
+    """
+    for seg in _auto_debit_segments(text):
+        compact = re.sub(r"\s+", "", seg.lower())
+        if not compact:
+            continue
+        masked = compact
+        for neg in AUTO_DEBIT_NEGATIVE:
+            masked = re.sub(neg, "#", masked)
+        if _AUTO_DEBIT_CONDITION.search(masked) or _AUTO_DEBIT_CONDITION_START.match(seg):
+            continue
+        for pat in AUTO_DEBIT_PATTERNS:
+            for m in re.finditer(pat, masked):
+                if (_AUTO_DEBIT_NEG_BEFORE.search(masked[:m.start()])
+                        or _AUTO_DEBIT_NEG_AFTER.search(masked[m.end():])):
+                    continue
+                return m.group(0)
+    return None
 
 
 def _extract_text_pdfplumber(pdf_bytes):
@@ -277,13 +594,25 @@ def extract_text(pdf_bytes, config=None):
     return text
 
 
-def extract_fields(text, config=None):
-    """Extract structured invoice fields from text."""
+def extract_fields(text, own_ids=None, own_names=None, config=None):
+    """Extract structured invoice fields from text.
+
+    own_ids:   the receiving company's org/VAT numbers; skipped when extracting the
+               supplier's org.nr/VAT.
+    own_names: the receiving company's names; never taken as vendor_name.
+    config:    per-run config (see default_config). Explicit own_ids/own_names win;
+               otherwise the config's "own_ids"/"own_names" are used, which default to
+               OWN_VAT_NUMBERS/OWN_COMPANY (environment fallback for standalone use).
+    """
     cfg = _cfg(config)
-    own_company = cfg.get("own_company") or ""
-    own_vats = {_norm_vat(v) for v in (cfg.get("own_vat_numbers") or set())}
+    if own_ids is None:
+        own_ids = cfg["own_ids"]
+    if own_names is None:
+        own_names = cfg["own_names"]
     result = {}
     lines = text.split("\n")
+    own_keys = build_own_ids(own_ids)
+    own_name_keys = build_own_names(own_names)
 
     # Standard same-line patterns
     for field, patterns in FIELD_PATTERNS.items():
@@ -305,6 +634,13 @@ def extract_fields(text, config=None):
                     result[field] = value
                     break
 
+    # Leverantörens org.nr — aldrig köparens (det egna bolagets) nummer
+    org, own_skipped = _extract_org_number(text, lines, own_keys)
+    if org:
+        result["org_number"] = org
+    if own_skipped:
+        result["_own_ids_skipped"] = own_skipped
+
     # Next-line patterns: label on line N, value on line N+1 or N+2
     # (some PDFs have a blank line between label and value)
     for field, patterns in NEXTLINE_PATTERNS_ORDERED:
@@ -323,16 +659,18 @@ def extract_fields(text, config=None):
                         m = re.match(r"(\d[\d/-]*)", next_line)
                     elif field in ("invoice_date", "due_date"):
                         m = re.match(r"(" + "|".join(DATE_PATTERNS) + ")", next_line)
-                    elif field == "org_number":
-                        m = re.search(r"(\d{6}[\s-]?\d{4})", next_line)
                     elif field in ("bankgiro", "plusgiro"):
-                        # Avoid matching org.nr (6-4 digits) as bankgiro (4-4 digits)
-                        org = result.get("org_number", "").replace("-", "")
+                        # Avoid matching org.nr (6-4 digits) as bankgiro (4-4 digits):
+                        # any org.nr printed on the line (the buyer's or the supplier's)
+                        orgs = {re.sub(r"\D", "", o) for o in re.findall(ORG_VALUE, next_line)}
+                        orgs |= {k for k in own_keys if k.isdigit()}
+                        if result.get("org_number"):
+                            orgs.add(re.sub(r"\D", "", result["org_number"]))
                         candidates = re.findall(r"(\d{4}[\s-]?\d{4})", next_line)
                         m = None
                         for c in candidates:
-                            if org and c.replace("-", "").replace(" ", "") in org:
-                                continue  # Skip — this is the org.nr
+                            if any(re.sub(r"\D", "", c) in o for o in orgs if o):
+                                continue  # Skip — this is an org.nr
                             # Create a fake match-like object
                             class _M:
                                 def __init__(self, v): self._v = v
@@ -418,23 +756,35 @@ def extract_fields(text, config=None):
 
     # Pick supplier VAT from all "VAT Reg. No.: <CC>NNNN" matches.
     # Hetzner & similar foreign invoices print the SUPPLIER VAT in the footer
-    # and the CUSTOMER (Molnkontakt SE...) VAT in the header. Prefer non-SE
-    # candidates, and prefer the LAST occurrence (footer).
+    # and the CUSTOMER (the receiving company's SE...) VAT in the header. Prefer
+    # non-own, non-SE candidates, and prefer the LAST occurrence (footer).
     vat_candidates = re.findall(r"VAT\s*Reg\.?\s*No\.?[\s:]*([A-Z]{2}\d{6,12})",
                                 text, re.IGNORECASE)
     if vat_candidates:
-        # Prefer non-own, non-SE; fall back to last occurrence. The comparison
-        # is normalized (spaces/dashes stripped, upper) — company.vat is often
-        # stored with spaces and company_registry as NNNNNN-NNNN.
-        non_own = [v for v in vat_candidates if _norm_vat(v) not in own_vats]
+        # Prefer non-own, non-SE; fall back to last occurrence. is_own_id compares
+        # normalized keys (spaces/dashes stripped, upper; SE…01 and the bare org.nr
+        # count as the same number) — company.vat is often stored with spaces and
+        # company_registry as NNNNNN-NNNN.
+        non_own = [v for v in vat_candidates if not is_own_id(v, own_keys)]
         non_se = [v for v in non_own if not v.upper().startswith("SE")]
         if non_se:
             result["org_number"] = non_se[-1]
-        # elif non_own: only SE candidates left — another Swedish party (or the
-        # customer block on a foreign invoice). We cannot tell supplier from
-        # customer here, so do NOT overwrite org_number with a guess; keep
-        # whatever the regex extraction found (e.g. "Organisationsnummer").
+        elif non_own and "org_number" not in result:
+            # Only Swedish candidates left and nothing else found. Our own numbers
+            # are already filtered out (own_ids), so the remaining one is the
+            # supplier's. When the regex extraction already found a number (e.g.
+            # "Organisationsnummer") keep it rather than guess between parties.
+            result["org_number"] = non_own[-1]
         # else: only own VAT found — leave any prior org_number value alone
+
+    # Inget org.nr alls: svenskt momsreg.nr ("Momsreg.nr.: SE556000000001")
+    if "org_number" not in result:
+        for m in re.finditer(SE_VAT_LABEL + r"\.?[\s.:]*([A-Z]{2}\s?\d[\d\s]{6,13}\d)",
+                             text, re.IGNORECASE):
+            v = re.sub(r"\s+", "", m.group(1)).upper()
+            if not is_own_id(v, own_keys):
+                result["org_number"] = v
+                break
 
     # Extract supplier/vendor name from the PDF
     # Look for the first company-like name (ending in AB, AS, GmbH, Ltd, etc.)
@@ -442,7 +792,7 @@ def extract_fields(text, config=None):
     if "vendor_name" not in result:
         for line in lines[:15]:
             stripped = line.strip()
-            if re.search(r"\b(?:AB|AS|GmbH|Ltd|Inc|LLC|Oy|A/S)\b", stripped) and not (own_company and own_company in stripped.lower()):
+            if re.search(r"\b(?:AB|AS|GmbH|Ltd|Inc|LLC|Oy|A/S)\b", stripped) and not _mentions_own_name(stripped, own_name_keys):
                 # Take up to and including the company suffix
                 m = re.match(r"(.+?\b(?:AB|AS|GmbH|Ltd|Inc|LLC|Oy|A/S)\b)", stripped)
                 result["vendor_name"] = m.group(1).strip() if m else stripped.split("  ")[0].strip()
@@ -451,10 +801,12 @@ def extract_fields(text, config=None):
     if "vendor_name" not in result:
         # Swedish: "Company AB  Organisationsnummer  Bankgiro"
         for line in lines:
-            m = re.match(r"^(.+?)\s+(?:Organisationsnummer|Org\.?\s*(?:nr|nummer))", line, re.IGNORECASE)
+            m = re.match(r"^(.+?)\s+" + ORG_LABEL + r"[\s.:]*(\d{6}[\s-]?\d{4})?", line, re.IGNORECASE)
             if m:
                 name = m.group(1).strip().rstrip(",")
-                if name and len(name) > 1 and not (own_company and own_company in name.lower()):
+                if m.group(2) and is_own_id(m.group(2), own_keys):
+                    continue  # köparens block ("Sweden ORG.NR: <eget nummer>")
+                if name and len(name) > 1 and not _mentions_own_name(name, own_name_keys):
                     result["vendor_name"] = name
                     break
 
@@ -466,7 +818,9 @@ def extract_fields(text, config=None):
                     candidate = lines[j].strip()
                     if (candidate and len(candidate) > 2
                             and not candidate.startswith(("http", "www"))
-                            and not (own_company and own_company in candidate.lower())):
+                            and not _mentions_own_name(candidate, own_name_keys)
+                            # "PERIOD: 2026-04-01", "DATUM: …" är fält, inte ett namn
+                            and not re.search(r"\w\s*:\s*\d", candidate)):
                         result["vendor_name"] = candidate
                         break
                 break
@@ -515,16 +869,12 @@ VENICE_URL = "https://api.venice.ai/api/v1"
 OPENAI_URL = "https://api.openai.com/v1"
 
 # The receiving company, so its own name/VAT number printed on the invoice is never taken
-# for the supplier. The Odoo model passes the invoice company's values in the per-run config
-# (own_company / own_vat_numbers); these globals are the fallback for standalone use: set
-# INVOICE_OCR_OWN_COMPANY ("Acme AB") and INVOICE_OCR_OWN_VAT ("SE5566...", comma-separated).
+# for the supplier. The Odoo model passes the invoice company's identities (the company and
+# its branches) in the per-run config ("own_ids"/"own_names", see default_config); these
+# globals are only the fallback for standalone use: set INVOICE_OCR_OWN_COMPANY ("Acme AB")
+# and INVOICE_OCR_OWN_VAT ("SE5566...", comma-separated).
 OWN_COMPANY = os.environ.get("INVOICE_OCR_OWN_COMPANY", "").strip().lower()
 OWN_VAT_NUMBERS = {v.strip().upper() for v in os.environ.get("INVOICE_OCR_OWN_VAT", "").split(",") if v.strip()}
-
-
-def _norm_vat(vat):
-    """Normalisera ett momsnummer för jämförelse: utan mellanslag/bindestreck, versaler."""
-    return re.sub(r"[\s-]", "", vat or "").upper()
 
 
 def default_config():
@@ -553,8 +903,11 @@ def default_config():
         "staik_timeout": STAIK_TIMEOUT,
         "retry_skip_seconds": RETRY_SKIP_SECONDS,
         "staik_min_completion_tokens": STAIK_MIN_COMPLETION_TOKENS,
-        "own_company": OWN_COMPANY,
-        "own_vat_numbers": set(OWN_VAT_NUMBERS),
+        # The receiving company, never the supplier: its org/VAT numbers and names.
+        # The Odoo model fills these per run from res.company (the bill's company and
+        # its branches); the env-derived globals are the standalone fallback.
+        "own_ids": sorted(OWN_VAT_NUMBERS),
+        "own_names": _default_own_names(),
         "text_limit": TEXT_LIMIT,
         "max_ocr_pages": MAX_OCR_PAGES,
         "ocr_scale": OCR_SCALE,
@@ -1078,20 +1431,24 @@ def _extract_fields_ai(text, reference=None, config=None):
     return _strip_meta(data)
 
 
-def extract_invoice_data(pdf_b64_or_bytes, config=None):
+def extract_invoice_data(pdf_b64_or_bytes, config=None, *, own_ids=None, own_names=None):
     """Main entry point: extract invoice data from a PDF.
 
     Uses regex first, then AI to validate and fill gaps.
-    AI result wins on conflicts (it sees full context).
 
     Args:
         pdf_b64_or_bytes: Either base64-encoded string or raw bytes
-        config: optional per-run config dict (see default_config); provider
-            credentials, own-company guard and OCR limits. Falls back to the
-            module globals (env-read defaults) when omitted.
+        config: optional per-run config dict (see default_config): provider
+            credentials, the receiving company ("own_ids"/"own_names") and OCR
+            limits. Falls back to the module globals (env-read defaults) when omitted.
+        own_ids:   the receiving company's org/VAT numbers — never the supplier's
+                   (overrides config["own_ids"])
+        own_names: the receiving company's names (overrides config["own_names"])
 
     Returns:
-        dict with extracted fields + 'raw_text' key
+        dict with extracted fields + 'raw_text' key. 'auto_debit' is set to the
+        matching phrase when the invoice is debited automatically from the buyer's
+        account; '_own_ids_skipped' lists own org/VAT numbers that were ignored.
     """
     if isinstance(pdf_b64_or_bytes, str):
         pdf_bytes = base64.b64decode(pdf_b64_or_bytes)
@@ -1100,9 +1457,24 @@ def extract_invoice_data(pdf_b64_or_bytes, config=None):
 
     cfg = _cfg(config)
     text = extract_text(pdf_bytes, cfg)
-    regex_fields = extract_fields(text, cfg)
-    ai_fields = _extract_fields_ai(text, reference=regex_fields, config=cfg)
+    return extract_invoice_data_from_text(text, config=cfg, own_ids=own_ids, own_names=own_names)
 
+
+def extract_invoice_data_from_text(text, own_ids=None, own_names=None, config=None):
+    """Like extract_invoice_data, on already extracted PDF text (testable without a PDF)."""
+    cfg = _cfg(config)
+    if own_ids is not None:
+        cfg["own_ids"] = own_ids
+    if own_names is not None:
+        cfg["own_names"] = own_names
+    own_keys = build_own_ids(cfg["own_ids"])
+    regex_fields = extract_fields(text, config=cfg)
+    ai_fields = _extract_fields_ai(text, reference=regex_fields, config=cfg)
+    return _merge_fields(text, regex_fields, ai_fields, own_keys)
+
+
+def _merge_fields(text, regex_fields, ai_fields, own_keys):
+    """Merge the regex and AI fields (pure function, no network calls)."""
     # Merge. Regex vinner pa SIFFROR och identifierare, AI pa beskrivande falt.
     #
     # Uppmatt over sju leverantorer och 23 fakturor: regex pa den tryckta totalen
@@ -1118,11 +1490,33 @@ def extract_invoice_data(pdf_b64_or_bytes, config=None):
     final = {}
     all_keys = set(list(regex_fields.keys()) + list(ai_fields.keys()))
     conflicts = []
+    own_skipped = list(regex_fields.get("_own_ids_skipped") or [])
     for key in all_keys:
+        if key == "_own_ids_skipped":
+            continue
         ai_val = ai_fields.get(key)
         regex_val = regex_fields.get(key)
         ai_has = key in ai_fields and ai_val is not None
         regex_has = key in regex_fields and regex_val is not None
+
+        if key == "org_number":
+            # Köparens eget org.nr är ALDRIG leverantörens. Regex vinner bara om den
+            # hittat ett främmande nummer; annars tar AI:n över om den har ett.
+            regex_own = regex_has and is_own_id(regex_val, own_keys)
+            ai_own = ai_has and is_own_id(ai_val, own_keys)
+            for own, val in ((regex_own, regex_val), (ai_own, ai_val)):
+                if own and str(val) not in own_skipped:
+                    own_skipped.append(str(val))
+            regex_ok = regex_has and not regex_own
+            ai_ok = ai_has and not ai_own
+            if regex_ok and ai_ok and not (_id_keys(ai_val) & _id_keys(regex_val)):
+                conflicts.append(f"{key}: regex={regex_val} ai={ai_val}")
+            if regex_ok:
+                final[key] = regex_val
+            elif ai_ok:
+                final[key] = ai_val
+            continue
+
         if ai_has and regex_has and str(ai_val) != str(regex_val):
             conflicts.append(f"{key}: regex={regex_val} ai={ai_val}")
 
@@ -1135,6 +1529,22 @@ def extract_invoice_data(pdf_b64_or_bytes, config=None):
 
     if conflicts:
         final["_conflicts"] = conflicts
+    if own_skipped:
+        final["_own_ids_skipped"] = own_skipped
+
+    # Ett bankgiro har 7–8 siffror (Peppol SE-R-009). Längre är ett kontonummer —
+    # på ett autogiro-underlag har AI:n gissat köparens clearing+konto (och vid
+    # omkörning en avkortad variant) som leverantörens bankgiro.
+    bg = final.get("bankgiro")
+    if bg is not None and not 7 <= len(re.sub(r"\D", "", str(bg))) <= 8:
+        final.pop("bankgiro")
+        final.setdefault("_notes", []).append(
+            f"'{bg}' har inte 7–8 siffror och är inget bankgiro – användes inte")
+
+    # Dras fakturan automatiskt från köparens konto? Då ska den inte betalas manuellt.
+    auto_debit = detect_auto_debit(text)
+    if auto_debit:
+        final["auto_debit"] = auto_debit
 
     # Fakturans tryckta belopp separat, sa kontrollen langre fram har ett facit
     # som inte ar samma siffror den ska kontrollera.

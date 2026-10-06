@@ -85,9 +85,9 @@ class TestProviderSettings(TransactionCase):
         Move = self.env["account.move"]
         own = Move._invoice_ocr_config(self.env.company)
         second = Move._invoice_ocr_config(other)
-        self.assertEqual(second["own_company"], "second example company")
-        self.assertIn("SE999999999901", second["own_vat_numbers"])
-        self.assertNotIn("SE999999999901", own["own_vat_numbers"])
+        self.assertIn("Second Example Company", second["own_names"])
+        self.assertIn("SE999999999901", second["own_ids"])
+        self.assertNotIn("SE999999999901", own["own_ids"])
         self.assertEqual(_globals(), before)
 
     def test_upload_run_passes_the_config(self):
@@ -104,5 +104,25 @@ class TestProviderSettings(TransactionCase):
         self.assertEqual(cfg["provider"], "openai_compatible")
         self.assertEqual(cfg["api_key"], "K-saved")
         self.assertEqual(cfg["base_url"], "https://llm.example/v1")
-        self.assertEqual(cfg["own_company"], (move.company_id.name or "").strip().lower())
+        self.assertIn(move.company_id.name, cfg["own_names"])
+        self.assertEqual(_globals(), before)
+
+    def test_own_context_travels_in_the_config(self):
+        """Own ids/names/partners/banks reach the library and the guards via the config."""
+        Move = self.env["account.move"]
+        company = self.env.company
+        company.write({"vat": "SE999999000601", "company_registry": "999999-0006"})
+        self.env["res.partner.bank"].create({"partner_id": company.partner_id.id,
+                                             "acc_number": "BG 999-0001"})
+        before = _globals()
+        cfg = Move._invoice_ocr_config(company)
+        self.assertIn("SE999999000601", cfg["own_ids"])
+        self.assertIn(company.name, cfg["own_names"])
+        self.assertIn(company.partner_id.id, cfg["own_partner_ids"])
+        self.assertIn("9990001", cfg["own_bank_keys"])
+        self.assertEqual(Move._ocr_own_from_config(cfg), Move._ocr_own_context(company))
+        # The library reads the own ids from the config: the buyer's org.nr is skipped
+        text = "Faktura\nKund: Org.nr: 999999-0006\nLeverantör Org.nr: 999999-0014\n"
+        fields = invoice_ocr.extract_fields(text, config=cfg)
+        self.assertEqual(fields["org_number"], "999999-0014")
         self.assertEqual(_globals(), before)

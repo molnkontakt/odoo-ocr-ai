@@ -33,5 +33,5 @@ class TestReceiptConfig(TransactionCase):
         cfg = extract.call_args.kwargs["config"]
         self.assertEqual(cfg["provider"], "openai_compatible")
         self.assertEqual(cfg["api_key"], "K-receipt")
-        self.assertEqual(cfg["own_company"], (expense.company_id.name or "").strip().lower())
+        self.assertIn(expense.company_id.name, cfg["own_names"])
         self.assertEqual(_globals(), before)

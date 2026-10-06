@@ -35,6 +35,28 @@ def test_own_company_is_never_the_vendor(monkeypatch):
     assert "receiver" not in (fields.get("vendor_name") or "").lower()
 
 
+def test_plan_total_adjustments_credit_outside_vat_and_rounding():
+    # services 2 061,00 (25 %), credit -0,25 outside VAT, rounding -1,00:
+    # printed net 2 060,75, VAT 515,25, amount due 2 575
+    plan = inv.plan_total_adjustments({25: 2060.75}, 0.0, 515.19, 515.25, 2575.0)
+    assert plan == {"base_shift": (25, 0.25), "rounding": -1.0}
+
+
+def test_plan_total_adjustments_leaves_correct_and_large_alone():
+    assert inv.plan_total_adjustments({25: 2061.0}, -0.25, 515.25, 515.25, 2576.0) == {
+        "base_shift": None, "rounding": None}
+    # 50 kr is not rounding: flagged by the total check, not "fixed"
+    assert inv.plan_total_adjustments({25: 1000.0}, 0.0, 250.0, 300.0, 1300.0) == {
+        "base_shift": None, "rounding": None}
+    # two rates: unclear which base is wrong
+    assert inv.plan_total_adjustments({25: 100.0, 12: 50.0}, 0.0, 31.0, 32.0, 182.0)["base_shift"] is None
+
+
+def test_plan_total_adjustments_rounding_only():
+    assert inv.plan_total_adjustments({25: 100.4}, 0.0, 25.10, 25.10, 125.0) == {
+        "base_shift": None, "rounding": -0.5}
+
+
 def test_slow_first_call_skips_retry(monkeypatch):
     """If the first AI call took >= RETRY_SKIP_SECONDS, no second call is made.
 
@@ -335,8 +357,8 @@ def test_default_config_has_all_keys():
                 "openai_model", "staik_url", "staik_api_key", "staik_model",
                 "base_url", "api_key", "model", "timeout", "ollama_url", "ollama_model",
                 "staik_timeout", "retry_skip_seconds",
-                "staik_min_completion_tokens", "own_company",
-                "own_vat_numbers", "text_limit", "max_ocr_pages", "ocr_scale"):
+                "staik_min_completion_tokens", "own_ids",
+                "own_names", "text_limit", "max_ocr_pages", "ocr_scale"):
         assert key in cfg, key
 
 
@@ -353,9 +375,30 @@ def test_own_company_passed_via_config_not_globals():
         "Example Receiver AB\nVAT Reg No: SE556000000001\n"
         "Supplier Ltd\nVAT Reg No: GB123456789\nInvoice no: 42\nTotal: 100.00\n"
     )
+    before = (inv.OWN_COMPANY, set(inv.OWN_VAT_NUMBERS))
     fields = inv.extract_fields(text, config={
-        "own_company": "example receiver ab",
-        "own_vat_numbers": {"SE556000000001"},
+        "own_names": ["Example Receiver AB"],
+        "own_ids": ["SE 556000-000001"],  # normalized inside the library
     })
     assert "receiver" not in (fields.get("vendor_name") or "").lower()
     assert fields["org_number"] == "GB123456789"
+    assert (inv.OWN_COMPANY, set(inv.OWN_VAT_NUMBERS)) == before
+
+
+def test_own_identities_flow_through_the_pipeline_config(monkeypatch):
+    """extract_invoice_data(config=…) hands the config's own ids to the regex step and
+    the merge, explicit own_ids override it, and the env globals stay untouched."""
+    monkeypatch.setattr(inv, "OWN_COMPANY", "")
+    monkeypatch.setattr(inv, "OWN_VAT_NUMBERS", set())
+    text = "Faktura\nKund: Example Receiver AB\nOrg.nr: 556000-0001\nAtt betala: 100,00\n"
+    monkeypatch.setattr(inv, "extract_text", lambda pdf, config=None: text)
+    monkeypatch.setattr(inv, "_extract_fields_ai",
+                        lambda text, reference=None, config=None: {"org_number": "556000-0001"})
+    cfg = {"own_ids": ["SE556000000101"], "own_names": ["Example Receiver AB"]}
+    out = inv.extract_invoice_data(b"%PDF-fake", config=cfg)
+    assert "org_number" not in out, "the buyer's own org.nr is never the supplier's"
+    assert "556000-0001" in out["_own_ids_skipped"]
+    # explicit own_ids win over the config: nothing is own any more
+    out = inv.extract_invoice_data(b"%PDF-fake", config=cfg, own_ids=[])
+    assert out["org_number"] == "556000-0001"
+    assert inv.OWN_COMPANY == "" and not inv.OWN_VAT_NUMBERS
