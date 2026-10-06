@@ -150,6 +150,32 @@ class TestOcrVat(OcrBillCase):
         self._assert_tax(move.invoice_line_ids, "purchase_goods_tax_25_EC")
         self.assertEqual(move.invoice_line_ids.account_id.code, "4515")
 
+    def test_equipment_for_own_use_is_goods_on_its_cost_account(self):
+        """A computer on 5410 (förbrukningsinventarier) is goods: Swedish 25 % G, and from
+        another EU country an EU purchase of goods (box 20) that stays on 5410 (#39)."""
+        move = self._bill(self.se_vendor, [
+            {"description": "Laptop", "amount": 8000.0, "vat_rate": 25, "account_code": "5410"},
+        ])
+        self.assertEqual(move.invoice_line_ids.account_id.code, "5410")
+        self._assert_tax(move.invoice_line_ids, "purchase_tax_25_goods")
+        move = self._bill(self.de_vendor, [
+            {"description": "Router", "amount": 2000.0, "vat_rate": 0, "account_code": "5410"},
+        ], vat_amount=0.0)
+        line = move.invoice_line_ids
+        self.assertEqual(line.account_id.code, "5410")
+        self._assert_tax(line, "purchase_goods_tax_25_EC")
+        self.assertIn("se_20", line.tax_tag_ids.mapped("name"))
+
+    def test_a_line_without_an_account_is_noted(self):
+        move = self._bill(self.se_vendor, [
+            {"description": "Something", "amount": 100.0, "vat_rate": 25},
+        ])
+        self.assertEqual(move.invoice_line_ids.account_id, move.journal_id.default_account_id)
+        self.assertIn("line 'Something': the AI gave no account", self._bodies(move))
+        move = self._bill(self.se_vendor, [], subtotal=100.0, vat_amount=25.0,
+                          total_amount=125.0)
+        self.assertIn("one line was made from the totals", self._bodies(move))
+
     # -- the account list (#24) --------------------------------------------------------
 
     def test_account_list_only_has_the_charts_accounts(self):

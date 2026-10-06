@@ -1305,6 +1305,9 @@ class AccountMove(models.Model):
         lines = self._ocr_bill_lines(data)
         if not lines:
             return
+        if not any(isinstance(line, dict) for line in data.get("lines") or []):
+            notes.append(_("No lines were read: one line was made from the totals, on the "
+                           "default account – check its account."))
         partner = move.partner_id.commercial_partner_id
         region = lib.vat_region(self._ocr_partner_country_code(partner))
         vat_total = lib.document_vat(data)

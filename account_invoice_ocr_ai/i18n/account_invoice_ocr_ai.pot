@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 19.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-06 06:53+0000\n"
-"PO-Revision-Date: 2026-10-06 06:53+0000\n"
+"POT-Creation-Date: 2026-10-06 06:56+0000\n"
+"PO-Revision-Date: 2026-10-06 06:56+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
@@ -489,6 +489,14 @@ msgid ""
 "No amounts printed on the document could be read: the lines were checked "
 "only against the AI's reading of the total, net and VAT – compare the total "
 "with the document."
+msgstr ""
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"No lines were read: one line was made from the totals, on the default "
+"account – check its account."
 msgstr ""
 
 #. module: account_invoice_ocr_ai
@@ -1319,6 +1327,12 @@ msgstr ""
 msgid ""
 "line '%(line)s': account %(code)s is not in the account list – the default "
 "account is used"
+msgstr ""
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid "line '%(line)s': the AI gave no account – the default account is used"
 msgstr ""
 
 #. module: account_invoice_ocr_ai

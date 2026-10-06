@@ -1645,15 +1645,23 @@ def config_from_settings(get, base=None):
 # The default account list: Swedish BAS codes with a hint for the model each. The Odoo
 # module sends only the ones that exist in the bill company's chart, and the list can be
 # replaced in the settings (invoice_ocr.account_list, one "code: hint" per line).
+# 4000 is for goods bought for resale or production. Its hint used to say "physical goods,
+# hardware", and the model put computers and accessories bought for the company's own use there
+# (BAS: 5410), on every such bill (#39): the hints of 4000 and 5410 say which is which.
 DEFAULT_ACCOUNTS = (
-    ("4000", "Inköp av varor från Sverige (physical goods, hardware)"),
+    ("4000", "Inköp av varor från Sverige (goods bought for resale or for production: "
+             "handelsvaror, material – not equipment or supplies for the company's own use)"),
     ("4515", "Inköp av varor från annat EU-land, 25%"),
     ("4535", "Inköp av tjänster från annat EU-land, 25%"),
     ("4545", "Import av varor, 25% moms"),
     ("5010", "Lokalhyra (office rent)"),
     ("5252", "Leasing av datorer (computer leasing)"),
-    ("5410", "Förbrukningsinventarier (consumables, small equipment)"),
+    ("5410", "Förbrukningsinventarier (equipment for the company's own use worth less than "
+             "half a price base amount: computers, tablets, phones, monitors, docking stations, "
+             "chargers, cables, storage, network equipment, tools, small furniture)"),
     ("5420", "Programvaror (packaged software, on-premise licenses)"),
+    ("5460", "Förbrukningsmaterial (consumables used up in the business: cleaning, packaging, "
+             "small material)"),
     ("5610", "Personbilar (vehicle costs)"),
     ("5810", "Biljetter (train, flight, bus, taxi, public transport tickets)"),
     ("5820", "Hyrbilskostnader (car hire)"),
@@ -1755,7 +1763,9 @@ INVOICE_JSON_SCHEMA = invoice_json_schema()
 
 def check_account_codes(data, accounts):
     """Drop an AI line's account_code that is not in `accounts` (the list the model was
-    given), so the line gets the company's fallback account. Returns (data, notes)."""
+    given), so the line gets the company's fallback account. Returns (data, notes); a line
+    left without an account is noted too (#39: the fallback is the purchase journal's default
+    account, often a goods account)."""
     codes = {code for code, _hint in accounts or ()}
     notes = []
     for line in data.get("lines") or []:
@@ -1766,6 +1776,9 @@ def check_account_codes(data, accounts):
                 notes.append(_("line '%(line)s': account %(code)s is not in the account list – "
                                "the default account is used",
                                line=line.get("description") or line.get("amount"), code=code))
+        elif not code and codes:
+            notes.append(_("line '%(line)s': the AI gave no account – the default account is "
+                           "used", line=line.get("description") or line.get("amount")))
     return data, notes
 
 
@@ -1819,6 +1832,8 @@ IMPORTANT:
   Best of all: subtract it from that service's own line instead of listing it
   separately.
 - subtotal + vat_amount must equal total_amount. If the invoice has fees, charges, or adjustments beyond the line items, include them as separate lines.
+- Equipment, computers, accessories and supplies the company buys for ITS OWN USE are costs
+  (the list's equipment, consumables or office-supplies account), not goods for resale.
 - Use the SAME account code for similar services on the same invoice. E.g. if all lines are cloud/SaaS services, use one account (6231 if it is in the list) for all of them including platform fees.
 - COMPLETENESS BEATS BREVITY: the `lines` amounts MUST sum to `subtotal`. Never
   drop a printed amount to make the list shorter — aggregate instead. A telecom
@@ -2537,9 +2552,14 @@ VAT_PREFIX_COUNTRY = {"EL": "GR", "XI": "GB"}
 SWEDISH_VAT_RATES = (25, 12, 6)
 
 # Goods purchases (BAS): 4000–4499, EU goods 4510–4529 (4515–4517) and import of goods
-# 4540–4549 (4545–4547). Everything else is a service: 4530–4539 (4531–4533 services from
-# outside the EU, 4535–4537 from the EU) and the other cost accounts, 5xxx–7xxx.
-GOODS_ACCOUNT_RANGES = ((4000, 4499), (4510, 4529), (4540, 4549))
+# 4540–4549 (4545–4547), and the cost accounts for goods the company uses itself: equipment and
+# consumables 5400–5419 and 5430–5499 (5410 förbrukningsinventarier, 5460
+# förbrukningsmaterial; not 5420 software) and office supplies and printed matter 6100–6199 —
+# a computer bought from another EU country is an EU purchase of goods (box 20) also on 5410.
+# Everything else is a service: 4530–4539 (4531–4533 services from outside the EU, 4535–4537
+# from the EU) and the other cost accounts.
+GOODS_ACCOUNT_RANGES = ((4000, 4499), (4510, 4529), (4540, 4549), (5400, 5419), (5430, 5499),
+                        (6100, 6199))
 # Exempt or out-of-scope costs: a line with VAT rate 0 on these accounts gets no tax, also
 # from a foreign supplier (no reverse charge on a reminder fee, bank charge, insurance
 # premium or interest): insurance 63xx, bank charges 657x, other external costs and fees

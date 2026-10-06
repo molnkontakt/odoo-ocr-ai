@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 19.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-06 06:53+0000\n"
-"PO-Revision-Date: 2026-10-06 06:53+0000\n"
+"POT-Creation-Date: 2026-10-06 06:56+0000\n"
+"PO-Revision-Date: 2026-10-06 06:56+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
@@ -545,6 +545,16 @@ msgstr ""
 "Inga tryckta belopp kunde läsas på underlaget: raderna kontrollerades bara "
 "mot AI:ns läsning av totalen, nettot och momsen – jämför totalen med "
 "underlaget."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"No lines were read: one line was made from the totals, on the default "
+"account – check its account."
+msgstr ""
+"Inga rader lästes: en rad skapades av totalbeloppen, på standardkontot – "
+"kontrollera kontot."
 
 #. module: account_invoice_ocr_ai
 #. odoo-python
@@ -1519,6 +1529,12 @@ msgid ""
 msgstr ""
 "raden '%(line)s': konto %(code)s finns inte i kontolistan – "
 "standardkontot används"
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/lib/invoice_ocr.py:0
+msgid "line '%(line)s': the AI gave no account – the default account is used"
+msgstr "rad '%(line)s': AI:n angav inget konto – standardkontot används"
 
 #. module: account_invoice_ocr_ai
 #: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr

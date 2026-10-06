@@ -160,9 +160,32 @@ def test_check_account_codes_drops_codes_outside_the_list():
     assert "account_code" not in data["lines"][0]
     assert data["lines"][1]["account_code"] == "6540"
     assert notes == ["line 'Cloud': account 6231 is not in the account list – the default "
-                     "account is used"]
+                     "account is used",
+                     "line '1.0': the AI gave no account – the default account is used"]
     _data, notes = inv.check_account_codes({"lines": [{"amount": 1.0, "account_code": "6540"}]}, [])
     assert notes == []
+
+
+@pytest.mark.parametrize(("code", "region", "xmlid"), [
+    # equipment and consumables for the company's own use are goods (#39): a computer from
+    # another EU country is an EU purchase of goods (box 20) also on 5410
+    ("5410", "eu", "purchase_goods_tax_25_EC"),
+    ("5460", "eu", "purchase_goods_tax_25_EC"),
+    ("6110", "non_eu", "purchase_goods_tax_25_NEC"),
+    ("5420", "eu", "purchase_services_tax_25_EC"),   # software is a service
+    ("5010", "eu", "purchase_services_tax_25_EC"),
+])
+def test_own_use_goods_accounts(code, region, xmlid):
+    assert inv.line_tax_xmlid(code, 0, region, "reverse_charge") == xmlid
+    assert inv.remap_account_code(code, region, 25) == code, "the cost account stays"
+
+
+def test_default_account_hints_tell_own_use_from_resale():
+    hints = dict(inv.DEFAULT_ACCOUNTS)
+    assert "resale" in hints["4000"] and "hardware" not in hints["4000"]
+    assert "computers" in hints["5410"] and "own use" in hints["5410"]
+    assert "5460" in hints
+    assert "ITS OWN USE" in inv.build_extraction_prompt()
 
 
 def test_the_runs_account_list_reaches_the_model_and_the_check(monkeypatch):

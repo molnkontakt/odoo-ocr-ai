@@ -121,9 +121,12 @@ for the bill's company; on another chart a domestic tax is found by rate, and a
 reverse-charge tax only by its l10n_se-style name ("25% EU G"), never guessed.
 
 - **Goods or services** follows the line's account (BAS): goods are 4000–4499,
-  4510–4529 (EU goods, 4515–4517) and 4540–4549 (import, 4545–4547); everything
-  else is a service, including 4530–4539 (4531–4533 from outside the EU,
-  4535–4537 from the EU) and the 5xxx–7xxx cost accounts.
+  4510–4529 (EU goods, 4515–4517) and 4540–4549 (import, 4545–4547), and the
+  cost accounts of goods for the company's own use: 5400–5419 and 5430–5499
+  (equipment and consumables, e.g. 5410, 5460; not 5420 software) and 6100–6199
+  (office supplies, printed matter). Everything else is a service, including
+  4530–4539 (4531–4533 from outside the EU, 4535–4537 from the EU) and the other
+  5xxx–7xxx cost accounts.
 - **Swedish vendor** (or no country): Swedish input VAT at the line's rate,
   `25% G` or `25% S` etc. A 0 % line gets no tax.
 - **Foreign vendor, no VAT on the document**: reverse charge per line, at the
@@ -228,9 +231,17 @@ settings with your own, one `code: hint` per line. Only the codes that exist in
 the bill company's chart (or have expense sub-accounts there, e.g. 65400 for
 6540) are sent, the answer's schema allows only those codes, and an answer with
 another code is noted and gets the fallback account: the purchase journal's
-default account, else the company's default expense account. For a reverse-charge
-purchase the BAS foreign-purchase account is used when the chart has it (see
-*VAT treatment*).
+default account, else the company's default expense account. So is a line the AI
+gave no account, and a bill without lines gets one line on the totals there, with
+a note. For a reverse-charge purchase the BAS foreign-purchase account is used
+when the chart has it (see *VAT treatment*).
+
+The default list assumes that purchases are for the company's own use: 4000 is
+described as goods for resale or production, 5410 as equipment for own use under
+half a price base amount (computers, phones, accessories, tools …), 5460 as
+consumables. With the old hint ("4000: physical goods, hardware") the model put
+every computer and accessory on 4000, where a company that does not resell them
+books 5410. A company that buys goods for resale should say so in its own list.
 
 **Verify provider** on the settings page sends one short request with the values
 on the form — saved or not — asking for `{"ok": true}` (a handful of tokens on a
