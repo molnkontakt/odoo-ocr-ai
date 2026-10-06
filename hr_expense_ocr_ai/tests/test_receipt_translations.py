@@ -1,13 +1,14 @@
 """The module ships a Swedish translation (#36.12): labels, the button and list action, and
 the receipt note with the receipt library's notes in Swedish."""
+from odoo.addons.account_invoice_ocr_ai.tests.common import EnglishTestCase
 from odoo.addons.hr_expense_ocr_ai.lib import receipt_ocr
-from odoo.tests import TransactionCase, tagged
+from odoo.tests import tagged
 
 TEXT = "Example Restaurant\nTotalt 112,00\n"
 
 
 @tagged("post_install", "-at_install", "expense_ocr")
-class TestReceiptTranslations(TransactionCase):
+class TestReceiptTranslations(EnglishTestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
@@ -39,3 +40,30 @@ class TestReceiptTranslations(TransactionCase):
         self.assertIn("läste kvitto.jpg", body)
         self.assertIn("låg konfidens (0.30) — belopp och datum fylls inte i", body)
         self.assertIn("Anmärkningar:", body)
+
+
+@tagged("post_install", "-at_install", "expense_ocr")
+class TestOcrStateLabels(EnglishTestCase):
+    def _labels(self):
+        self.env.invalidate_all()
+        self.env.registry.clear_cache("stable")
+        swedish = self.env(context=dict(self.env.context, lang="sv_SE"))
+        return swedish["hr.expense"].fields_get(["ocr_state"])["ocr_state"]["selection"]
+
+    def test_ocr_state_labels_are_loaded_for_hr_expense(self):
+        """The OCR-state labels come from account_invoice_ocr_ai's .po, loaded before
+        hr.expense has them: without the post-init hook (or the migration on an update) they
+        stayed English on expenses after one install."""
+        from odoo.addons.hr_expense_ocr_ai import _load_ocr_state_translations
+
+        self.env["res.lang"]._activate_lang("sv_SE")
+        selections = self.env["ir.model.fields.selection"].search([
+            ("field_id.model", "=", "hr.expense"), ("field_id.name", "=", "ocr_state")])
+        self.assertTrue(selections)
+        selections.flush_recordset()
+        self.env.cr.execute("UPDATE ir_model_fields_selection SET name = name - 'sv_SE' "
+                            "WHERE id IN %s", [tuple(selections.ids)])
+        self.assertIn(("failed", "Failed"), self._labels(), "the state the bug left")
+        _load_ocr_state_translations(self.env)
+        self.assertIn(("failed", "Misslyckades"), self._labels())
+        self.assertIn(("pending", "I kö"), self._labels())

@@ -3,8 +3,9 @@ from unittest import mock
 
 from odoo import fields
 from odoo.addons.account_invoice_ocr_ai.lib import invoice_ocr
+from odoo.addons.account_invoice_ocr_ai.tests.common import EnglishTestCase
 from odoo.addons.hr_expense_ocr_ai.lib import receipt_ocr
-from odoo.tests import TransactionCase, tagged
+from odoo.tests import tagged
 
 
 def _globals():
@@ -13,7 +14,7 @@ def _globals():
 
 
 @tagged("post_install", "-at_install", "expense_ocr")
-class TestReceiptConfig(TransactionCase):
+class TestReceiptConfig(EnglishTestCase):
     def test_read_receipt_passes_the_company_config(self):
         ICP = self.env["ir.config_parameter"].sudo()
         ICP.set_param("expense_ocr.enabled", "False")  # no automatic run on attach

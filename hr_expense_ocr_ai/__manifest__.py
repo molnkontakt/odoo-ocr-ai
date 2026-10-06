@@ -30,12 +30,14 @@ English source strings, with a Swedish translation.
     "author": "Molnkontakt AB",
     "license": "LGPL-3",
     "depends": ["hr_expense", "account_invoice_ocr_ai"],
-    "external_dependencies": {"python": ["pytesseract", "PIL"]},
+    # PyPI distribution names (Odoo warns about an import name such as "PIL")
+    "external_dependencies": {"python": ["pytesseract", "Pillow"]},
     "data": [
         "views/hr_expense_views.xml",
         "views/res_config_settings_views.xml",
         "data/server_actions.xml",
     ],
+    "post_init_hook": "post_init_hook",
     "installable": True,
     "application": False,
 }

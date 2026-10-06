@@ -3,17 +3,17 @@ OCR cron so a failure rolls back only that receipt's read and never stops the qu
 (#36.13)."""
 from unittest import mock
 
-from odoo.addons.account_invoice_ocr_ai.tests.common import run_ocr_cron
+from odoo.addons.account_invoice_ocr_ai.tests.common import EnglishTestCase, run_ocr_cron
 from odoo.addons.hr_expense_ocr_ai.lib import receipt_ocr
 from odoo.exceptions import UserError
-from odoo.tests import TransactionCase, tagged
+from odoo.tests import tagged
 from odoo.tools import mute_logger
 
 QUEUE_LOGGER = "odoo.addons.account_invoice_ocr_ai.models.ocr_queue"
 
 
 @tagged("post_install", "-at_install", "expense_ocr")
-class TestReceiptFailures(TransactionCase):
+class TestReceiptFailures(EnglishTestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
@@ -105,7 +105,7 @@ class TestReceiptFailures(TransactionCase):
 
 
 @tagged("post_install", "-at_install", "expense_ocr")
-class TestReceiptBulk(TransactionCase):
+class TestReceiptBulk(EnglishTestCase):
     """The list action queues the receipts and says so; the outcome shows in the OCR state
     and the chatter, not in an ir.logging row a rollback discarded (#36.4, #29)."""
 

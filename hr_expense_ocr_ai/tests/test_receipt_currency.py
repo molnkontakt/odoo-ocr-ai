@@ -2,12 +2,13 @@
 the company's currency (#28)."""
 from unittest import mock
 
+from odoo.addons.account_invoice_ocr_ai.tests.common import EnglishTestCase
 from odoo.addons.hr_expense_ocr_ai.lib import receipt_ocr
-from odoo.tests import TransactionCase, tagged
+from odoo.tests import tagged
 
 
 @tagged("post_install", "-at_install", "expense_ocr")
-class TestReceiptCurrency(TransactionCase):
+class TestReceiptCurrency(EnglishTestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()

@@ -45,7 +45,32 @@ def changed_by_someone_else(records):
                     "WHERE id IN %s")
 
 
-class OcrBillCase(TransactionCase):
+class EnglishTestCase(TransactionCase):
+    """A test case that runs in English whatever the database's language.
+
+    The tests assert the English source texts. On a database whose users are Swedish, Odoo
+    translates them — notes, the background job's notes (written in the language of the user
+    who queued the document) — and the assertions failed on the language alone. The class
+    runs in en_US and gives every user English, for the test's transaction; a test that
+    checks a translation sets its language itself.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        # English may be inactive on a database created in another language: amounts would
+        # then be formatted the company's way, notes written in its users' language
+        cls.env["res.lang"]._activate_lang("en_US")
+        cls.env = cls.env(context=dict(cls.env.context, lang="en_US"))
+        # the users, and the companies (a document no person queued is read in its company's
+        # language)
+        users = cls.env["res.users"].with_context(active_test=False).search([])
+        companies = cls.env["res.company"].with_context(active_test=False).search([])
+        (users.partner_id | companies.partner_id).filtered(
+            lambda p: p.lang != "en_US").write({"lang": "en_US"})
+
+
+class OcrBillCase(EnglishTestCase):
     # Deliberately not AccountTestInvoicingCommon: account/tests imports test_mail,
     # which is not always on the addons path. The chart of accounts is loaded here instead.
 

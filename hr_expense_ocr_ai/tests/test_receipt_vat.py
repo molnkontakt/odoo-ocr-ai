@@ -2,14 +2,15 @@
 the tax is never changed."""
 from unittest import mock
 
+from odoo.addons.account_invoice_ocr_ai.tests.common import EnglishTestCase
 from odoo.addons.hr_expense_ocr_ai.lib import receipt_ocr
-from odoo.tests import TransactionCase, tagged
+from odoo.tests import tagged
 
 RECEIPT = "Example Restaurant\nTotalt 112,00\nMoms 12% 12,00\n"
 
 
 @tagged("post_install", "-at_install", "expense_ocr")
-class TestReceiptVat(TransactionCase):
+class TestReceiptVat(EnglishTestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()

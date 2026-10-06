@@ -3,16 +3,16 @@
 OCR cron (#29), run here after the upload."""
 from unittest import mock
 
-from odoo.addons.account_invoice_ocr_ai.tests.common import run_ocr_cron
+from odoo.addons.account_invoice_ocr_ai.tests.common import EnglishTestCase, run_ocr_cron
 from odoo.addons.hr_expense_ocr_ai.lib import receipt_ocr
-from odoo.tests import TransactionCase, tagged
+from odoo.tests import tagged
 
 FIELDS = {"total": 112.0, "merchant": "Example Restaurant", "items": "Lunch",
           "category_code": "MEAL", "confidence": 0.9}
 
 
 @tagged("post_install", "-at_install", "expense_ocr")
-class TestReceiptPlaceholders(TransactionCase):
+class TestReceiptPlaceholders(EnglishTestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()

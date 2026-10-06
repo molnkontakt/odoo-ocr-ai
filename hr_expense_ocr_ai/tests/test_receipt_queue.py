@@ -6,10 +6,10 @@ OCR cron reads it shortly after. The form button still reads at once. The queue 
 """
 from unittest import mock
 
-from odoo.addons.account_invoice_ocr_ai.tests.common import make_due, run_ocr_cron
+from odoo.addons.account_invoice_ocr_ai.tests.common import EnglishTestCase, make_due, run_ocr_cron
 from odoo.addons.hr_expense_ocr_ai.lib import receipt_ocr
 from odoo.exceptions import UserError
-from odoo.tests import TransactionCase, tagged
+from odoo.tests import tagged
 
 TEXT = "Example Restaurant\nTotalt 112,00\n"
 FIELDS = {"total": 112.0, "merchant": "Example Restaurant", "items": "Lunch", "confidence": 0.9}
@@ -20,7 +20,7 @@ def _result(**extra):
 
 
 @tagged("post_install", "-at_install", "expense_ocr")
-class TestReceiptQueue(TransactionCase):
+class TestReceiptQueue(EnglishTestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
@@ -163,7 +163,7 @@ class TestReceiptQueue(TransactionCase):
 
 
 @tagged("post_install", "-at_install", "expense_ocr")
-class TestReceiptQueueUser(TransactionCase):
+class TestReceiptQueueUser(EnglishTestCase):
     """An e-mailed receipt (queued as OdooBot) is read as its employee's user (#29)."""
 
     def test_read_as_the_employees_user(self):

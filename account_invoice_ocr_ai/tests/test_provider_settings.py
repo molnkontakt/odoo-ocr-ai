@@ -7,7 +7,9 @@ key cleared in the settings kept working until a restart.
 from unittest import mock
 
 from odoo.addons.account_invoice_ocr_ai.lib import invoice_ocr
-from odoo.tests import TransactionCase, tagged
+from odoo.tests import tagged
+
+from .common import EnglishTestCase
 
 PDF = [{"filename": "invoice.pdf", "mimetype": "application/pdf", "raw": b"%PDF-1.4 test"}]
 
@@ -31,7 +33,7 @@ def _globals():
 
 
 @tagged("post_install", "-at_install", "invoice_ocr")
-class TestProviderSettings(TransactionCase):
+class TestProviderSettings(EnglishTestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()

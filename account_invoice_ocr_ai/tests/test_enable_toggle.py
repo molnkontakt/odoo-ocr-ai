@@ -2,13 +2,15 @@
 from unittest import mock
 
 from odoo.addons.account_invoice_ocr_ai.lib import invoice_ocr
-from odoo.tests import TransactionCase, tagged
+from odoo.tests import tagged
+
+from .common import EnglishTestCase
 
 PDF = [{"filename": "invoice.pdf", "mimetype": "application/pdf", "raw": b"%PDF-1.4 test"}]
 
 
 @tagged("post_install", "-at_install", "invoice_ocr")
-class TestEnableToggleAndEdi(TransactionCase):
+class TestEnableToggleAndEdi(EnglishTestCase):
     def test_disable_is_stored_and_respected(self):
         ICP = self.env["ir.config_parameter"].sudo()
         self.env["res.config.settings"].create({"invoice_ocr_enabled": False}).set_values()
