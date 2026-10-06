@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="action_run_ocr_server" model="ir.actions.server">
+        <field name="name">Kör OCR igen</field>
+        <field name="model_id" ref="account.model_account_move"/>
+        <field name="binding_model_id" ref="account.model_account_move"/>
+        <field name="binding_view_types">list</field>
+        <field name="state">code</field>
+        <field name="code">
+drafts = records.filtered(lambda m: m.state == 'draft' and m.move_type == 'in_invoice')
+for move in drafts:
+    try:
+        move.action_run_ocr()
+        env.cr.commit()
+    except Exception as e:
+        env['ir.logging'].sudo().create({
+            'name': 'account_invoice_ocr_ai',
+            'type': 'server',
+            'level': 'WARNING',
+            'message': 'Bulk OCR failed for move %s: %s' % (move.id, e),
+            'path': 'action_run_ocr_server',
+            'func': 'bulk',
+            'line': '0',
+        })
+        env.cr.rollback()
+        </field>
+    </record>
+</odoo>
