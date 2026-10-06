@@ -7,7 +7,9 @@ key cleared in the settings kept working until a restart.
 from unittest import mock
 
 from odoo.addons.account_invoice_ocr_ai.lib import invoice_ocr
-from odoo.tests import TransactionCase, tagged
+from odoo.tests import tagged
+
+from .common import EnglishTestCase
 
 PDF = [{"filename": "invoice.pdf", "mimetype": "application/pdf", "raw": b"%PDF-1.4 test"}]
 
@@ -31,7 +33,7 @@ def _globals():
 
 
 @tagged("post_install", "-at_install", "invoice_ocr")
-class TestProviderSettings(TransactionCase):
+class TestProviderSettings(EnglishTestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
@@ -126,3 +128,68 @@ class TestProviderSettings(TransactionCase):
         fields = invoice_ocr.extract_fields(text, config=cfg)
         self.assertEqual(fields["org_number"], "999999-0014")
         self.assertEqual(_globals(), before)
+
+    def test_time_limits_are_settings(self):
+        """The per-call timeout and the deadline per document are settings (#9); the other
+        limits are system parameters (#26)."""
+        self.env["res.config.settings"].create({
+            "invoice_ocr_call_timeout": 30, "invoice_ocr_total_deadline": 60,
+            "invoice_ocr_cron_time_budget": 70}).set_values()
+        self.assertEqual(self.ICP.get_param("invoice_ocr.call_timeout"), "30")
+        self.assertEqual(self.ICP.get_param("invoice_ocr.cron_time_budget"), "70")
+        self.ICP.set_param("invoice_ocr.max_text_pages", "8")
+        cfg = self.env["account.move"]._invoice_ocr_config()
+        self.assertEqual((cfg["call_timeout"], cfg["total_deadline"]), (30, 60))
+        self.assertEqual(cfg["max_text_pages"], 8)
+        # 0 means the default
+        self.env["res.config.settings"].create({
+            "invoice_ocr_call_timeout": 0, "invoice_ocr_total_deadline": 0}).set_values()
+        self.assertFalse(self.ICP.get_param("invoice_ocr.call_timeout"))
+        cfg = self.env["account.move"]._invoice_ocr_config()
+        self.assertIsNone(cfg["call_timeout"])
+        self.assertEqual(cfg["total_deadline"], invoice_ocr.TOTAL_DEADLINE)
+        # the Verify button sees the form's values, and the saved limits without a field
+        form = self.env["res.config.settings"].create({"invoice_ocr_call_timeout": 25})
+        self.assertEqual(form._invoice_ocr_form_config()["call_timeout"], 25)
+        self.assertEqual(form._invoice_ocr_form_config()["max_text_pages"], 8)
+
+    def test_text_limit_and_ollama_context_are_settings(self):
+        """The text sent to the AI (#21) and Ollama's context size (#20) are settings."""
+        self.env["res.config.settings"].create({
+            "invoice_ocr_text_limit": 9000, "invoice_ocr_ollama_num_ctx": 32768}).set_values()
+        self.assertEqual(self.ICP.get_param("invoice_ocr.text_limit"), "9000")
+        cfg = self.env["account.move"]._invoice_ocr_config()
+        self.assertEqual((cfg["text_limit"], cfg["ollama_num_ctx"]), (9000, 32768))
+        self.ICP.set_param("invoice_ocr.max_tokens", "16000")
+        self.assertEqual(self.env["account.move"]._invoice_ocr_config()["max_tokens"], 16000)
+        form = self.env["res.config.settings"].create({"invoice_ocr_text_limit": 3000})
+        self.assertEqual(form._invoice_ocr_form_config()["text_limit"], 3000)
+        self.assertEqual(form._invoice_ocr_form_config()["max_tokens"], 16000)
+
+    def _verify(self, model, served, tokens, finish="stop", content='{"ok": true}'):
+        settings = self.env["res.config.settings"].create({
+            "invoice_ocr_provider": "staik", "invoice_ocr_staik_model": model})
+
+        def fake_post(url, **kwargs):
+            return _Response({"model": served, "usage": {"completion_tokens": tokens},
+                              "choices": [{"finish_reason": finish,
+                                           "message": {"content": content}}]})
+
+        with mock.patch.object(invoice_ocr, "_post", side_effect=fake_post):
+            return settings.action_invoice_ocr_verify_provider()["params"]
+
+    def test_verify_shows_tokens_and_a_silent_fallback(self):
+        """#23: the base name of a reasoning model only counts when the answer reasoned."""
+        params = self._verify("qwen3.6:35b-a3b-thinking", "qwen3.6:35b-a3b", 212)
+        self.assertEqual(params["type"], "success")
+        self.assertIn("212 completion tokens", params["message"])
+        params = self._verify("qwen3.6:35b-a3b-thinking", "qwen3.6:35b-a3b", 6)
+        self.assertEqual(params["type"], "warning")
+        self.assertIn("shows no reasoning", params["message"])
+        params = self._verify("qwen3.6:35b-a3b-thinkng", "qwen3.6:35b-a3b", 6)
+        self.assertEqual(params["type"], "warning")
+        self.assertIn("answered with another model", params["message"])
+        params = self._verify("qwen3.6:35b-a3b-thinking", "qwen3.6:35b-a3b", 1000,
+                              finish="length", content="")
+        self.assertEqual(params["type"], "warning")
+        self.assertIn("cut off at the token limit", params["message"])

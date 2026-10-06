@@ -6,9 +6,49 @@
         <field name="inherit_id" ref="hr_expense.hr_expense_view_form"/>
         <field name="arch" type="xml">
             <xpath expr="//header" position="inside">
-                <button name="action_read_receipt" type="object" string="Läs kvitto (OCR)"
-                        class="btn-secondary" invisible="state != 'draft'"
-                        help="Läser bilagan med tesseract + AI och fyller tomma fält (belopp, datum, kategori)."/>
+                <button name="action_read_receipt" type="object" string="Read receipt (OCR)"
+                        class="btn-secondary" invisible="state != 'draft' or ocr_state == 'running'"
+                        help="Reads the attachment with tesseract + AI and fills in the empty fields (amount, date, category, description)."/>
+            </xpath>
+            <xpath expr="/form/sheet" position="before">
+                <field name="ocr_state" invisible="1"/>
+                <div class="alert alert-info" role="alert"
+                     invisible="ocr_state not in ('pending', 'running') or state != 'draft'">
+                    OCR reads this receipt in the background, within a minute or so. Reload the page to see what it filled in.
+                </div>
+                <div class="alert alert-warning" role="alert"
+                     invisible="ocr_state != 'failed' or state != 'draft'">
+                    OCR could not read this receipt: <field name="ocr_error" class="d-inline"/>. Fill in the expense by hand or read the receipt again.
+                </div>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="hr_expense_view_expenses_analysis_tree_receipt_ocr" model="ir.ui.view">
+        <field name="name">hr.expense.list.receipt.ocr</field>
+        <field name="model">hr.expense</field>
+        <field name="inherit_id" ref="hr_expense.hr_expense_view_expenses_analysis_tree"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='state']" position="after">
+                <field name="ocr_state" optional="hide" widget="badge"
+                       decoration-info="ocr_state in ('pending', 'running')"
+                       decoration-danger="ocr_state == 'failed'"
+                       decoration-success="ocr_state == 'done'"/>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="hr_expense_view_search_receipt_ocr" model="ir.ui.view">
+        <field name="name">hr.expense.view.search.receipt.ocr</field>
+        <field name="model">hr.expense</field>
+        <field name="inherit_id" ref="hr_expense.hr_expense_view_search"/>
+        <field name="arch" type="xml">
+            <xpath expr="//filter[@name='to_pay']" position="after">
+                <separator/>
+                <filter name="ocr_pending" string="OCR pending"
+                        domain="[('ocr_state', 'in', ('pending', 'running'))]"/>
+                <filter name="ocr_failed" string="OCR failed"
+                        domain="[('ocr_state', '=', 'failed')]"/>
             </xpath>
         </field>
     </record>

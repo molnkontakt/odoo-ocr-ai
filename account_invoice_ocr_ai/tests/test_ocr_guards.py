@@ -5,42 +5,18 @@ vendor and the buyer's OWN bankgiro as recipient account, although the document 
 debited automatically and the bank statement line was already reconciled directly
 against the expense account. All parties and numbers are invented (see ocr_fixtures).
 """
-from unittest import mock
-
 from odoo.addons.account_invoice_ocr_ai.lib import invoice_ocr
-from odoo.tests import TransactionCase, tagged
+from odoo.tests import tagged
 
 from . import ocr_fixtures as fx
-
-PDF = [{"filename": "invoice.pdf", "mimetype": "application/pdf", "raw": b"%PDF-1.4 test"}]
+from .common import OcrBillCase
 
 
 @tagged("post_install", "-at_install", "invoice_ocr")
-class TestOcrGuards(TransactionCase):
-    # Deliberately not AccountTestInvoicingCommon: account/tests imports test_mail,
-    # which is not always on the addons path. The chart of accounts is loaded here instead.
-
-    @classmethod
-    def _accounting(cls, company):
-        Chart = cls.env["account.chart.template"]
-        if not company.chart_template:
-            Chart.try_loading("generic_coa", company=company, install_demo=False)
-        Account = cls.env["account.account"].with_company(company)
-        domain = [("company_ids", "in", company.id)]
-        return {
-            "company": company,
-            "default_account_expense": Account.search(
-                domain + [("account_type", "=", "expense")], limit=1),
-            "default_account_payable": Account.search(
-                domain + [("account_type", "=", "liability_payable")], limit=1),
-            "default_journal_bank": cls.env["account.journal"].search(
-                [("company_id", "=", company.id), ("type", "=", "bank")], limit=1),
-        }
-
+class TestOcrGuards(OcrBillCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        cls.company_data = cls._accounting(cls.env.company)
         cls.company = cls.company_data["company"]
         cls.company.write({"name": fx.OWN_NAME, "vat": fx.OWN_VAT,
                            "company_registry": fx.OWN_ORG})
@@ -53,25 +29,13 @@ class TestOcrGuards(TransactionCase):
         cls.own_bg = Bank.create({"partner_id": cls.own_partner.id,
                                   "acc_number": "BG " + fx.OWN_BANKGIRO})
         cls.vendor = cls.env["res.partner"].create(
-            {"name": "Example Bank", "vat": fx.VENDOR_VAT, "is_company": True})
+            {"name": "Example Bank", "vat": fx.VENDOR_VAT, "is_company": True,
+             "supplier_rank": 1})
         cls.expense = cls.company_data["default_account_expense"]
         cls.payable = cls.company_data["default_account_payable"]
         cls.bank_journal = cls.company_data["default_journal_bank"]
 
     # -- helpers -----------------------------------------------------------
-
-    def _new_bill(self, **vals):
-        return self.env["account.move"].create({"move_type": "in_invoice", **vals})
-
-    def _run_ocr(self, move, text=fx.AUTODEBIT_TEXT, ai=None):
-        ai = dict(fx.AI_ANSWER_OWN_ORG if ai is None else ai)
-        with mock.patch.object(invoice_ocr, "extract_text", return_value=text), \
-                mock.patch.object(invoice_ocr, "_extract_fields_ai", return_value=ai):
-            self.env["account.move"]._invoice_ocr_extend(move, PDF)
-        return move
-
-    def _bodies(self, move):
-        return " ".join(str(m.body) for m in move.message_ids)
 
     def _resolve(self, data):
         notes = []
@@ -110,7 +74,7 @@ class TestOcrGuards(TransactionCase):
         self.assertEqual(move.partner_id, self.vendor)
         self.assertFalse(move.partner_bank_id)
         self.assertEqual(self.env["res.partner.bank"].search_count([]), before)
-        self.assertIn("bolagets eget konto", self._bodies(move))
+        self.assertIn("is the company's own account", self._bodies(move))
 
     def test_resolve_never_returns_own_company(self):
         before = self.env["res.partner"].search_count([])
@@ -127,7 +91,7 @@ class TestOcrGuards(TransactionCase):
         partner, notes = self._resolve({"org_number": fx.OWN_VAT,
                                         "vendor_name": "Example Bank"})
         self.assertEqual(partner, self.vendor)
-        self.assertTrue(any("eget" in n for n in notes))
+        self.assertTrue(any("the company's own" in n for n in notes))
 
     def test_resolve_by_own_bankgiro_is_skipped(self):
         partner, _notes = self._resolve({"bankgiro": fx.OWN_BANKGIRO})
@@ -151,8 +115,8 @@ class TestOcrGuards(TransactionCase):
         self.assertTrue(move.ocr_auto_debit)
         self.assertEqual(move.ref, fx.INVOICE_NUMBER)
         bodies = self._bodies(move)
-        self.assertIn("Dras automatiskt från kontot – ska inte betalas manuellt", bodies)
-        self.assertIn("Kontroller", bodies)
+        self.assertIn("Debited automatically from the account – not to be paid by hand", bodies)
+        self.assertIn("Checks:", bodies)
         self.assertIn(fx.VENDOR_ORG, bodies)
 
     def test_preset_own_partner_is_replaced(self):
@@ -212,14 +176,14 @@ class TestOcrGuards(TransactionCase):
             "name": "Acme Receiver Sverige AB", "vat": fx.OWN_VAT,
             "is_company": True, "active": False})
         dup_bank = self.env["res.partner.bank"].create(
-            {"partner_id": dup.id, "acc_number": "BG 999-0003"})
+            {"partner_id": dup.id, "acc_number": "BG 999-0011"})
         dup.active = True
         own = self.env["account.move"]._ocr_own_context(self.company)
         self.assertIn(dup.id, own["partner_ids"])
-        self.assertTrue(self.env["account.move"]._ocr_is_own_bank_number("999-0003", own))
+        self.assertTrue(self.env["account.move"]._ocr_is_own_bank_number("999-0011", own))
         partner, _notes = self._resolve({"vendor_name": "Acme Receiver Sverige AB"})
         self.assertFalse(partner)
-        partner, _notes = self._resolve({"bankgiro": "999-0003"})
+        partner, _notes = self._resolve({"bankgiro": "999-0011"})
         self.assertFalse(partner)
         move = self._new_bill(partner_id=dup.id)
         move.partner_bank_id = dup_bank
@@ -242,7 +206,7 @@ class TestOcrGuards(TransactionCase):
         self._run_ocr(move, text=fx.PLAIN_INVOICE_TEXT)
         self.assertFalse(move.ocr_auto_debit)
         self.assertFalse(move.ocr_auto_debit_phrase)
-        self.assertIn("flaggan togs bort", self._bodies(move))
+        self.assertIn("the flag was removed", self._bodies(move))
 
     def test_rerun_keeps_manual_flag(self):
         move = self._new_bill(partner_id=self.vendor.id)
@@ -268,7 +232,7 @@ class TestOcrGuards(TransactionCase):
         self.assertEqual(move.partner_id, self.vendor)
         self.assertFalse(move.partner_bank_id)
         self.assertFalse(move.ocr_auto_debit)
-        self.assertIn("bolagets eget konto", self._bodies(move))
+        self.assertIn("is the company's own account", self._bodies(move))
 
     def test_drop_own_partner_bank(self):
         move = self._new_bill(partner_id=self.vendor.id)
@@ -292,7 +256,7 @@ class TestOcrGuards(TransactionCase):
         self.assertEqual(move.partner_id, vendor)
         self.assertEqual(move.partner_bank_id, bank)
         self.assertFalse(move.ocr_auto_debit)
-        self.assertNotIn("Dras automatiskt från kontot", self._bodies(move))
+        self.assertNotIn("Debited automatically from the account", self._bodies(move))
 
     # -- already booked through the bank statement line ------------------------------------
 
@@ -307,7 +271,7 @@ class TestOcrGuards(TransactionCase):
         st = self._st_line("Other " + fx.INVOICE_NUMBER, account=self.expense)
         move = self._run_ocr(self._new_bill())
         bodies = self._bodies(move)
-        self.assertIn("Kostnaden kan redan vara bokförd", bodies)
+        self.assertIn("The cost may already be booked through the bank", bodies)
         self.assertIn(st.move_id.name, bodies)
 
     def test_prebooked_by_amount_date_and_name(self):
@@ -317,7 +281,7 @@ class TestOcrGuards(TransactionCase):
 
     def _assert_not_prebooked(self):
         move = self._run_ocr(self._new_bill())
-        self.assertNotIn("Kostnaden kan redan vara bokförd", self._bodies(move))
+        self.assertNotIn("The cost may already be booked through the bank", self._bodies(move))
 
     def test_not_prebooked_when_reconciled_to_payable(self):
         self._st_line("Other " + fx.INVOICE_NUMBER, account=self.payable)
@@ -360,4 +324,4 @@ class TestOcrGuards(TransactionCase):
             "counterpart_account_id": other["default_account_expense"].id,
         })
         move = self._run_ocr(self._new_bill())
-        self.assertNotIn("Kostnaden kan redan vara bokförd", self._bodies(move))
+        self.assertNotIn("The cost may already be booked through the bank", self._bodies(move))

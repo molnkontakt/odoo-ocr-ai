@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- Reads the bills and receipts queued for OCR (ocr.queue.mixin). Uploads, the
+             mail alias and the list actions trigger it at once; the interval only catches
+             what a lost trigger would leave behind. -->
+        <record id="ir_cron_ocr_queue" model="ir.cron">
+            <field name="name">OCR: read queued bills and receipts</field>
+            <field name="model_id" ref="model_ocr_queue_mixin"/>
+            <field name="state">code</field>
+            <field name="code">model._ocr_cron_process()</field>
+            <field name="user_id" ref="base.user_root"/>
+            <field name="interval_number">15</field>
+            <field name="interval_type">minutes</field>
+        </record>
+    </data>
+</odoo>

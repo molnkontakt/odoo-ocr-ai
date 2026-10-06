@@ -166,8 +166,10 @@ def test_non_se_candidate_still_wins(monkeypatch):
 # ── _ai_answer_problems ──────────────────────────────────────────────────────
 
 def test_ai_answer_problems_empty_answer():
-    assert inv._ai_answer_problems(None) == ["tomt svar"]
-    assert inv._ai_answer_problems({}) == ["tomt svar"]
+    assert inv._ai_answer_problems(None) == ["empty answer"]
+    assert inv._ai_answer_problems({}) == ["empty answer"]
+    # an answer with only its diagnostics (unparseable JSON) is empty too
+    assert inv._ai_answer_problems({"_completion_tokens": 9, "_ai_notes": []}) == ["empty answer"]
 
 
 def test_ai_answer_problems_tolerance():
@@ -210,7 +212,7 @@ def test_ai_answer_problems_reference_comparison():
         reference={"total_amount": 2636.00, "subtotal": 2121.00, "vat_amount": 515.00},
     )
     assert any(p.startswith("total ") for p in problems)
-    assert any(p.startswith("moms ") for p in problems)
+    assert any(p.startswith("VAT ") for p in problems)
     # Internt stämmer 2121 + 530.25 = 2651.25 → inget internt problem
     assert not any("!= " in p for p in problems)
 
@@ -220,7 +222,7 @@ def test_ai_answer_problems_missing_field_against_reference():
         {"subtotal": 100, "vat_amount": 25, "lines": [{"amount": 100}]},
         reference={"total_amount": 125.00, "subtotal": 100.00, "vat_amount": 25.00},
     )
-    assert any(p.startswith("total saknas") for p in problems)
+    assert any(p.startswith("total missing") for p in problems)
 
 
 # ── Mergen i extract_invoice_data (REGEX_WINS / conflicts) ────────────────────
@@ -233,7 +235,7 @@ def test_extract_invoice_data_merge_regex_wins_and_conflicts(monkeypatch):
         "total_amount": 2636.00,
         "subtotal": 2121.00,
         "vat_amount": 515.00,
-        "ocr_number": "123456789",
+        "ocr_number": "1234567897",
     }
     ai_fields = {
         "vendor_name": "AI Vendor AB",
@@ -259,7 +261,7 @@ def test_extract_invoice_data_merge_regex_wins_and_conflicts(monkeypatch):
     assert data["vat_amount"] == 515.00
     assert data["invoice_date"] == "2026-03-01"
     assert data["invoice_number"] == "1033"
-    assert data["ocr_number"] == "123456789"
+    assert data["ocr_number"] == "1234567897"
     # AI fyller det regex inte hittar
     assert data["lines"] == ai_fields["lines"]
     assert data["currency"] == "SEK"
@@ -321,32 +323,45 @@ def test_extract_invoice_data_config_is_passed_through(monkeypatch):
 
 def test_remap_account_code_domestic_unchanged():
     assert inv.remap_account_code("4000") == "4000"
-    assert inv.remap_account_code("6231", is_eu_foreign=False, is_outside_eu=False) == "6231"
+    assert inv.remap_account_code("4515", "domestic") == "4515"
+    assert inv.remap_account_code("6231", "domestic") == "6231"
 
 
 def test_remap_account_code_eu_reverse_charge():
-    assert inv.remap_account_code("4000", is_eu_foreign=True) == "4515"
-    assert inv.remap_account_code(4000, is_eu_foreign=True) == "4515"
-    assert inv.remap_account_code("4099", is_eu_foreign=True) == "4515"
-    assert inv.remap_account_code("4510", is_eu_foreign=True) == "4535"
-    assert inv.remap_account_code("4590", is_eu_foreign=True) == "4535"
-    # Kostnadsklasser (5xxx/6xxx) remappas inte
-    assert inv.remap_account_code("6231", is_eu_foreign=True) == "6231"
-    assert inv.remap_account_code("5010", is_eu_foreign=True) == "5010"
+    assert inv.remap_account_code("4000", "eu") == "4515"
+    assert inv.remap_account_code(4000, "eu") == "4515"
+    assert inv.remap_account_code("4099", "eu") == "4515"
+    assert inv.remap_account_code("4000", "eu", 12) == "4516"
+    # EU goods stay goods: 4515 is no longer swallowed by a 4500-4599 → 4535 rule (#35.5)
+    assert inv.remap_account_code("4515", "eu") == "4515"
+    assert inv.remap_account_code("4510", "eu") == "4515"
+    assert inv.remap_account_code("4515", "eu", 6) == "4517"
+    assert inv.remap_account_code("4545", "eu") == "4515"   # import account for an EU supplier
+    assert inv.remap_account_code("4535", "eu") == "4535"
+    assert inv.remap_account_code("4531", "eu") == "4535"   # the non-EU services account
+    assert inv.remap_account_code("4535", "eu", 12) == "4536"
+    # Kostnadsklasser (5xxx/6xxx) remappas inte, inte heller 4100-4499 och 4500
+    assert inv.remap_account_code("6231", "eu") == "6231"
+    assert inv.remap_account_code("5010", "eu") == "5010"
+    assert inv.remap_account_code("4400", "eu") == "4400"
+    assert inv.remap_account_code("4500", "eu") == "4500"
+    # BAS 2026's foreign goods-for-resale accounts are left as chosen
+    assert inv.remap_account_code("4075", "eu") == "4075"
 
 
 def test_remap_account_code_outside_eu():
-    assert inv.remap_account_code("4000", is_outside_eu=True) == "4545"
-    assert inv.remap_account_code("4050", is_outside_eu=True) == "4545"
-    # Utanför EU remappas bara varor; 45xx och kostnadsklasser lämnas orörda
-    assert inv.remap_account_code("4510", is_outside_eu=True) == "4510"
-    assert inv.remap_account_code("6231", is_outside_eu=True) == "6231"
+    assert inv.remap_account_code("4000", "non_eu") == "4545"
+    assert inv.remap_account_code("4050", "non_eu") == "4545"
+    assert inv.remap_account_code("4515", "non_eu") == "4545"
+    assert inv.remap_account_code("4535", "non_eu") == "4531"
+    assert inv.remap_account_code("4535", "non_eu", 6) == "4533"
+    assert inv.remap_account_code("6231", "non_eu") == "6231"
 
 
 def test_remap_account_code_unparsable_passthrough():
-    assert inv.remap_account_code(None, is_eu_foreign=True) is None
-    assert inv.remap_account_code("", is_eu_foreign=True) == ""
-    assert inv.remap_account_code("ab12", is_eu_foreign=True) == "ab12"
+    assert inv.remap_account_code(None, "eu") is None
+    assert inv.remap_account_code("", "eu") == ""
+    assert inv.remap_account_code("ab12", "eu") == "ab12"
 
 
 # ── Config-injektion ─────────────────────────────────────────────────────────
@@ -402,3 +417,277 @@ def test_own_identities_flow_through_the_pipeline_config(monkeypatch):
     out = inv.extract_invoice_data(b"%PDF-fake", config=cfg, own_ids=[])
     assert out["org_number"] == "556000-0001"
     assert inv.OWN_COMPANY == "" and not inv.OWN_VAT_NUMBERS
+
+
+# ── _parse_amount: a lone comma or dot followed by three digits groups thousands (#15) ──
+
+def test_parse_amount_comma_as_thousands_separator():
+    assert inv._parse_amount("1,234") == 1234.0
+    assert inv._parse_amount("$1,234") == 1234.0
+    assert inv._parse_amount("1,234,567") == 1234567.0
+    assert inv._parse_amount("1.234.567") == 1234567.0
+    assert inv._parse_amount("12.500") == 12500.0
+    assert inv._parse_amount("1.234,5") == 1234.5
+    # decimals stay decimals
+    assert inv._parse_amount("12,50") == 12.5
+    assert inv._parse_amount("12.50") == 12.5
+    assert inv._parse_amount("1234,56") == 1234.56
+    assert inv._parse_amount("0,500") == 0.5
+    assert inv._parse_amount("-32,00") == -32.0
+    assert inv._parse_amount("1 234,56") == 1234.56
+    # whole-krona marks and odd spaces
+    assert inv._parse_amount("418:-") == 418.0
+    assert inv._parse_amount("418,-") == 418.0
+    assert inv._parse_amount("1 000") == 1000.0
+    assert inv._parse_amount("abc") is None
+    assert inv._parse_amount("1.23.45") is None
+
+
+def test_grand_total_with_comma_thousands_separator():
+    assert inv.extract_fields("Grand total $1,234\n")["total_amount"] == 1234.0
+
+
+# ── Dates: only real calendar dates, English months, anchored labels (#16) ────
+
+def test_parse_date_returns_only_valid_iso_dates():
+    assert inv._parse_date("3 March 2026") == "2026-03-03"
+    assert inv._parse_date("12 May 2026") == "2026-05-12"
+    assert inv._parse_date("March 3, 2026") == "2026-03-03"
+    assert inv._parse_date("Sep 17, 2026") == "2026-09-17"
+    assert inv._parse_date("17 sept. 2026") == "2026-09-17"
+    assert inv._parse_date("1 mars 2026") == "2026-03-01"
+    assert inv._parse_date("1 okt 2026") == "2026-10-01"
+    assert inv._parse_date("2026/09/17") == "2026-09-17"
+    assert inv._parse_date("9.4.2026") == "2026-04-09"
+    # one valid reading only: the mm/dd one
+    assert inv._parse_date("09/15/2026") == "2026-09-15"
+    for junk in ("2026-02-30", "2026-15-09", "17/09/26", "170917", "null", "N/A", "",
+                 "3 Foo 2026", None):
+        assert inv._parse_date(junk) is None, junk
+
+
+def test_ambiguous_slash_date_has_two_readings():
+    assert inv._date_readings("09/04/2026") == ["2026-04-09", "2026-09-04"]
+    assert inv._date_readings("12/12/2026") == ["2026-12-12"]
+    assert inv.iso_date("09/04/2026") == "2026-04-09"
+
+
+def test_datum_label_is_anchored():
+    text = "Leveransdatum 2026-02-01\nFaktura\nDatum 2026-03-05\n"
+    assert inv.extract_fields(text)["invoice_date"] == "2026-03-05"
+    text = "Förfallodatum: 2026-04-04\nDatum: 2026-03-05\n"
+    fields = inv.extract_fields(text)
+    assert fields["invoice_date"] == "2026-03-05"
+    assert fields["due_date"] == "2026-04-04"
+    assert "invoice_date" not in inv.extract_fields("Orderdatum 2026-01-20\n")
+
+
+def test_unparsable_regex_date_never_wins():
+    assert inv.extract_fields("Invoice date: 3 March 2026\n")["invoice_date"] == "2026-03-03"
+    fields = inv.extract_fields("Fakturadatum: 2026-02-30\nDatum 2026-03-05\n")
+    assert fields["invoice_date"] == "2026-03-05"
+    assert "invoice_date" not in inv.extract_fields("Fakturadatum: 2026-02-30\n")
+    assert inv.extract_fields("Due date: 09/15/2026\n")["due_date"] == "2026-09-15"
+
+
+def _merge_dates(regex_text, ai):
+    regex = inv.extract_fields(regex_text)
+    return inv._merge_fields(regex_text, regex, ai, set())
+
+
+def test_ambiguous_date_takes_the_ais_reading():
+    text = "Invoice date: 09/04/2026\n"
+    out = _merge_dates(text, {"invoice_date": "2026-09-04"})
+    assert out["invoice_date"] == "2026-09-04"
+    assert any("2026-04-09 or 2026-09-04" in n for n in out["_notes"])
+    assert "_conflicts" not in out
+    out = _merge_dates(text, {"invoice_date": "2026-04-09"})
+    assert out["invoice_date"] == "2026-04-09" and "_notes" not in out
+    # no AI date (or another one): day/month, with a note
+    out = _merge_dates(text, {})
+    assert out["invoice_date"] == "2026-04-09"
+    assert any("day/month" in n for n in out["_notes"])
+    out = _merge_dates(text, {"invoice_date": "2026-01-01"})
+    assert out["invoice_date"] == "2026-04-09"
+    assert any(c.startswith("invoice_date:") for c in out["_conflicts"])
+
+
+def test_invalid_ai_date_is_dropped_with_a_note():
+    out = _merge_dates("no dates here\n", {"invoice_date": "2026-02-30", "due_date": "N/A"})
+    assert "invoice_date" not in out and "due_date" not in out
+    assert sum("not a valid date" in n for n in out["_notes"]) == 2
+    # a valid AI due date still wins over the regex one (unchanged)
+    out = _merge_dates("Förfallodatum: 2026-04-04\n", {"due_date": "2026-04-05"})
+    assert out["due_date"] == "2026-04-05"
+
+
+# ── Malformed AI answers (#10) and line amounts (#11) ─────────────────────────
+
+MALFORMED_LINES = (["a"], [None], {"x": 1}, "abc", 5, [{"amount": "1 234,00"}],
+                   [{"amount": None, "unit_price": None}], [[1, 2]])
+
+
+def test_ai_answer_problems_never_raises():
+    for lines in MALFORMED_LINES:
+        data = {"subtotal": 100, "vat_amount": 25, "total_amount": 125, "lines": lines}
+        problems = inv._ai_answer_problems(data, reference={"subtotal": 100})
+        assert isinstance(problems, list) and problems, lines
+    # odd diagnostics and references do not raise either
+    assert isinstance(inv._ai_answer_problems(
+        {"lines": [{"amount": 1}], "_completion_tokens": "many"}, reference="x"), list)
+
+
+def test_sanitize_ai_keeps_lists_of_dicts_and_numbers():
+    out = inv._sanitize_ai({
+        "vendor_name": " Example AB ", "invoice_number": 1033, "ocr_number": 1234567897.0,
+        "total_amount": "1 250,00", "subtotal": None, "vat_amount": "n/a",
+        "currency": "null", "org_number": {"x": 1},
+        "lines": ["a", None, {"description": None, "quantity": None, "unit_price": None,
+                               "amount": "1 000,00", "vat_rate": "25", "account_code": 6540},
+                  {"description": "no amount"}, {"unit_price": 50, "quantity": 2}],
+        "_completion_tokens": 3400, "_served_model": None,
+    })
+    assert out == {
+        "vendor_name": "Example AB", "invoice_number": "1033", "ocr_number": "1234567897",
+        "total_amount": 1250.0,
+        "lines": [{"amount": 1000.0, "vat_rate": 25.0, "account_code": "6540"},
+                  {"unit_price": 50.0, "quantity": 2.0, "amount": 100.0}],
+        "_completion_tokens": 3400,
+    }
+    for lines in MALFORMED_LINES[:5]:
+        assert inv._sanitize_ai({"lines": lines}).get("lines", []) == [], lines
+    assert inv._sanitize_ai("not a dict") == {}
+    assert inv._sanitize_ai(None) == {}
+
+
+def test_malformed_answer_keeps_the_regex_fields(monkeypatch):
+    text = "Fakturanummer: 4711\nFakturadatum: 2026-03-01\nAtt betala: 125,00\nOCR: 1234567897\n"
+    for lines in MALFORMED_LINES:
+        monkeypatch.setattr(inv, "_call_provider", lambda t, cfg=None, lines=lines: inv._sanitize_ai({
+            "subtotal": 100, "vat_amount": 25, "total_amount": 125, "lines": lines}))
+        out = inv.extract_invoice_data_from_text(text, config={"retry_skip_seconds": 0})
+        assert out["invoice_number"] == "4711" and out["invoice_date"] == "2026-03-01", lines
+        assert out["total_amount"] == 125.0 and out["ocr_number"] == "1234567897"
+
+
+def test_ai_step_failure_keeps_the_regex_fields(monkeypatch):
+    def broken(*args, **kwargs):
+        raise TypeError("unexpected")
+
+    monkeypatch.setattr(inv, "_extract_fields_ai", broken)
+    out = inv.extract_invoice_data_from_text("Fakturanummer: 4711\nAtt betala: 125,00\n")
+    assert out["invoice_number"] == "4711" and out["total_amount"] == 125.0
+    assert any("the AI step failed" in n for n in out["_notes"])
+
+
+def test_line_amount_is_the_source_of_truth():
+    q = inv.line_quantity_and_price
+    assert q({"quantity": 3, "unit_price": 100, "amount": 300}) == (3, 100)
+    assert q({"quantity": 3, "amount": 300}) == (3, 100.0)       # unit price missing
+    assert q({"amount": 250}) == (1.0, 250)                       # null quantity/unit price
+    assert q({"quantity": 1, "unit_price": 500, "amount": 400}) == (1.0, 400)  # discount in amount
+    assert q({"quantity": 3, "unit_price": 50, "amount": 100}) == (1.0, 100)   # 3 × 33.33 ≠ 100
+    assert q({"quantity": -1, "unit_price": 100, "amount": -100}) == (-1, 100)
+    assert q({"amount": 0}) is None and q({}) is None
+
+
+# ── Bankgiro, plusgiro and OCR reference: one line, whole labels, check digits (#14) ──
+
+def test_giro_and_ocr_values_stay_on_their_line():
+    f = inv.extract_fields
+    assert f("Bankgiro: 123-4566\n123 45 Exempelstad\n")["bankgiro"] == "123-4566"
+    assert f("OCR: 1234 5678\n2026 03\n")["ocr_number"] == "12345678"
+    assert f("Org.nr Bankgiro\n999999-0014 123-4566\n")["bankgiro"] == "123-4566"
+    out = f("Bankgiro Plusgiro\n123-4566 99 99 01-2\n")
+    assert out["bankgiro"] == "123-4566" and out["plusgiro"] == "999901-2"
+    assert f("Fakturanummer OCR-nummer\n1033 1234567897\n")["ocr_number"] == "1234567897"
+    out = f("Förfallodatum OCR\n2026-03-26 1234567897\n")
+    assert out["ocr_number"] == "1234567897" and out["due_date"] == "2026-03-26"
+    assert "bankgiro" not in f("SUBG 5\n")
+    assert "plusgiro" not in f("kvitto.jpg 12\n")
+    assert f("Bankgironummer: 9998-0005\n")["bankgiro"] == "9998-0005"
+    assert f("PG 99 99 01-2\n")["plusgiro"] == "999901-2"
+
+
+def test_valid_giro_or_ocr():
+    v = inv.valid_giro_or_ocr
+    assert v("bankgiro", "123-4566") and v("bankgiro", "9998-0005")
+    assert not v("bankgiro", "123-4567")            # check digit
+    assert not v("bankgiro", "9999-0012345")        # an account number
+    assert not v("bankgiro", "BG 123-4566")         # letters
+    assert v("plusgiro", "99 99 01-2") and not v("plusgiro", "99 99 01-3")
+    assert not v("plusgiro", "1")
+    assert v("ocr_number", "1234567897") and not v("ocr_number", "1234567898")
+
+
+def _merge_giro(regex, ai):
+    return inv._merge_fields("", regex, ai, set())
+
+
+def test_merge_falls_back_to_a_valid_ai_value():
+    out = _merge_giro({"bankgiro": "123-4567"}, {"bankgiro": "123-4566"})
+    assert out["bankgiro"] == "123-4566"
+    assert any("used the AI's 123-4566" in n for n in out["_notes"])
+    out = _merge_giro({"plusgiro": "99 99 01-2"}, {"plusgiro": "999901-3"})
+    assert out["plusgiro"] == "99 99 01-2" and "_notes" not in out
+    out = _merge_giro({"ocr_number": "12345678972026"}, {"ocr_number": "1234567897"})
+    assert out["ocr_number"] == "1234567897"
+
+
+def test_merge_drops_invalid_values_with_a_note():
+    out = _merge_giro({"plusgiro": "12"}, {})
+    assert "plusgiro" not in out and any("plusgiro '12'" in n for n in out["_notes"])
+    out = _merge_giro({"ocr_number": "1234567898"}, {"ocr_number": "1234567898"})
+    assert "ocr_number" not in out
+    # an RF reference (letters) and an OCR number cut back to the invoice number are valid
+    assert _merge_giro({}, {"ocr_number": "RF18 5390 0754 7034"})["ocr_number"] == "RF18 5390 0754 7034"
+    out = _merge_giro({"ocr_number": "123456789711123", "invoice_number": "1234567897"}, {})
+    assert out["ocr_number"] == "123456789711123"
+
+
+# ── Long documents: head + tail, no retry, a note (#21) ───────────────────────
+
+def test_clip_text_keeps_head_and_tail():
+    text = "HEAD " + "x" * 9000 + " TOTAL 1 250,00"
+    clipped = inv.clip_text(text, 6000)
+    assert clipped.startswith("HEAD ") and clipped.endswith("TOTAL 1 250,00")
+    assert inv.clip_bounds(len(text), 6000) == (4000, 2000)
+    assert "characters of the document left out here" in clipped
+    assert len(clipped) < 6000 + 100
+    assert inv.clip_text("short", 6000) == "short"
+    assert inv.clip_text("anything", 0) == ""
+
+
+def test_truncated_text_gets_no_retry_and_a_note(monkeypatch):
+    calls = []
+
+    def provider(text, cfg=None):
+        calls.append(text)
+        return {"vendor_name": "Test AB", "total_amount": 100, "subtotal": 90,
+                "vat_amount": 0, "lines": [{"amount": 90}]}   # 90 + 0 != 100: suspect
+
+    monkeypatch.setattr(inv, "_call_provider", provider)
+    text = "Fakturanummer: 4711\n" + "rad\n" * 3000 + "Att betala: 100,00\n"
+    out = inv.extract_invoice_data_from_text(text, config={"text_limit": 6000,
+                                                           "retry_skip_seconds": 60})
+    assert len(calls) == 1, "the retry would see the same cut text"
+    assert any("the AI saw only the first 4000 and the last 2000" in n for n in out["_notes"])
+    # the regex read the full text, the totals at the end included
+    assert out["total_amount"] == 100.0 and out["invoice_number"] == "4711"
+    # not cut: the suspect answer is retried as before
+    calls.clear()
+    inv.extract_invoice_data_from_text("Fakturanummer: 4711\nAtt betala: 100,00\n",
+                                       config={"retry_skip_seconds": 60})
+    assert len(calls) == 2
+
+
+def test_marketplace_declarer_is_found_in_the_full_text(monkeypatch):
+    monkeypatch.setattr(inv, "_extract_fields_ai", lambda text, reference=None, config=None: {
+        "vendor_name": "Some Merchant"})
+    text = "Faktura\n" + "rad\n" * 1000 + "Såld av Some Merchant\nMoms deklarerat av Example Marketplace S.a.r.l.\n"
+    out = inv.extract_invoice_data_from_text(text)
+    assert out["vendor_name"] == "Example Marketplace S.a.r.l"
+    assert any("marketplace VAT-declarer" in c for c in out["_conflicts"])
+    assert inv.marketplace_vat_declarer("VAT declared by Example Marketplace S.a.r.l. VAT # LU1") == \
+        "Example Marketplace S.a.r.l"
+    assert inv.marketplace_vat_declarer("Sold by Foo") is None

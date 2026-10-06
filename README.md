@@ -13,11 +13,13 @@ Sister repositories: [odoo-l10n-se](https://github.com/molnkontakt/odoo-l10n-se)
 
 | Module | Description |
 |--------|-------------|
-| [`account_invoice_ocr_ai`](account_invoice_ocr_ai/) | Vendor bill PDFs uploaded through *Upload* or attached to a draft bill: text via pdfplumber (tesseract fallback for scans), regex field extraction, then an LLM fills partner, dates, references, bank details and invoice lines with BAS account and VAT rate. Auto-creates the vendor, handles EU reverse charge and marketplace VAT declarers |
-| [`hr_expense_ocr_ai`](hr_expense_ocr_ai/) | Receipt photos and PDFs on expense claims: EXIF-rotated, upscaled and OCR'd with tesseract, then the LLM fills amount, date, merchant and expense category. Runs when a claim arrives by e-mail or gets its main attachment, and on demand. Guards against model guesses: merchant and amount must appear in the OCR text, low confidence fills nothing |
+| [`account_invoice_ocr_ai`](account_invoice_ocr_ai/) | Vendor bill PDFs uploaded through *Upload* or received by a purchase journal's mail alias, read by a background job within seconds: text via pdfplumber (tesseract fallback for scans), regex field extraction, then an LLM fills partner, dates, references, bank details and invoice lines with BAS account and VAT rate. Auto-creates the vendor, handles EU reverse charge and marketplace VAT declarers |
+| [`hr_expense_ocr_ai`](hr_expense_ocr_ai/) | Receipt photos and PDFs on expense claims: EXIF-rotated, scaled and OCR'd with tesseract, then the LLM fills amount, date, merchant and expense category. Read by the same background job when a claim arrives by e-mail or gets its main attachment, and at once from the form. Guards against model guesses: merchant, amount and date must appear in the OCR text, low confidence leaves amount and date empty |
 
-`hr_expense_ocr_ai` depends on `account_invoice_ocr_ai` (shared OCR/LLM library
-and settings).
+`hr_expense_ocr_ai` depends on `account_invoice_ocr_ai` (shared OCR/LLM library,
+settings and background queue). Install both from the same release:
+`hr_expense_ocr_ai` 19.0.1.6.0 needs `account_invoice_ocr_ai` 19.0.1.16.0 or
+later, which Odoo's `depends` cannot enforce.
 
 ## AI providers
 
@@ -26,25 +28,45 @@ residency, default), Venice.ai, OpenAI, **any OpenAI-compatible endpoint**
 (Mistral, Groq, OpenRouter, Together, DeepSeek, Azure OpenAI, Anthropic's
 compatibility layer, a local vLLM or LM Studio: base URL + key + model) or a
 local **Ollama**. A *Verify provider* button shows which model actually answers.
-The text of the document, never the file, is sent to the provider — and only the
-first 6000 characters of it (`INVOICE_OCR_TEXT_LIMIT`); see the
-[module README](account_invoice_ocr_ai/) for the full environment-variable
-list. Keys live in Odoo system parameters. A reasoning-capable model is
+The text of the document, never the file, is sent to the provider — at most 6000
+characters of it, the beginning and the end of a longer one (*Text sent to the AI*);
+see the [module README](account_invoice_ocr_ai/) for the full environment-variable
+list. A provider's error is shown with what the provider said, a parameter an
+endpoint does not accept (e.g. `max_tokens` on OpenAI's reasoning models) is
+adapted, a `429` waits as long as `Retry-After` asks within the time limit, and
+Ollama gets an explicit context size. Keys live in Odoo system parameters. A reasoning-capable model is
 strongly recommended; the defaults were tuned with `qwen3.6:35b-a3b-thinking`.
 
-### Known limitation: synchronous LLM call on upload
+### When OCR runs, and how long it may take
 
-The upload path (journal *Upload* button, chatter attachment, e-mail alias) runs
-OCR + the LLM call **synchronously inside the create transaction**. One call is
-capped at `STAIK_TIMEOUT` seconds for staik and `INVOICE_AI_TIMEOUT` seconds for
-every other provider (both default 120, env-tunable) and the reliability
-re-run is skipped when the first call already took `INVOICE_AI_RETRY_SKIP_SECONDS`
-seconds (default 60), so a single upload can block a worker for roughly that long
-— it can never hang indefinitely. Avoid this on high-volume setups or with
-slow/offline providers; the intended long-term fix is async processing
-(queue_job / server action), and the bulk path already exists as a list-view
-server action, *Kör OCR igen*, which commits per move.
+OCR and the LLM call no longer run inside the request that brought the document
+in. An upload, a mail to the alias or the list action only **queues** the bill
+or receipt (a PDF attached later to an existing bill is not read automatically;
+the form button reads it); a background job (one `ir.cron`, no extra dependency) reads it
+**within seconds**, one document at a time, with its own time budget per run,
+three attempts and a state on the document (*Queued*, *Reading*, *Read*,
+*Failed*) with filters and a banner on the form. The **form buttons read at
+once**. A document someone changed after it was queued is left alone. See the
+[module README](account_invoice_ocr_ai/#when-ocr-runs) for the details.
 
+Every document has one **time limit** (*Time limit per document*, default
+80 s): text extraction and every provider call — retries, the 429 wait, the
+schema fallback, the reliability re-run — end within it, and it never exceeds
+three quarters of Odoo's request and cron time limits (`limit_time_real`,
+`limit_time_real_cron`, 120 s by default), so neither the form button nor the
+background job gets its worker killed. Text extraction is bounded too: pages,
+pixels per page, a tesseract timeout and a time budget, with a note when a limit
+cut the reading.
+
+## Translations
+
+The source strings are English. Both modules ship a Swedish translation
+(`i18n/sv.po`, generated from Odoo's own export, `i18n/<module>.pot`), so a
+Swedish user sees "Kör OCR igen", "Dras automatiskt", "omvänd betalningsskyldighet"
+and the chatter notes in Swedish. The notes written by the plain-Python OCR
+libraries are translated as well (see the
+[module README](account_invoice_ocr_ai/#translations)), and the background job
+writes its notes in the language of the user who queued the document.
 
 ## Requirements
 

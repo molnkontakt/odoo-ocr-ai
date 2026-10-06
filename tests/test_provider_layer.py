@@ -5,9 +5,10 @@ import pytest
 
 
 class FakeResponse:
-    def __init__(self, status, payload):
+    def __init__(self, status, payload, headers=None):
         self.status_code = status
         self._payload = payload
+        self.headers = headers or {}
 
     def json(self):
         return self._payload
@@ -71,7 +72,10 @@ def test_chat_json_sends_schema_and_returns_meta(calls, monkeypatch):
     assert url == "http://vllm.local:8000/v1/chat/completions"
     assert "Authorization" not in kw["headers"], "no key → no header"
     assert kw["json"]["response_format"]["json_schema"]["name"] == "x"
-    assert kw["json"]["messages"][0]["content"] == "Pte", "text is capped at max_chars"
+    # text is capped at max_chars: head + marker + tail (#21)
+    content = kw["json"]["messages"][0]["content"]
+    assert content == "P" + inv.clip_text("text", 2)
+    assert content.startswith("Pt\n\n[... 2 characters") and content.endswith("...]\n\nt")
     assert data == {"ok": True} and meta["served_model"] == "served-model" and meta["completion_tokens"] == 1234
 
 
@@ -120,10 +124,13 @@ def test_verify_provider_reports_served_model_and_failure(calls, monkeypatch):
 
 def test_reasoning_token_check_only_for_thinking_models():
     plain = {"total_amount": 100.0, "subtotal": 80.0, "vat_amount": 20.0, "lines": [{"amount": 80.0}],
-             "_completion_tokens": 300, "_served_model": "gpt-4o-mini"}
-    assert not [p for p in inv._ai_answer_problems(plain) if "completion-tokens" in p]
-    thinking = dict(plain, _served_model="qwen3.6:35b-a3b-thinking")
-    assert [p for p in inv._ai_answer_problems(thinking) if "completion-tokens" in p]
+             "_completion_tokens": 300, "_model": "gpt-4o-mini", "_served_model": "gpt-4o-mini"}
+    assert not [p for p in inv._ai_answer_problems(plain) if "completion tokens" in p]
+    # staik reports its reasoning variant under the base name: the requested name decides (#23)
+    thinking = dict(plain, _model="qwen3.6:35b-a3b-thinking", _served_model="qwen3.6:35b-a3b")
+    assert [p for p in inv._ai_answer_problems(thinking) if "completion tokens" in p]
+    assert not [p for p in inv._ai_answer_problems(dict(thinking, _completion_tokens=3400))
+                if "completion tokens" in p]
 
 
 # ── Per-run config: the provider layer never reads or writes run-time globals ─
@@ -143,7 +150,9 @@ def env_defaults(monkeypatch):
     monkeypatch.setattr(inv, "AI_MODEL", "")
 
 
-def test_per_run_config_is_used_without_touching_globals(calls, env_defaults):
+def test_per_run_config_is_used_without_touching_globals(calls, env_defaults, monkeypatch):
+    # A document deadline far above the per-call caps, so the caps themselves show.
+    monkeypatch.setattr(inv, "TOTAL_DEADLINE", 1000.0)
     before = _globals_snapshot()
     cfg = {"provider": "openai_compatible", "base_url": "https://llm.example/v1/",
            "api_key": "K-company-a", "model": "model-x"}
@@ -196,7 +205,10 @@ def test_ollama_reads_url_and_model_from_config(calls, env_defaults):
 
 def test_text_limit_from_config_caps_the_prompt(calls, env_defaults):
     inv._call_provider("abcdefghij", config={"text_limit": 3})
-    assert calls[0][1]["json"]["messages"][0]["content"].endswith(inv.EXTRACTION_PROMPT[-10:] + "abc")
+    content = calls[0][1]["json"]["messages"][0]["content"]
+    assert content.endswith(inv.EXTRACTION_PROMPT[-10:] + inv.clip_text("abcdefghij", 3))
+    assert inv.clip_text("abcdefghij", 3).startswith("ab\n\n[... 7 characters")
+    assert inv.clip_text("abcdefghij", 3).endswith("j")
 
 
 # ── Verify provider with the form's unsaved values ───────────────────────────
@@ -259,6 +271,8 @@ def test_receipt_chat_uses_per_run_config(calls, env_defaults, monkeypatch):
         "api_key": "K-receipt", "model": "m"})
     url, kw = calls[0]
     assert url == "https://receipts.example/v1/chat/completions"
-    assert kw["headers"]["Authorization"] == "Bearer K-receipt" and kw["timeout"] == 180
+    assert kw["headers"]["Authorization"] == "Bearer K-receipt"
+    # the per-call cap of the config (no fixed 180 s), cut to the receipt's deadline (#29)
+    assert inv.TOTAL_DEADLINE - 5 < kw["timeout"] <= inv.TOTAL_DEADLINE
     assert res["source"] == "ai" and res["fields"]["total"] == 418.0
     assert _globals_snapshot() == before

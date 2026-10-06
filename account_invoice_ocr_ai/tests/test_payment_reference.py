@@ -1,9 +1,11 @@
 """The payment reference from the OCR run: only valid OCR numbers (modulus 10) are kept."""
-from odoo.tests import TransactionCase, tagged
+from odoo.tests import tagged
+
+from .common import EnglishTestCase
 
 
 @tagged("post_install", "-at_install", "invoice_ocr")
-class TestPaymentReference(TransactionCase):
+class TestPaymentReference(EnglishTestCase):
     def test_valid_ocr_is_kept(self):
         ref = self.env["account.move"]._ocr_valid_payment_reference
         self.assertEqual(ref("1234567897"), "1234567897")
