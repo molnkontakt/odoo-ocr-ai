@@ -56,7 +56,7 @@
     change.** Every label, button, list action, setting, notification and chatter note is
     English in the code and goes through `_()` with its arguments; `i18n/sv.po` of both
     modules translates all of it ("Kör OCR igen", "Dras automatiskt", "Läs kvitto (OCR)",
-    "omvänd skattskyldighet" …), so a Swedish user sees Swedish and an English user
+    "omvänd betalningsskyldighet" …), so a Swedish user sees Swedish and an English user
     English. Amounts in notes are formatted for the user's language and currency. The
     notes of the plain-Python libraries are translatable too: they are `invoice_ocr.Note`
     objects (English text plus msgid, parameters and module), marked with `_()` so Odoo's

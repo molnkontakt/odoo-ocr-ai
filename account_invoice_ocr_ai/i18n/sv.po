@@ -978,8 +978,8 @@ msgid ""
 msgstr ""
 "Leverantören finns utomlands och har debiterat utländsk moms (%(vat)s). "
 "Utländsk moms är inte avdragsgill i Sverige: den bokförs som en del av "
-"kostnaden, utan svensk moms och utan omvänd skattskyldighet. Borde köpet "
-"ha fakturerats utan moms (omvänd skattskyldighet), be leverantören om en "
+"kostnaden, utan svensk moms och utan omvänd betalningsskyldighet. Borde köpet "
+"ha fakturerats utan moms (omvänd betalningsskyldighet), be leverantören om en "
 "rättad faktura."
 
 #. module: account_invoice_ocr_ai
@@ -990,7 +990,7 @@ msgid ""
 "Swedish input VAT, without reverse charge."
 msgstr ""
 "Leverantören finns utomlands men har debiterat svensk moms (%(number)s): "
-"bokförs som svensk ingående moms, utan omvänd skattskyldighet."
+"bokförs som svensk ingående moms, utan omvänd betalningsskyldighet."
 
 #. module: account_invoice_ocr_ai
 #: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr

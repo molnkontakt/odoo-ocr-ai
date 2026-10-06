@@ -73,7 +73,7 @@ def test_swedish_terms():
     sv = read_po(ROOT / "account_invoice_ocr_ai" / "i18n" / "sv.po")
     assert sv["Run OCR again"] == "Kör OCR igen"
     assert sv["Debited automatically"] == "Dras automatiskt"
-    assert "omvänd skattskyldighet" in sv[
+    assert "omvänd betalningsskyldighet" in sv[
         "The supplier is abroad but charged Swedish VAT (%(number)s): booked as Swedish input "
         "VAT, without reverse charge."]
     hr = read_po(ROOT / "hr_expense_ocr_ai" / "i18n" / "sv.po")

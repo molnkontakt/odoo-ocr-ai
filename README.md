@@ -62,7 +62,7 @@ cut the reading.
 
 The source strings are English. Both modules ship a Swedish translation
 (`i18n/sv.po`, generated from Odoo's own export, `i18n/<module>.pot`), so a
-Swedish user sees "Kör OCR igen", "Dras automatiskt", "omvänd skattskyldighet"
+Swedish user sees "Kör OCR igen", "Dras automatiskt", "omvänd betalningsskyldighet"
 and the chatter notes in Swedish. The notes written by the plain-Python OCR
 libraries are translated as well (see the
 [module README](account_invoice_ocr_ai/#translations)), and the background job
