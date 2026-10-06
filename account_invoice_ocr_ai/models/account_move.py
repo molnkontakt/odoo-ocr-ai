@@ -1582,19 +1582,22 @@ class AccountMove(models.Model):
             return formatLang(self.env, value, currency_obj=move.currency_id)
 
         def against(key, lines_amount, adjust=0.0):
+            # self.env._: a nested function has no self for Odoo's _() to find the language
             value, on_document = reference[key]
-            params = {"lines": amount(lines_amount), "printed": amount(value + adjust)}
+            p = {"lines": amount(lines_amount), "printed": amount(value + adjust)}
             if on_document:
                 return {
-                    "subtotal": _("net %(lines)s against the bill's %(printed)s", **params),
-                    "vat_amount": _("VAT %(lines)s against the bill's %(printed)s", **params),
-                    "total_amount": _("total %(lines)s against the bill's %(printed)s", **params),
+                    "subtotal": self.env._("net %(lines)s against the bill's %(printed)s", **p),
+                    "vat_amount": self.env._("VAT %(lines)s against the bill's %(printed)s", **p),
+                    "total_amount": self.env._("total %(lines)s against the bill's %(printed)s",
+                                               **p),
                 }[key]
             return {
-                "subtotal": _("net %(lines)s against the AI's reading %(printed)s", **params),
-                "vat_amount": _("VAT %(lines)s against the AI's reading %(printed)s", **params),
-                "total_amount": _("total %(lines)s against the AI's reading %(printed)s",
-                                  **params),
+                "subtotal": self.env._("net %(lines)s against the AI's reading %(printed)s", **p),
+                "vat_amount": self.env._("VAT %(lines)s against the AI's reading %(printed)s",
+                                         **p),
+                "total_amount": self.env._("total %(lines)s against the AI's reading "
+                                           "%(printed)s", **p),
             }[key]
 
         net = move.amount_untaxed - (data.get("_rounding_adjust") or 0.0)

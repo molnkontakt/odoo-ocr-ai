@@ -45,6 +45,19 @@ class TestTranslations(OcrBillCase):
         self.assertIn("AI:n såg bara de första 4000 och de sista 2000", bodies)
         self.assertNotIn("the AI saw only", bodies)
 
+    def test_totals_warning_in_swedish(self):
+        """The totals check's sentences are translated too (they are built in a nested
+        function, where Odoo's _() finds no language)."""
+        move = self._new_bill().with_env(self.sv)
+        ai = {"vendor_name": fx.PLAIN_VENDOR_NAME, "invoice_number": "4711",
+              "lines": [{"description": "Support", "amount": 800.0, "vat_rate": 0}]}
+        with self._patch_ocr(fx.PLAIN_INVOICE_TEXT, ai):
+            self.sv["account.move"]._invoice_ocr_extend(move, PDF)
+        bodies = self._bodies(move)
+        self.assertIn("OCR: raderna stämmer inte med fakturan", bodies)
+        self.assertIn("mot fakturans", bodies)
+        self.assertNotIn("against the bill's", bodies)
+
     def test_library_notes_translate_with_their_parameters(self):
         Mixin = self.sv["ocr.queue.mixin"]
         error = invoice_ocr.ProviderError(503, "overloaded")
