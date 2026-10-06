@@ -84,6 +84,8 @@ Measured on real receipts before release:
   receipt's total, also for a category set by hand): a difference of more than 1
   is noted, e.g. a 12 % restaurant receipt in a 25 % category. The tax itself is
   never changed.
+- A company marked *Not VAT-registered* in the invoice OCR settings gets no tax
+  on a receipt it reads: the total, VAT included, is the cost.
 - The category must be one of the company's expensable products. Their
   *purchase description*, or else the category's *Guideline* as plain text (at
   most 200 characters), is sent as a hint, and the model is told to follow it.

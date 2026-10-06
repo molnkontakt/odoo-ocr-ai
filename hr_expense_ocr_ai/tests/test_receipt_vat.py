@@ -68,3 +68,24 @@ class TestReceiptVat(TransactionCase):
         self.assertNotIn("the receipt shows VAT", self._bodies(expense), "VAT not printed")
         expense = self._read({"vat_amount": 12.0, "category_code": "MEAL25"})
         self.assertNotIn("the receipt shows VAT", self._bodies(expense), "no total to compare")
+
+    # -- a company that is not VAT-registered (#39) ----------------------------------------
+
+    def test_not_vat_registered_books_the_receipt_gross_without_tax(self):
+        self.env.company.ocr_not_vat_registered = True
+        expense = self._read({"total": 112.0, "vat_amount": 12.0, "category_code": "MEAL25"})
+        self.assertEqual(expense.product_id, self.meals25)
+        self.assertFalse(expense.tax_ids)
+        self.assertEqual(expense.total_amount_currency, 112.0)
+        self.assertEqual(expense.tax_amount_currency, 0.0)
+        bodies = self._bodies(expense)
+        self.assertIn("not VAT-registered", bodies)
+        self.assertNotIn("the receipt shows VAT", bodies)
+        # a category set by hand loses its tax too when the receipt is read
+        expense = self._read({"total": 112.0}, product_id=self.meals25.id)
+        self.assertFalse(expense.tax_ids)
+
+    def test_vat_registered_is_the_default(self):
+        self.assertFalse(self.env.company.ocr_not_vat_registered)
+        expense = self._read({"total": 112.0, "vat_amount": 12.0, "category_code": "MEAL12"})
+        self.assertEqual(expense.tax_ids, self.tax12)

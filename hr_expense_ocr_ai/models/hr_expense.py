@@ -3,7 +3,7 @@ import logging
 import psycopg2
 from markupsafe import Markup
 
-from odoo import _, api, fields, models
+from odoo import Command, _, api, fields, models
 from odoo.exceptions import UserError
 from odoo.tools import html2plaintext, is_html_empty
 from odoo.tools.misc import formatLang
@@ -231,9 +231,16 @@ class HrExpense(models.Model):
         elif label and placeholder["name_prefix"] and label.lower() not in current.lower():
             vals["name"] = f"{current} — {label}"
             filled.append(_("description"))
+        not_registered = self.company_id.ocr_not_vat_registered
+        if not_registered and vals and (self.tax_ids or "product_id" in vals):
+            # No input VAT to deduct (#39): the receipt's total is the cost, without a tax
+            vals["tax_ids"] = [Command.clear()]
+            notes.append(_("the company is not VAT-registered: the amount includes the VAT and "
+                           "the expense has no tax"))
         if vals:
             self.write(vals)
-        vat_note = self._expense_ocr_vat_note(f, result.get("text") or "")
+        vat_note = None if not_registered else self._expense_ocr_vat_note(
+            f, result.get("text") or "")
         if vat_note:
             notes.append(vat_note)
         self.message_post(body=self._expense_ocr_note(result, att, filled, notes),

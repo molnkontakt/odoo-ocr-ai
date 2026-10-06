@@ -1314,6 +1314,9 @@ class AccountMove(models.Model):
         vat_charged = lib.vat_was_charged(vat_total, sum(line.get("amount") or 0.0 for line in lines))
         se_number = self._ocr_swedish_vat_number(partner, data) if region != "domestic" else None
         treatment = lib.bill_vat_treatment(region, vat_charged, bool(se_number))
+        if company.ocr_not_vat_registered:
+            # No input VAT to deduct (#39): the lines are gross, without tax
+            treatment = "not_registered"
         for line in lines:
             line["vat_rate"] = lib.line_vat_rate(line.get("vat_rate"))
 
@@ -1336,7 +1339,15 @@ class AccountMove(models.Model):
                 total=formatLang(self.env, total, currency_obj=move.currency_id),
                 net=formatLang(self.env, net, currency_obj=move.currency_id)))
 
-        if treatment == "foreign_vat":
+        if treatment == "not_registered" and vat_charged:
+            # Lines that already include the VAT keep it; others get it added
+            if not gross_lines:
+                self._ocr_add_foreign_vat_to_cost(lines, vat_total)
+            data["_foreign_vat"] = vat_total
+            notes.append(_(
+                "The company is not VAT-registered: the VAT on the document (%(vat)s) is booked "
+                "as part of the cost, without a tax.", vat=f"{vat_total:.2f}"))
+        elif treatment == "foreign_vat":
             # Lines that already include the VAT keep it; others get it added
             if not gross_lines:
                 self._ocr_add_foreign_vat_to_cost(lines, vat_total)

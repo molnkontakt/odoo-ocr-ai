@@ -9,6 +9,12 @@ class ResConfigSettings(models.TransientModel):
         config_parameter="invoice_ocr.enabled",
         default=True,
     )
+    invoice_ocr_not_vat_registered = fields.Boolean(
+        related="company_id.ocr_not_vat_registered", readonly=False,
+        string="Not VAT-registered",
+        help="The company cannot deduct input VAT: OCR books bill lines and receipts gross "
+             "(the VAT on the document is part of the cost) and sets no tax.",
+    )
     invoice_ocr_provider = fields.Selection(
         selection=[
             ("staik", "staik (Swedish data residency)"),

@@ -146,6 +146,11 @@ reverse-charge tax only by its l10n_se-style name ("25% EU G"), never guessed.
   deductible in Sweden, so the printed VAT is added to the cost of the lines
   that carry it, the lines get no tax and no reverse charge, and a note says
   so (ask for a corrected invoice if it should have been reverse-charged).
+- **Company not VAT-registered** (*Not VAT-registered* in the settings, per
+  company, off by default; e.g. an association that cannot deduct input VAT):
+  the lines are booked gross — the document's VAT is part of their cost — with
+  no tax and no reverse charge, and a note says so. Receipts read by
+  `hr_expense_ocr_ai` for such a company get no tax either.
 
 ### Guards
 
@@ -217,6 +222,7 @@ form button reports how many bills were filled, failed or skipped, and why.
 | `invoice_ocr.base_url`, `invoice_ocr.api_key`, `invoice_ocr.model` | any other endpoint speaking OpenAI's `/chat/completions`: Mistral, Groq, OpenRouter, Together, DeepSeek, Azure OpenAI, Anthropic's compatibility layer, vLLM, LM Studio … Base URL up to the API version |
 | `invoice_ocr.ollama_url`, `invoice_ocr.ollama_model` | local Ollama (native API, JSON-schema `format`) |
 | `invoice_ocr.ollama_num_ctx` | *Ollama context size*: the context window Ollama runs the model with (`num_ctx`, default 16384 tokens), see below |
+| *Not VAT-registered* | Per company (`res.company.ocr_not_vat_registered`): book bill lines and receipts gross, without tax (see *VAT treatment*) |
 | `invoice_ocr.account_list` | *Accounts for invoice lines*: the account codes the model may choose, one per line as `code: hint`; empty = the built-in list (see below) |
 | `invoice_ocr.call_timeout`, `invoice_ocr.total_deadline`, `invoice_ocr.cron_time_budget` | *Limits*: time, see *When OCR runs* |
 | `invoice_ocr.text_limit` | *Limits*: *Text sent to the AI*, characters (default 6000), see *LLM context limit* |

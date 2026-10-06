@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 19.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-06 06:56+0000\n"
-"PO-Revision-Date: 2026-10-06 06:56+0000\n"
+"POT-Creation-Date: 2026-10-06 07:04+0000\n"
+"PO-Revision-Date: 2026-10-06 07:04+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
@@ -337,6 +337,11 @@ msgid "Checks:"
 msgstr "Kontroller:"
 
 #. module: account_invoice_ocr_ai
+#: model:ir.model,name:account_invoice_ocr_ai.model_res_company
+msgid "Companies"
+msgstr "Bolag"
+
+#. module: account_invoice_ocr_ai
 #: model:ir.model,name:account_invoice_ocr_ai.model_res_config_settings
 msgid "Config Settings"
 msgstr "Inställningar"
@@ -377,6 +382,7 @@ msgstr "Dras automatiskt från kontot – ska inte betalas manuellt"
 #: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_move__display_name
 #: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_move_line__display_name
 #: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_ocr_queue_mixin__display_name
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_company__display_name
 #: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__display_name
 msgid "Display Name"
 msgstr "Visningsnamn"
@@ -410,6 +416,7 @@ msgstr "HTTP %(status)s från AI-tjänsten: %(detail)s"
 #: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_move__id
 #: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_move_line__id
 #: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_ocr_queue_mixin__id
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_company__id
 #: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__id
 msgid "ID"
 msgstr "ID"
@@ -575,6 +582,17 @@ msgid ""
 msgstr ""
 "Varken total, netto eller moms kunde läsas på underlaget: raderna "
 "kontrollerades inte – jämför dem med underlaget."
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_not_vat_registered
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid "Not VAT-registered"
+msgstr "Inte momsregistrerat"
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_res_company__ocr_not_vat_registered
+msgid "Not VAT-registered (OCR)"
+msgstr "Inte momsregistrerat (OCR)"
 
 #. module: account_invoice_ocr_ai
 #: model:ir.model.fields,field_description:account_invoice_ocr_ai.field_account_bank_statement_line__ocr_state
@@ -981,6 +999,37 @@ msgstr ""
 "hand."
 
 #. module: account_invoice_ocr_ai
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_not_vat_registered
+msgid ""
+"The company cannot deduct input VAT: OCR books bill lines and receipts gross"
+" (the VAT on the document is part of the cost) and sets no tax."
+msgstr ""
+"Bolaget kan inte dra av ingående moms: OCR bokför fakturarader och kvitton "
+"brutto (momsen på underlaget ingår i kostnaden) och sätter ingen skatt."
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"The company is not VAT-registered: the VAT on the document (%(vat)s) is "
+"booked as part of the cost, without a tax."
+msgstr ""
+"Bolaget är inte momsregistrerat: momsen på underlaget (%(vat)s) bokförs som "
+"en del av kostnaden, utan skatt."
+
+#. module: account_invoice_ocr_ai
+#: model:ir.model.fields,help:account_invoice_ocr_ai.field_res_company__ocr_not_vat_registered
+msgid ""
+"The company is not registered for VAT (e.g. an association below the "
+"threshold) and cannot deduct input VAT. OCR then books bill lines and "
+"receipts gross: the VAT on the document is part of the cost, and no tax is "
+"set."
+msgstr ""
+"Bolaget är inte registrerat för moms (t.ex. en förening under gränsen) och "
+"kan inte dra av ingående moms. OCR bokför då fakturarader och kvitton "
+"brutto: momsen på underlaget ingår i kostnaden, och ingen skatt sätts."
+
+#. module: account_invoice_ocr_ai
 #: model:ir.model.fields,help:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_ollama_num_ctx
 msgid ""
 "The context window Ollama runs the model with (num_ctx), sent with every "
@@ -1254,6 +1303,17 @@ msgid ""
 msgstr ""
 "De här bankraderna är redan avstämda direkt mot ett kostnadskonto eller "
 "annat konto, inte mot leverantörsskulden:"
+
+#. module: account_invoice_ocr_ai
+#: model_terms:ir.ui.view,arch_db:account_invoice_ocr_ai.res_config_settings_view_form_invoice_ocr
+msgid ""
+"This company cannot deduct input VAT (not registered for VAT): OCR books "
+"bill lines and receipts gross, the document's VAT as part of the cost, and "
+"sets no tax."
+msgstr ""
+"Bolaget kan inte dra av ingående moms (inte registrerat för moms): OCR "
+"bokför fakturarader och kvitton brutto, med underlagets moms som en del av "
+"kostnaden, och sätter ingen skatt."
 
 #. module: account_invoice_ocr_ai
 #. odoo-python

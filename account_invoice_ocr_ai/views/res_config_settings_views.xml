@@ -72,6 +72,9 @@
                             </div>
                         </div>
                     </setting>
+                    <setting string="Not VAT-registered" company_dependent="1" help="This company cannot deduct input VAT (not registered for VAT): OCR books bill lines and receipts gross, the document's VAT as part of the cost, and sets no tax.">
+                        <field name="invoice_ocr_not_vat_registered"/>
+                    </setting>
                     <setting string="Accounts for invoice lines" help="The account codes the AI may choose, one per line as 'code: hint'. Empty: the built-in Swedish BAS list. Only accounts that exist in the bill company's chart are offered.">
                         <field name="invoice_ocr_account_list" widget="text" placeholder="6540: IT services (consulting, managed services)"/>
                     </setting>

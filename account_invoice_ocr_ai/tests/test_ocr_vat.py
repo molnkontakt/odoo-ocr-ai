@@ -176,6 +176,33 @@ class TestOcrVat(OcrBillCase):
                           total_amount=125.0)
         self.assertIn("one line was made from the totals", self._bodies(move))
 
+    # -- a company that is not VAT-registered (#39) -----------------------------------------
+
+    def test_not_vat_registered_books_the_bill_gross_without_tax(self):
+        settings = self.env["res.config.settings"].with_company(self.company).create({})
+        self.assertFalse(settings.invoice_ocr_not_vat_registered, "off by default")
+        settings.invoice_ocr_not_vat_registered = True
+        settings.execute()
+        self.assertTrue(self.company.ocr_not_vat_registered)
+        text = TEXT + "Netto 1 000,00\nMoms 250,00\nAtt betala 1 250,00\n"
+        move = self._bill(self.se_vendor, [
+            {"description": "Work", "amount": 800.0, "vat_rate": 25, "account_code": "6540"},
+            {"description": "Material", "amount": 200.0, "vat_rate": 25, "account_code": "4000"},
+        ], text=text)
+        self.assertFalse(move.invoice_line_ids.tax_ids)
+        self.assertEqual(sorted(move.invoice_line_ids.mapped("price_subtotal")), [250.0, 1000.0])
+        self.assertEqual(move.amount_tax, 0.0)
+        self.assertEqual(move.amount_total, 1250.0)
+        bodies = self._bodies(move)
+        self.assertIn("not VAT-registered", bodies)
+        self.assertNotIn("the lines do not match", bodies)
+        # a foreign supplier: no reverse charge either
+        move = self._bill(self.de_vendor, [
+            {"description": "Hosting", "amount": 100.0, "vat_rate": 0, "account_code": "6540"},
+        ], vat_amount=0.0)
+        self.assertFalse(move.invoice_line_ids.tax_ids)
+        self.assertEqual(move.amount_total, 100.0)
+
     # -- the account list (#24) --------------------------------------------------------
 
     def test_account_list_only_has_the_charts_accounts(self):

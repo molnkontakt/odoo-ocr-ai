@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 19.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-06 07:00+0000\n"
-"PO-Revision-Date: 2026-10-06 07:00+0000\n"
+"POT-Creation-Date: 2026-10-06 07:04+0000\n"
+"PO-Revision-Date: 2026-10-06 07:04+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
@@ -488,6 +488,14 @@ msgstr ""
 msgid ""
 "the category %s has a fixed cost: the amount is quantity × cost and was not "
 "filled"
+msgstr ""
+
+#. module: hr_expense_ocr_ai
+#. odoo-python
+#: code:addons/hr_expense_ocr_ai/models/hr_expense.py:0
+msgid ""
+"the company is not VAT-registered: the amount includes the VAT and the "
+"expense has no tax"
 msgstr ""
 
 #. module: hr_expense_ocr_ai
