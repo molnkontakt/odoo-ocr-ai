@@ -20,7 +20,7 @@ from datetime import timedelta
 from markupsafe import Markup
 
 from odoo import _, api, fields, models
-from odoo.exceptions import AccessError, UserError
+from odoo.exceptions import AccessError, UserError, ValidationError
 from odoo.tools.misc import formatLang
 
 logger = logging.getLogger(__name__)
@@ -1007,8 +1007,9 @@ class AccountMove(models.Model):
 
         def matched(partner, how):
             partner = partner.commercial_partner_id
-            notes.append(_("Vendor %(vendor)s: matched on %(how)s.",
-                           vendor=partner.display_name, how=how))
+            # self.env._: a nested function has no self for Odoo's _() to find the language
+            notes.append(self.env._("Vendor %(vendor)s: matched on %(how)s.",
+                                    vendor=partner.display_name, how=how))
             return partner.id
 
         # 1. VAT (any country prefix already in OCR, or Swedish org number)
@@ -1017,25 +1018,22 @@ class AccountMove(models.Model):
             # The library already filters the own numbers out; this is a second guard
             notes.append(_("The org number %s is the company's own – not used.", org_raw))
             org_raw = ""
-        # If looks like a VAT number with letter prefix (e.g. LU20260743, SE556...)
-        if org_raw and re.match(r"^[A-Z]{2}\d", org_raw):
-            p = self._ocr_partner_search([("vat", "=", org_raw)], own, notes,
-                                         _("The VAT number %s", org_raw), company=company)
-            if p:
-                return matched(p, _("the VAT number %s", org_raw))
-
-        # 2. Swedish org number — multiple variants
+        # 1-2. The VAT number (a letter prefix, e.g. LU12345613, SE999999...) or the Swedish org
+        # number, compared apart from formatting: spaces, dashes, the country prefix, the
+        # trailing 01 of a Swedish VAT number (#39). Several partners with it: no match.
+        is_vat = bool(re.match(r"^[A-Z]{2}\d", org_raw))
         org_clean = re.sub(r"[^0-9]", "", org_raw)
+        same_number = self.env["res.partner"]
         if org_clean:
-            how = _("The org number %s", org_raw)
-            for v in [f"SE{org_clean}01", f"SE{org_clean}", org_clean]:
-                p = self._ocr_partner_search([("vat", "=", v)], own, [], how, company=company)
-                if p:
-                    return matched(p, _("the org number %s", org_raw))
-            p = self._ocr_partner_search([("vat", "ilike", org_clean)], own, notes, how,
-                                         company=company)
-            if p:
-                return matched(p, _("the org number %s", org_raw))
+            how = _("The VAT number %s", org_raw) if is_vat else _("The org number %s", org_raw)
+            same_number = self._ocr_partners_with_vat(org_raw, own, notes, how, company)
+            if len(same_number) == 1:
+                return matched(same_number, _("the VAT number %s", org_raw) if is_vat
+                               else _("the org number %s", org_raw))
+            if same_number:
+                notes.append(_("%(number)s is the VAT number of several partners (%(names)s) – "
+                               "none was chosen.", number=org_raw,
+                               names=", ".join(same_number.mapped("display_name"))))
 
         # 3. Plusgiro / bankgiro: the same digits, not a substring of another account
         for field in ("plusgiro", "bankgiro"):
@@ -1068,6 +1066,19 @@ class AccountMove(models.Model):
                                "VAT, org or giro number matched – check that it is the right "
                                "vendor.", vendor=partner.display_name, name=name))
                 return partner.id
+
+        # Never a new vendor next to one that may be it (#39): a partner with the same VAT
+        # number, or a vendor of the company with a near name ("Example Market" for "Example
+        # Market EU S.à r.l.") — leave the vendor empty and name them.
+        similar = same_number | (self._ocr_similar_vendors(name, own, company) if name
+                                 else self.env["res.partner"])
+        if similar:
+            notes.append(_("Vendor %(name)s: not found, and not created because similar "
+                           "vendors exist (%(candidates)s) – choose the vendor by hand, and add "
+                           "its VAT or org number so that it is found next time.",
+                           name=name or org_raw,
+                           candidates=", ".join(similar[:5].mapped("display_name"))))
+            return None
 
         # 5. Auto-create partner if we have a name + org/VAT
         # A direct-debit document prints the BUYER's account, not the vendor's — it is not
@@ -1102,7 +1113,15 @@ class AccountMove(models.Model):
                 country = self.env["res.country"].search([("code", "=", cc)], limit=1)
                 if country:
                     vals["country_id"] = country.id
-            new_partner = Partner.create(vals)
+            try:
+                with self.env.cr.savepoint():
+                    new_partner = Partner.create(vals)
+            except ValidationError:
+                # A misread VAT number fails Odoo's check (base_vat): the vendor is created
+                # without it rather than the whole reading failing
+                notes.append(_("The VAT number %s is not valid – the vendor was created without "
+                               "it.", vals.pop("vat")))
+                new_partner = Partner.create(vals)
             # Add bank if BG/PG present
             for acc in banks:
                 self.env["res.partner.bank"].create({
@@ -1114,6 +1133,44 @@ class AccountMove(models.Model):
             return new_partner.id
 
         return None
+
+    def _ocr_partners_with_vat(self, number, own, notes, how, company):
+        """The commercial partners the company may use whose VAT number is `number` apart
+        from formatting (invoice_ocr.same_vat_number): 'SE 999999-0014 01' and 'SE999999001401'
+        are the same number, and '999999-0014' is it without its prefix and 01. A stored
+        number without a prefix is of the partner's country. A note says so when only the
+        company itself has the number."""
+        from ..lib import invoice_ocr
+
+        Partner = self.env["res.partner"]
+        digits = re.sub(r"\D", "", number)
+        if len(digits) < 6:
+            return Partner
+        # Candidates by a run of four digits a stored number keeps whatever its formatting
+        chunks = sorted({digits[:4], digits[-4:]})
+        domain = ["|"] * (len(chunks) - 1) + [("vat", "ilike", chunk) for chunk in chunks]
+        found = self._ocr_partner_search(domain, own, [], how, limit=200, company=company)
+        same = found.filtered(lambda p: invoice_ocr.same_vat_number(
+            p.vat, number, p.country_id.code or None)).commercial_partner_id
+        if not same:
+            own_partners = Partner.sudo().browse(own["partner_ids"])
+            if own_partners.filtered(lambda p: invoice_ocr.same_vat_number(p.vat, number)):
+                notes.append(_("%s pointed to the company itself – skipped.", how))
+        return same
+
+    def _ocr_similar_vendors(self, name, own, company):
+        """The company's vendors whose name is near `name` without matching it
+        (invoice_ocr.name_is_near)."""
+        from ..lib import invoice_ocr
+
+        tokens = invoice_ocr.name_tokens(name)
+        if not tokens:
+            return self.env["res.partner"]
+        domain = ["|"] * (len(tokens) - 1) + [("name", "ilike", token) for token in tokens]
+        found = self._ocr_partner_search([*domain, ("supplier_rank", ">", 0)], own, [], "",
+                                         limit=200, company=company)
+        return found.filtered(
+            lambda p: invoice_ocr.name_is_near(name, p.name)).commercial_partner_id
 
     def _ocr_giro_accounts(self, digits, company, own):
         """Bank accounts the company may use whose number is exactly these giro digits

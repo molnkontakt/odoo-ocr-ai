@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 19.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-06 06:45+0000\n"
-"PO-Revision-Date: 2026-10-06 06:45+0000\n"
+"POT-Creation-Date: 2026-10-06 06:53+0000\n"
+"PO-Revision-Date: 2026-10-06 06:53+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
@@ -103,6 +103,14 @@ msgstr ""
 msgid ""
 "%(field)s: the printed date can be read as %(first)s or %(second)s – used "
 "%(date)s, as the AI read it"
+msgstr ""
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"%(number)s is the VAT number of several partners (%(names)s) – none was "
+"chosen."
 msgstr ""
 
 #. module: account_invoice_ocr_ai
@@ -821,6 +829,12 @@ msgid "The VAT number %s"
 msgstr ""
 
 #. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid "The VAT number %s is not valid – the vendor was created without it."
+msgstr ""
+
+#. module: account_invoice_ocr_ai
 #: model:ir.model.fields,help:account_invoice_ocr_ai.field_res_config_settings__invoice_ocr_account_list
 msgid ""
 "The account codes the AI may choose for invoice lines, one per line as "
@@ -1186,6 +1200,15 @@ msgstr ""
 #. odoo-python
 #: code:addons/account_invoice_ocr_ai/models/account_move.py:0
 msgid "Vendor"
+msgstr ""
+
+#. module: account_invoice_ocr_ai
+#. odoo-python
+#: code:addons/account_invoice_ocr_ai/models/account_move.py:0
+msgid ""
+"Vendor %(name)s: not found, and not created because similar vendors exist "
+"(%(candidates)s) – choose the vendor by hand, and add its VAT or org number "
+"so that it is found next time."
 msgstr ""
 
 #. module: account_invoice_ocr_ai

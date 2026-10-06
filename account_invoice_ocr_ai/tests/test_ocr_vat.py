@@ -133,7 +133,7 @@ class TestOcrVat(OcrBillCase):
         text = TEXT + "VAT Reg. No.: EL999999993\n"
         move = self._bill(None, [
             {"description": "Olive oil", "amount": 400.0, "vat_rate": 0, "account_code": "4000"},
-        ], text=text, vendor_name="Example Hellas", vat_amount=0.0)
+        ], text=text, vendor_name="Hellenic Olive Traders", vat_amount=0.0)
         self.assertEqual(move.partner_id.country_id.code, "GR")
         line = move.invoice_line_ids
         self.assertEqual(line.account_id.code, "4515")

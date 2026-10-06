@@ -715,6 +715,48 @@ def name_match(ocr_name, partner_name):
     return None
 
 
+def name_is_near(ocr_name, partner_name):
+    """True when a partner's name is close to a vendor name read from a document without
+    matching it (#39): every distinctive word of the partner's name is in the document's
+    name ("Example Market" for "Example Market EU S.à r.l."), or both start with the same
+    distinctive word of four letters or more. Such a partner may well be the vendor: no new
+    vendor is created from the document then."""
+    document, partner = name_tokens(ocr_name), name_tokens(partner_name)
+    if not document or not partner:
+        return False
+    if set(partner) <= set(document):
+        return True
+    return document[0] == partner[0] and len(document[0]) >= 4
+
+
+def vat_number_key(value):
+    """(country, number) of a VAT or org number, for comparing them apart from formatting.
+
+    Spaces, dashes and dots are ignored, the country prefix is split off (EL is GR, XI is GB)
+    and a Swedish VAT number's trailing 01 dropped: 'SE 999999-0014 01', 'SE999999001401'
+    and '999999-0014' are ('SE', '9999990014'), ('SE', '9999990014') and (None,
+    '9999990014'). (None, '') when there is no number.
+    """
+    s = re.sub(r"[^0-9A-Za-z]", "", str(value or "")).upper()
+    m = re.match(r"([A-Z]{2})(?=\d)", s)
+    country = VAT_PREFIX_COUNTRY.get(m.group(1), m.group(1)) if m else None
+    number = s[2:] if m else s
+    if country in (None, "SE") and re.fullmatch(r"\d{12}", number) and number.endswith("01"):
+        number = number[:10]
+    return country, number if sum(c.isdigit() for c in number) >= 6 else ""
+
+
+def same_vat_number(a, b, country_a=None, country_b=None):
+    """True when `a` and `b` are the same VAT or org number apart from formatting (see
+    vat_number_key). A number without a country prefix is of `country_a` / `country_b` (e.g.
+    the partner's country) when given, else it matches one with any prefix."""
+    prefix_a, number_a = vat_number_key(a)
+    prefix_b, number_b = vat_number_key(b)
+    prefix_a, prefix_b = prefix_a or country_a, prefix_b or country_b
+    return bool(number_a) and number_a == number_b and (
+        prefix_a is None or prefix_b is None or prefix_a == prefix_b)
+
+
 def giro_digits(value):
     """The digits of a bankgiro/plusgiro or account number ('BG 123-4566' → '1234566')."""
     return re.sub(r"\D", "", str(value or ""))
